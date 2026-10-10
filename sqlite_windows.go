@@ -12,7 +12,7 @@ import (
 )
 
 func sqliteJSON(path, query string) ([]byte, error) {
-	uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String() + "?mode=ro&_pragma=busy_timeout(500)"
+	uri := (&url.URL{Scheme: "file", Path: "/" + filepath.ToSlash(path)}).String() + "?mode=ro&_pragma=busy_timeout(500)"
 	db, err := sql.Open("sqlite", uri)
 	if err != nil {
 		return nil, err
