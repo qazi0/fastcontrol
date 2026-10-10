@@ -699,8 +699,10 @@ function paintResponse(r) {
   const content = document.createElement("template");
   content.innerHTML = md(r.shown);
   preserveImages(el, content.content);
+  const fresh = !el.childNodes.length && r.animate;
   const oldChildren=[...el.childNodes];
   reconcileChildren(el,[...content.content.childNodes].map((node,i)=>patchTranscriptNode(oldChildren[i],node,r.animate)));
+  if (fresh && el.childNodes.length) enterTranscript(el,8);
   queueImages(el);
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
   const nodes = [];
