@@ -391,5 +391,13 @@ textarea, input { caret-color: var(--ink); }
 .scrim.dark { background: rgba(0, 0, 0, 0.82); }
 @media (prefers-color-scheme: light) { .gauge .g-on { stroke: var(--ink); } }
 
-#provider-switch { display: inline-flex; align-items: center; gap: 5px; flex: none; padding: 0 8px; font-size: 13px; }
+#home > .bar { padding-left: 16px; }
+#home > .bar .brand { font-size: 22px; }
+#home > .bar .icon-btn { width: 40px; height: 40px; }
+#provider-switch { display: inline-flex; align-items: center; gap: 5px; flex: none; margin-left: 4px; padding: 0 8px; font-size: 12px; }
 #provider-switch .ico { width: 10px; height: 10px; }
+@media (max-width: 340px) {
+  #home > .bar .brand { font-size: 20px; }
+  #home > .bar .icon-btn { width: 36px; }
+  #provider-switch { margin-left: 0; }
+}
