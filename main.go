@@ -92,7 +92,7 @@ func main() {
 		log.Fatalf("token: %v", err)
 	}
 	db := stateDBPath()
-	if db == "" {
+	if db == "" && claudeBinary() == "" {
 		log.Fatalf("no ~/.codex/state_*.sqlite found; is Codex installed?")
 	}
 
@@ -111,6 +111,8 @@ func main() {
 	ipc := NewIPCClient(*ipcPath)
 	go ipc.Run()
 	hub := NewHub(ipc, db)
+	hub.claude = newClaudeManager(hub)
+	go hub.claude.run(context.Background())
 	hub.refreshList()
 	go hub.RunList(context.Background())
 
@@ -251,7 +253,7 @@ func serveClient(ctx context.Context, hub *Hub, conn *websocket.Conn, eventsOnly
 		}
 	}()
 	// addrs lets clients fall back between Wi-Fi and Tailscale with one pairing.
-	c.push(mustJSON(map[string]any{"t": "hello", "host": hostName(), "desktop": hub.ipc.ClientID() != "", "v": 2, "addrs": hub.addrs}))
+	c.push(mustJSON(map[string]any{"t": "hello", "host": hostName(), "desktop": hub.ipc.ClientID() != "", "v": 3, "addrs": hub.addrs, "providers": map[string]bool{"codex": hub.db != "", "claude": hub.claude != nil && hub.claude.bin != ""}}))
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {

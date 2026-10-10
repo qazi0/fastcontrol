@@ -33,7 +33,7 @@ type Client struct {
 	// eventsOnly clients (the Android watch service) get events and nothing
 	// else: no thread lists, which are large and change often.
 	eventsOnly bool
-	done   chan struct{}
+	done       chan struct{}
 }
 
 func (c *Client) push(b []byte) {
@@ -57,8 +57,9 @@ func mustJSON(v any) []byte {
 // ---- hub ----
 
 type Hub struct {
-	ipc *IPCClient
-	db  string
+	claude *ClaudeManager
+	ipc    *IPCClient
+	db     string
 
 	listMu sync.Mutex // serializes refreshList
 	addrs  []string   // http://ip:port for every non-loopback listener, sent in hello
@@ -149,6 +150,9 @@ func (h *Hub) removeClient(c *Client) {
 		}
 	}
 	h.mu.Unlock()
+	if h.claude != nil {
+		h.claude.removeClient(c)
+	}
 	for _, s := range subs {
 		s.unsubscribe(c)
 	}
@@ -183,7 +187,13 @@ func (h *Hub) RunList(ctx context.Context) {
 func (h *Hub) refreshList() {
 	h.listMu.Lock()
 	defer h.listMu.Unlock()
-	ts, err := listThreads(h.db)
+	var ts []ThreadInfo
+	var err error
+	if h.db != "" {
+		ts, err = listThreads(h.db)
+	} else {
+		ts = []ThreadInfo{}
+	}
 	if err != nil {
 		log.Printf("thread list: %v", err)
 		return
@@ -280,6 +290,22 @@ func (h *Hub) dropSession(s *Session) {
 
 // handle processes one message from a phone.
 func (h *Hub) handle(c *Client, raw []byte) {
+	var route struct {
+		Provider string `json:"provider"`
+		Op       string `json:"op"`
+		Nonce    string `json:"nonce"`
+	}
+	if json.Unmarshal(raw, &route) != nil {
+		return
+	}
+	if route.Provider == "claude" && h.claude != nil && route.Op != "events" {
+		h.claude.handle(c, raw)
+		return
+	}
+	if route.Provider != "" && route.Provider != "codex" && route.Provider != "claude" {
+		c.push(mustJSON(map[string]any{"t": "ack", "op": route.Op, "nonce": route.Nonce, "ok": false, "msg": "Unknown Provider"}))
+		return
+	}
 	var m struct {
 		Op             string              `json:"op"`
 		ID             string              `json:"id"`

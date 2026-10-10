@@ -88,23 +88,25 @@ type Request struct {
 }
 
 type Meta struct {
-	Title    string    `json:"title"`
-	Cwd      string    `json:"cwd,omitempty"`
-	Branch   string    `json:"branch,omitempty"`
-	Model    string    `json:"model,omitempty"`
-	Effort   string    `json:"effort,omitempty"`
-	Approval string    `json:"approval,omitempty"`
-	Reviewer string    `json:"reviewer,omitempty"` // who reviews approval requests: user or auto_review
-	Sandbox  string    `json:"sandbox,omitempty"`
-	CtxUsed  int64     `json:"ctxUsed,omitempty"`
-	CtxMax   int64     `json:"ctxMax,omitempty"`
-	TurnAt   int64     `json:"turnAt,omitempty"`
-	Exec     bool      `json:"exec,omitempty"` // first turn is running headless via codex exec
-	HasOlder bool      `json:"hasOlder,omitempty"`
-	Mode     string    `json:"mode"` // live (desktop owns it, full control) or tail (read-only rollout tail)
-	Running  bool      `json:"running"`
-	Runtime  string    `json:"runtime,omitempty"`
-	Requests []Request `json:"requests,omitempty"`
+	Provider       string    `json:"provider,omitempty"`
+	PermissionMode string    `json:"permissionMode,omitempty"`
+	Title          string    `json:"title"`
+	Cwd            string    `json:"cwd,omitempty"`
+	Branch         string    `json:"branch,omitempty"`
+	Model          string    `json:"model,omitempty"`
+	Effort         string    `json:"effort,omitempty"`
+	Approval       string    `json:"approval,omitempty"`
+	Reviewer       string    `json:"reviewer,omitempty"` // who reviews approval requests: user or auto_review
+	Sandbox        string    `json:"sandbox,omitempty"`
+	CtxUsed        int64     `json:"ctxUsed,omitempty"`
+	CtxMax         int64     `json:"ctxMax,omitempty"`
+	TurnAt         int64     `json:"turnAt,omitempty"`
+	Exec           bool      `json:"exec,omitempty"` // first turn is running headless via codex exec
+	HasOlder       bool      `json:"hasOlder,omitempty"`
+	Mode           string    `json:"mode"` // live (desktop owns it, full control) or tail (read-only rollout tail)
+	Running        bool      `json:"running"`
+	Runtime        string    `json:"runtime,omitempty"`
+	Requests       []Request `json:"requests,omitempty"`
 }
 
 const (

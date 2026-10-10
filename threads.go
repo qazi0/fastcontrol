@@ -19,6 +19,7 @@ import (
 )
 
 type ThreadInfo struct {
+	Provider  string `json:"provider,omitempty"`
 	ID        string `json:"id"`
 	Title     string `json:"title"`
 	Preview   string `json:"preview"`
@@ -104,13 +105,13 @@ func queryThreads(db, query string) ([]ThreadInfo, error) {
 		return nil, err
 	}
 	var rows []struct {
-		ID      string `json:"id"`
-		Title   string `json:"title"`
-		Preview string `json:"preview"`
-		Cwd     string `json:"cwd"`
-		Source  string `json:"source"`
-		Kind    string `json:"kind"`
-		Recency int64  `json:"recency"`
+		ID       string `json:"id"`
+		Title    string `json:"title"`
+		Preview  string `json:"preview"`
+		Cwd      string `json:"cwd"`
+		Source   string `json:"source"`
+		Kind     string `json:"kind"`
+		Recency  int64  `json:"recency"`
 		Rollout  string `json:"rollout"`
 		Pinned   int    `json:"pinned"`
 		Branch   string `json:"branch"`
@@ -248,6 +249,7 @@ func listProjects(db string) ([]Project, error) {
 }
 
 type Model struct {
+	Resolved      string   `json:"resolved,omitempty"`
 	Slug          string   `json:"slug"`
 	Name          string   `json:"name"`
 	Description   string   `json:"description,omitempty"`
