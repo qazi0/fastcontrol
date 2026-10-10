@@ -26,6 +26,9 @@ if [[ ! -f "$HOME/Library/LaunchAgents/com.fastcontrol.plist" ]]; then
   sed -e "s#__BIN__#$dir/fastcontrol#" -e "s#__HOME__#$HOME#g" com.fastcontrol.plist > "$HOME/Library/LaunchAgents/com.fastcontrol.plist"
 fi
 label="gui/$(id -u)/com.fastcontrol"
-launchctl bootout "$label" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.fastcontrol.plist"
+if launchctl print "$label" >/dev/null 2>&1; then
+  launchctl kickstart -k "$label"
+else
+  launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.fastcontrol.plist"
+fi
 echo "Installed fastcontrol. Pairing links are in $dir/relay.log."
