@@ -20,9 +20,15 @@ This repository is private. You need repository access and an authenticated GitH
 bash -c 'set -euo pipefail; gh api repos/qazi0/fastcontrol/contents/install.sh --jq .content | base64 -D | bash'
 ```
 
-The installer downloads the Mac build, verifies its SHA-256 checksum, sets up local speech transcription and installs a login service. It requires macOS 13.3 or newer. It works on Apple Silicon and Intel Macs.
+The installer downloads the Mac build, verifies its SHA-256 checksum, sets up local speech transcription and installs a login service. It requires macOS 13.3 or newer. It supports Apple Silicon Macs.
 
 The relay uses port 8787 and stores its token, binary and logs in `~/.fastcontrol/`. Pairing links appear in `~/.fastcontrol/relay.log`. Allow incoming connections if your firewall prompts.
+
+To skip speech setup from the one-line installer:
+
+```sh
+bash -c 'set -euo pipefail; gh api repos/qazi0/fastcontrol/contents/install.sh --jq .content | base64 -D | bash -s -- --skip-speech'
+```
 
 ## Android App
 
@@ -71,9 +77,9 @@ Packaging the speech runtime requires CMake and the macOS developer tools on the
 
 The Go server reads the Codex state database and transcript files and connects to the desktop IPC socket for live control. For Claude Code it reads native JSONL sessions and uses the installed CLI with bidirectional streaming, tool approvals and interrupt controls. The same web UI runs in a browser and inside the Android WebView. Android adds microphone recording, notifications, pairing and device integration.
 
-The installer reuses a supported installed MacWhisper model, preferring Parakeet v3. When none is available, it automatically downloads a multilingual Whisper Base Q5 model (57 MiB) and uses the bundled whisper.cpp runtime. The runtime and model work without MacWhisper, Homebrew, Python, a paid speech app or an API key. Source archives and model downloads are pinned and verified with SHA-256 checksums. Recordings are transcribed locally on the Mac. The relay accepts bounded mono 16 kHz PCM WAV recordings and removes temporary audio after transcription. A paired Mac without a speech model can use another paired Mac's available model.
+The installer asks whether to set up speech now. You can skip it with `--skip-speech` or `FASTCONTROL_SKIP_SPEECH=1`. The installer reuses a supported installed MacWhisper model, preferring Parakeet v3. When none is available, it automatically downloads a multilingual Whisper Base Q5 model (57 MiB) and uses the bundled whisper.cpp runtime. The runtime and model work without MacWhisper, Homebrew, Python, a paid speech app or an API key. Source archives and model downloads are pinned and verified with SHA-256 checksums. Recordings are transcribed locally on the Mac. The relay accepts bounded mono 16 kHz PCM WAV recordings and removes temporary audio after transcription. Voice uses the Mac selected for the chat.
 
-The first installation needs internet access to download the model. The installer validates the fallback runtime and prepares its model before starting the relay. Existing working models are kept, and subsequent installations skip the model download. Run the installer again to repair a missing or corrupted fallback model. `./fastcontrol -speech-status` reports the chosen engine and model. Set `FASTCONTROL_SPEECH_ENGINE=whispercpp` when invoking the relay to select the bundled engine explicitly.
+Speech setup needs internet access for the first model download. The installer validates the fallback runtime and prepares its model before starting the relay. Existing working models are kept, and subsequent installations skip the model download. If setup was skipped, tap the Android microphone, then Install On Mac. The selected Mac downloads and prepares the model, while Android shows progress. You can close the prompt while installation continues. Run the installer again to repair a missing or corrupted fallback model. `./fastcontrol -speech-status` reports the chosen engine and model. Set `FASTCONTROL_SPEECH_ENGINE=whispercpp` when invoking the relay to select the bundled engine explicitly.
 
 The relay authenticates API requests with a random token and binds to loopback, Wi-Fi and Tailscale addresses. Use Tailscale when connecting outside a trusted LAN. Tokens grant control of sessions running with the permissions selected on the Mac.
 

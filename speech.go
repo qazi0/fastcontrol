@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,11 +22,17 @@ const bundledSpeechModel = "ggml-base-q5_1.bin"
 const bundledSpeechModelSHA256 = "422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898"
 
 type Speech struct {
-	bin       string
-	model     string
-	engine    string
-	modelPath string
-	busy      chan struct{}
+	bin              string
+	model            string
+	engine           string
+	modelPath        string
+	busy             chan struct{}
+	mu               sync.Mutex
+	home             string
+	preferMacWhisper bool
+	installing       bool
+	progress         int64
+	installError     string
 }
 
 func newSpeech() *Speech {
@@ -33,7 +40,7 @@ func newSpeech() *Speech {
 	return discoverSpeech(home, os.Getenv("FASTCONTROL_SPEECH_ENGINE") != "whispercpp")
 }
 func discoverSpeech(home string, preferMacWhisper bool) *Speech {
-	s := &Speech{busy: make(chan struct{}, 1)}
+	s := &Speech{busy: make(chan struct{}, 1), home: home, preferMacWhisper: preferMacWhisper}
 	if preferMacWhisper {
 		for _, path := range []string{"/Applications/MacWhisper.app/Contents/MacOS/mw", "/usr/local/bin/mw"} {
 			if !speechExecutable(path) {
@@ -86,7 +93,23 @@ func validSpeechModel(path string) bool {
 	return hex.EncodeToString(hash.Sum(nil)) == bundledSpeechModelSHA256
 }
 func (s *Speech) capability() map[string]any {
-	return map[string]any{"available": s.bin != "" && s.model != "", "model": s.model, "engine": s.engine}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return map[string]any{"available": s.availableLocked(), "model": s.model, "engine": s.engine, "installable": speechExecutable(filepath.Join(s.home, ".fastcontrol/speech/whisper-cli")), "installing": s.installing, "progress": s.progress, "error": s.installError}
+}
+func (s *Speech) availableLocked() bool {
+	if s.bin == "" || s.model == "" {
+		return false
+	}
+	if s.engine == "whispercpp" {
+		return speechExecutable(s.bin) && validSpeechModel(s.modelPath)
+	}
+	return true
+}
+func (s *Speech) config() (string, string, string, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.bin, s.model, s.engine, s.modelPath
 }
 
 // Voice accepts a bounded PCM WAV, rather than arbitrary paths or commands.
@@ -119,7 +142,8 @@ func (s *Speech) serve(w http.ResponseWriter, r *http.Request) {
 		fail(405, "Use GET or POST")
 		return
 	}
-	if s.bin == "" || s.model == "" {
+	bin, model, engine, modelPath := s.config()
+	if bin == "" || model == "" {
 		fail(503, "No Local Speech Model On This Mac")
 		return
 	}
@@ -166,11 +190,11 @@ func (s *Speech) serve(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 	start := time.Now()
-	cmd := exec.CommandContext(ctx, s.bin, "transcribe", f.Name(), "--model", s.model, "--language", "auto", "--no-speakers", "--format", "txt", "--no-timestamps")
+	cmd := exec.CommandContext(ctx, bin, "transcribe", f.Name(), "--model", model, "--language", "auto", "--no-speakers", "--format", "txt", "--no-timestamps")
 	transcriptPath := f.Name() + ".txt"
-	if s.engine == "whispercpp" {
+	if engine == "whispercpp" {
 		defer os.Remove(transcriptPath)
-		cmd = exec.CommandContext(ctx, s.bin, "--model", s.modelPath, "--file", f.Name(), "--language", "auto", "--threads", "4", "--beam-size", "1", "--best-of", "1", "--no-timestamps", "--no-prints", "--output-txt", "--output-file", f.Name())
+		cmd = exec.CommandContext(ctx, bin, "--model", modelPath, "--file", f.Name(), "--language", "auto", "--threads", "4", "--beam-size", "1", "--best-of", "1", "--no-timestamps", "--no-prints", "--output-txt", "--output-file", f.Name())
 	}
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -183,7 +207,7 @@ func (s *Speech) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	text := strings.TrimSpace(out.String())
-	if s.engine == "whispercpp" {
+	if engine == "whispercpp" {
 		file, err := os.Open(transcriptPath)
 		if err != nil {
 			fail(502, "Could Not Read The Transcript")
@@ -204,5 +228,5 @@ func (s *Speech) serve(w http.ResponseWriter, r *http.Request) {
 		fail(422, "No Speech Detected")
 		return
 	}
-	_, _ = w.Write(mustJSON(map[string]any{"text": text, "model": s.model, "durationMs": time.Since(start).Milliseconds()}))
+	_, _ = w.Write(mustJSON(map[string]any{"text": text, "model": model, "durationMs": time.Since(start).Milliseconds()}))
 }

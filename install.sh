@@ -3,14 +3,16 @@ set -euo pipefail
 
 repo="qazi0/fastcontrol"
 version="${FASTCONTROL_VERSION:-latest}"
+skip_speech="${FASTCONTROL_SKIP_SPEECH:-0}"
+case "${1:-}" in --skip-speech) skip_speech=1;; "") ;; *) echo "Usage: install.sh [--skip-speech]" >&2; exit 1;; esac
 if [[ "$(uname -s)" != Darwin ]]; then echo "fastcontrol requires macOS." >&2; exit 1; fi
 if ! command -v gh >/dev/null; then echo "Install GitHub CLI and run gh auth login first." >&2; exit 1; fi
 mac_version="$(sw_vers -productVersion)"
 mac_major="${mac_version%%.*}"
 mac_minor="${mac_version#*.}"; mac_minor="${mac_minor%%.*}"
 if (( mac_major < 13 || (mac_major == 13 && mac_minor < 3) )); then echo "fastcontrol requires macOS 13.3 or newer." >&2; exit 1; fi
-arch="$(uname -m)"
-case "$arch" in arm64|x86_64) ;; *) echo "Unsupported Mac architecture: $arch" >&2; exit 1;; esac
+[[ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" == 1 ]] || { echo "fastcontrol Supports Apple Silicon Macs Only" >&2; exit 1; }
+arch=arm64
 temp="$(mktemp -d)"
 trap 'rm -rf "$temp"' EXIT
 asset="fastcontrol_darwin_${arch}.tar.gz"
@@ -33,7 +35,17 @@ install -m 755 speech/whisper-cli "$dir/speech/whisper-cli.next"
 mv "$dir/speech/whisper-cli.next" "$dir/speech/whisper-cli"
 cp speech/Whisper-LICENSE.txt "$dir/speech/"
 cp -R licenses "$dir/"
-bash speech/setup.sh "$dir"
+status="$("$dir/fastcontrol" -speech-status)"
+if [[ "$skip_speech" != 1 && "$status" != *'"available":true'* ]] && [[ -t 1 && -r /dev/tty ]]; then
+  printf 'Install the speech model now? [Y/n] ' > /dev/tty
+  read -r choice < /dev/tty || choice=y
+  case "$choice" in n|N|no|NO) skip_speech=1;; esac
+fi
+if [[ "$skip_speech" == 1 ]]; then
+  echo "Speech model setup skipped. You can install it from the Android microphone button."
+else
+  bash speech/setup.sh "$dir"
+fi
 if [[ ! -f "$HOME/Library/LaunchAgents/com.fastcontrol.plist" ]]; then
   sed -e "s#__BIN__#$dir/fastcontrol#" -e "s#__HOME__#$HOME#g" com.fastcontrol.plist > "$HOME/Library/LaunchAgents/com.fastcontrol.plist"
 fi

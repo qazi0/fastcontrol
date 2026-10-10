@@ -82,9 +82,17 @@ func main() {
 	tokenFile := flag.String("token-file", filepath.Join(home, ".fastcontrol", "token"), "pairing token file (created if missing)")
 	ipcPath := flag.String("ipc", defaultIPCPath(), "desktop app IPC socket")
 	flag.String("asar", "/Applications/ChatGPT.app/Contents/Resources/app.asar", "desktop app bundle, checked for IPC protocol changes")
+	installSpeech := flag.Bool("install-speech", false, "download and prepare the local speech model")
 	speechStatus := flag.Bool("speech-status", false, "print local speech model availability and exit")
 	noQR := flag.Bool("no-qr", false, "do not print the pairing QR code")
 	flag.Parse()
+	if *installSpeech {
+		if err := newSpeech().install(); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("Local Speech Transcription Is Ready")
+		return
+	}
 	if *speechStatus {
 		fmt.Println(string(mustJSON(newSpeech().capability())))
 		return
@@ -148,6 +156,13 @@ func main() {
 			return
 		}
 		serveImage(w, r)
+	}))
+	mux.HandleFunc("/speech/install", cors(func(w http.ResponseWriter, r *http.Request) {
+		if !authed(r) {
+			http.Error(w, "bad token", http.StatusUnauthorized)
+			return
+		}
+		speech.serveInstall(w, r)
 	}))
 	mux.HandleFunc("/transcribe", cors(func(w http.ResponseWriter, r *http.Request) {
 		if !authed(r) {

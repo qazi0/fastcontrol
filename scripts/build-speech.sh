@@ -1,9 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-arch="${1:?Pass arm64 Or x86_64}"
+arch="${1:?Pass arm64}"
 destination="${2:?Pass The Output Directory}"
-case "$arch" in arm64) metal=ON;; x86_64) metal=OFF;; *) exit 1;; esac
+[[ "$arch" == arm64 ]] || { echo "fastcontrol Supports Apple Silicon Only" >&2; exit 1; }
+metal=ON
 version=1.9.5
 checksum=ff1a9053feb509ff9d7729703355541ae9690073a6b1c40eb692c962e0dc1720
 cache="${FASTCONTROL_BUILD_CACHE:-$HOME/.cache/fastcontrol-speech}"

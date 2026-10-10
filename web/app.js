@@ -150,6 +150,8 @@ class Conn {
       this.backoff = Math.min(this.backoff * 2, 5000);
     };
     this.send({ op: "events", on: true });
+    this.send({ op: "threads" });
+    this.send({ op: "models" });
     if (Native?.startVoice) { this.speech = null; speechCapability(this); }
     this.refreshProjects(true);
     if (S.view === "project") this.send({ op: "project", cwd: S.cwd });
@@ -1246,13 +1248,11 @@ $("voice").onclick = async () => {
   if (!Native?.startVoice || voiceState.phase !== "idle") return;
   voiceState.id = sid(); const request = voiceState.id;
   voiceState.phase = "preparing"; renderVoice();
-  const candidates = [conn(), ...conns.values()].filter((c, i, all) => c?.ok && all.indexOf(c) === i);
-  let c = candidates.find((candidate) => candidate.speech?.available);
-  if (!c) {
-    try { c = await Promise.any(candidates.map(async (candidate) => { if (!(await speechCapability(candidate)).available) throw Error("Unavailable"); return candidate; })); } catch {}
-  }
+  const c = conn();
+  if (!c?.ok) {cancelVoice();toast("Connect To This Mac First");return;}
+  const capability = await speechCapability(c);
   if (voiceState.id !== request) return;
-  if (!c) { cancelVoice(); toast("No Paired Mac Has a Local Speech Model"); return; }
+  if (!capability.available) {cancelVoice();openSheet("speech",{server:c.s.id});return;}
   voiceState.server = c.s; voiceState.base = c.base;
   voiceState.levels.fill(0.08);
   $("voice-time").textContent = "0:00";
@@ -1470,6 +1470,35 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.sheet)
 const mi = (act, icon, name, d = "", side = "", cls = "") => `<button class="mi ${cls}" data-act="${act}">${icon || ""}<span class="txt">${name}${d ? `<span class="d">${d}</span>` : ""}</span>${side}</button>`;
 
 const SHEETS = {
+ speech(sh, opts) {
+  const c=conns.get(opts.server),generation=sheetGeneration;
+  if(!c){closeSheet(true);return;}
+  let timer=0,requesting=false;
+  const active=()=>S.sheet==='speech'&&sheetGeneration===generation;
+  const draw=(status)=>{
+   if(!active())return;
+   const downloading=status.installing,ready=status.available,progress=Math.max(0,Math.min(100,Number(status.progress)||0));
+   sh.innerHTML='<div class="grip"></div><h2>'+ (ready?'Speech Is Ready':downloading?'Installing Speech Model':'Speech Model Not Installed')+'</h2>'+`<p class="hint">${ready?'You can now record voice on ':downloading?'Downloading and preparing the model on ':'Install the local speech model on '}${esc(c.s.name)}.${!ready&&!downloading?' The download is about 57 MiB.':''}</p>`+
+    (downloading?`<div class="speech-install-progress" role="status"><span class="voice-spinner"></span><span>${progress>=95?'Preparing Model':`Downloading ${Math.min(95,progress)}%`}</span></div><progress max="100" value="${progress}"></progress>`:'')+
+    (status.error?`<p class="err">${esc(status.error)}</p>`:'')+
+    `<div class="sheet-actions"><button class="btn" data-x="close">${downloading||ready?'Close':'Later'}</button><span class="grow"></span><button class="btn primary" data-x="install" ${downloading||requesting?'disabled':''}>${ready?'Record Voice':status.error?'Retry':'Install On Mac'}</button></div>`;
+  };
+  const poll=async()=>{
+   if(!active())return;
+   try{const r=await fetch(c.base+'/speech/install',{headers:{Authorization:'Bearer '+c.s.token},signal:AbortSignal.timeout(5000)});const status=await r.json();if(!r.ok)throw Error(status.error||'Could Not Check Speech Setup');c.speech=status;c.speechAt=Date.now();draw(status);if(status.installing&&active())timer=setTimeout(poll,1000);}
+   catch(error){draw({...c.speech,error:error.message});}
+  };
+  draw(c.speech||{});poll();
+  sh.onclick=async(event)=>{
+   const button=event.target.closest('[data-x]');if(!button)return;
+   if(button.dataset.x==='close'){clearTimeout(timer);closeSheet();return;}
+   if(button.dataset.x!=='install'||requesting)return;
+   if(c.speech?.available){closeSheet(true);$('voice').click();return;}
+   requesting=true;button.disabled=true;
+   try{const r=await fetch(c.base+'/speech/install',{method:'POST',headers:{Authorization:'Bearer '+c.s.token},signal:AbortSignal.timeout(10000)});const status=await r.json();if(!r.ok)throw Error(status.error||'Could Not Install Speech Model');c.speech=status;c.speechAt=Date.now();requesting=false;clearTimeout(timer);draw(status);if(status.installing)timer=setTimeout(poll,500);}
+   catch(error){requesting=false;draw({...c.speech,error:error.message});}
+  };
+ },
  providers(sh) {
  sh.innerHTML='<div class="grip"></div><h2>Choose Agent</h2>'+['codex','claude'].map(provider=>mi(provider,'',provider==='claude'?'Claude Code':'Codex','',S.provider===provider?I.check:'')).join('');
  sh.onclick=(event)=>{const button=event.target.closest('[data-act]');if(!button)return;closeSheet(true);selectProvider(button.dataset.act,false);history.replaceState({view:'home',provider:S.provider},'');};
