@@ -30,6 +30,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build and Inspect Release Artifacts
         run: ./scripts/build-windows.ps1
+      - name: Verify Installer and Local Speech Setup
+        run: |
+          ./install.ps1 -PackageDirectory dist -SkipSpeech
+          $relay = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.fastcontrol/fastcontrol.exe'
+          & $relay -install-speech
+          if ($LASTEXITCODE -ne 0) { throw 'Installed Speech Setup Failed' }
+          $status = (& $relay -speech-status | ConvertFrom-Json)
+          if (-not $status.available -or $status.engine -ne 'whispercpp') { throw 'Installed Speech Model Is Unavailable' }
+          Stop-ScheduledTask -TaskName fastcontrol
+          Unregister-ScheduledTask -TaskName fastcontrol -Confirm:$false
       - uses: actions/upload-artifact@v4
         with:
           name: fastcontrol-windows-arm64
