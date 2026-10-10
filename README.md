@@ -12,7 +12,7 @@ Choose Codex or Claude Code when you open the app. Each provider shows its own p
 - Inline attachments, generated images and images opened by tools. Full-screen viewing supports zoom, pan and native image downloading.
 - Background notifications for finished turns and requests needing attention.
 
-## Install On a Mac
+## Install on a Mac
 
 This repository is private. You need repository access and an authenticated GitHub CLI (`gh auth login`). Install the latest release:
 
@@ -32,7 +32,7 @@ To skip speech setup from the one-line installer:
 curl -fsSL -H "Authorization: Bearer $(gh auth token)" https://raw.githubusercontent.com/qazi0/fastcontrol/main/install.sh | bash -s -- --skip-speech
 ```
 
-## Install On Windows
+## Install on Windows
 
 Native Windows support targets Windows 11 ARM64. Sign in with GitHub CLI and install Codex desktop or native Claude Code first. In PowerShell:
 
