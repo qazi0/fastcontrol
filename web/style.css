@@ -282,7 +282,7 @@ pre code { background: none !important; padding: 0 !important; font-size: inheri
 .composer { position: relative; margin: 8px 12px calc(env(safe-area-inset-bottom) + 12px); padding: 2px 8px 8px 20px; background: var(--raised); border-radius: 28px; flex: none; }
 #input { display: block; width: 100%; border: 0; outline: none; resize: none; background: transparent; padding: 13px 8px 6px 0; max-height: 38vh; font-size: 16px; line-height: 24px; }
 #input::placeholder { color: var(--faint); }
-.tools { display: flex; align-items: center; gap: 0; margin-left: -10px; }
+.tools { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-left: -10px; }
 .tools .icon-btn { width: 40px; height: 40px; border-radius: 20px; }
 .tool-chip { display: inline-flex; align-items: center; gap: 6px; height: 40px; min-width: 44px; justify-content: center; padding: 0 12px; border-radius: 20px; font-size: 13.5px; color: var(--muted); white-space: nowrap; overflow: hidden; }
 .tool-chip:active { background: var(--high); }
@@ -378,15 +378,21 @@ textarea, input { caret-color: var(--ink); }
 .model-chip { flex: none; min-width: 0; padding: 0 2px; overflow: visible; gap: 4px; }
 .model-chip b { flex: none; white-space: nowrap; }
 .model-chip .ico { width: 10px; height: 10px; flex: none; color: var(--ink); }
-.tools .grow { flex: 1; }
-.tools .icon-btn, .tools .tool-chip.icon, .tools .round { width: 36px; min-width: 36px; }
-.tools #perm-chip { width: 32px; min-width: 32px; margin: 0 -4px; }
+.tools .icon-btn, .tools .tool-chip.icon { width: 36px; min-width: 36px; height: 48px; }
+.tools .tool-chip { height: 48px; }
+.tools #perm-chip { margin: 0; }
 .tools #perm-chip .ico { width: 22px; height: 22px; }
-.tools .round.stop { width: 32px; min-width: 32px; margin-right: 4px; }
-.tools #send { margin-left: 0; }
-.voice-dock { position: absolute; right: 8px; bottom: 54px; width: 36px; height: 40px; }
-.composer:has(.voice-dock:not(.hidden)) > textarea { padding-right: 44px; }
-.composer:has(.voice-panel:not(.hidden)) > .voice-dock { display: none; }
+.tools .round.stop { width: 32px; min-width: 32px; margin: 0; }
+.tools #send { width: 40px; min-width: 40px; margin: 0; }
+.composer:has(.voice-panel:not(.hidden)) .tools #voice { display: none; }
+@media (max-width: 340px) {
+  .tools { gap: 3px; }
+  .tools .icon-btn, .tools .tool-chip.icon { width: 30px; min-width: 30px; }
+  .tools .round.stop { width: 28px; min-width: 28px; }
+  .tools #send { width: 36px; min-width: 36px; }
+  .tools .model-chip { font-size: 12.5px; }
+  .tools .gauge .ico { width: 26px; height: 26px; }
+}
 .h-sub > .provider-label { flex: none; }
 .scrim.dark { background: rgba(0, 0, 0, 0.82); }
 @media (prefers-color-scheme: light) { .gauge .g-on { stroke: var(--ink); } }

@@ -165,3 +165,24 @@ func TestSpeechDiscoveryRejectsMissingOrCorruptModel(t *testing.T) {
 		t.Fatal("partial model reported available")
 	}
 }
+
+func TestConvertedVoiceWAVPreservesPCM(t *testing.T) {
+	original := testVoiceWAV()
+	decoded, err := canonicalVoiceWAV(original)
+	if err != nil || !bytes.Equal(original, decoded) {
+		t.Fatalf("PCM conversion changed samples: %v", err)
+	}
+	// A malformed chunk size must be rejected before indexing its contents.
+	bad := append([]byte(nil), original...)
+	binary.LittleEndian.PutUint32(bad[16:], 0xffffffff)
+	if _, err := canonicalVoiceWAV(bad); err == nil {
+		t.Fatal("accepted overflowing chunk")
+	}
+	tooLong := make([]byte, maxVoiceBytes+2)
+	copy(tooLong, original)
+	binary.LittleEndian.PutUint32(tooLong[4:], uint32(len(tooLong)-8))
+	binary.LittleEndian.PutUint32(tooLong[40:], uint32(len(tooLong)-44))
+	if _, err := canonicalVoiceWAV(tooLong); err == nil {
+		t.Fatal("accepted audio over two minutes")
+	}
+}

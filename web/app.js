@@ -1257,7 +1257,9 @@ $("voice").onclick = async () => {
   voiceState.levels.fill(0.08);
   $("voice-time").textContent = "0:00";
   $("voice-wave").innerHTML = voiceState.levels.map(() => '<span style="transform:scaleY(0.08)"></span>').join("");
-  buzz(); Native.startVoice(request);
+  buzz();
+  if (capability.formats?.includes("aac") && Native.startVoiceCompressed) Native.startVoiceCompressed(request);
+  else Native.startVoice(request);
 };
 $("voice-cancel").onclick = cancelVoice;
 $("voice-transcribe").onclick = () => {
@@ -1278,7 +1280,7 @@ window.onVoiceEvent = (e) => {
     input.value = [input.value.trimEnd(), text].filter(Boolean).join(" ");
     voiceState.phase = "idle"; voiceState.id = ""; renderVoice(); autosize(); input.focus();
     mark("voiceTranscript");
-    window.lastVoiceTiming = { serverMs: e.durationMs, totalMs: e.totalMs };
+    window.lastVoiceTiming = { serverMs: e.durationMs, totalMs: e.totalMs, audioBytes:e.audioBytes, uploadBytes:e.uploadBytes };
   } else if (e.type === "error") { cancelVoice(); toast(nice(e.message)); }
 };
 window.onImageDownload = (e) => {

@@ -95,7 +95,7 @@ func validSpeechModel(path string) bool {
 func (s *Speech) capability() map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return map[string]any{"available": s.availableLocked(), "model": s.model, "engine": s.engine, "installable": speechExecutable(filepath.Join(s.home, ".fastcontrol/speech/whisper-cli")), "installing": s.installing, "progress": s.progress, "error": s.installError}
+	return map[string]any{"available": s.availableLocked(), "model": s.model, "engine": s.engine, "installable": speechExecutable(filepath.Join(s.home, ".fastcontrol/speech/whisper-cli")), "installing": s.installing, "progress": s.progress, "error": s.installError, "formats": []string{"wav", "aac"}}
 }
 func (s *Speech) availableLocked() bool {
 	if s.bin == "" || s.model == "" {
@@ -147,8 +147,10 @@ func (s *Speech) serve(w http.ResponseWriter, r *http.Request) {
 		fail(503, "No Local Speech Model On This Mac")
 		return
 	}
-	if strings.Split(r.Header.Get("Content-Type"), ";")[0] != "audio/wav" {
-		fail(415, "Send WAV Audio")
+	contentType := strings.Split(r.Header.Get("Content-Type"), ";")[0]
+	compressed := contentType == "audio/mp4"
+	if contentType != "audio/wav" && !compressed {
+		fail(415, "Send WAV or AAC Audio")
 		return
 	}
 	select {
@@ -159,14 +161,23 @@ func (s *Speech) serve(w http.ResponseWriter, r *http.Request) {
 		fail(429, "This Mac Is Transcribing Another Recording")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxVoiceBytes)
+	limit := int64(maxVoiceBytes)
+	if compressed {
+		limit = 1 << 20
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
 		fail(413, "Recording Is Too Large")
 		return
 	}
-	if err := validateVoice(b); err != nil {
-		fail(400, err.Error())
+	if !compressed {
+		if err := validateVoice(b); err != nil {
+			fail(400, err.Error())
+			return
+		}
+	} else if len(b) < 12 || string(b[4:8]) != "ftyp" {
+		fail(400, "Invalid AAC Recording")
 		return
 	}
 	home, _ := os.UserHomeDir()
@@ -175,7 +186,11 @@ func (s *Speech) serve(w http.ResponseWriter, r *http.Request) {
 		fail(500, "Could Not Save Recording")
 		return
 	}
-	f, err := os.CreateTemp(dir, "recording-*.wav")
+	suffix := ".wav"
+	if compressed {
+		suffix = ".m4a"
+	}
+	f, err := os.CreateTemp(dir, "recording-*"+suffix)
 	if err != nil {
 		fail(500, "Could Not Save Recording")
 		return
@@ -187,14 +202,34 @@ func (s *Speech) serve(w http.ResponseWriter, r *http.Request) {
 		fail(500, "Could Not Save Recording")
 		return
 	}
+	audioPath := f.Name()
+	audioBytes := len(b)
+	if compressed {
+		audioPath = f.Name() + ".wav"
+		defer os.Remove(audioPath)
+		decoded, err := decodeVoice(r.Context(), f.Name(), audioPath)
+		if err != nil {
+			if errors.Is(err, errVoiceTooLarge) {
+				fail(413, "Recording Is Too Long")
+			} else {
+				fail(400, "Could Not Decode The Recording")
+			}
+			return
+		}
+		audioBytes = len(decoded)
+		if err = os.WriteFile(audioPath, decoded, 0600); err != nil {
+			fail(500, "Could Not Save Recording")
+			return
+		}
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 	start := time.Now()
-	cmd := exec.CommandContext(ctx, bin, "transcribe", f.Name(), "--model", model, "--language", "auto", "--no-speakers", "--format", "txt", "--no-timestamps")
-	transcriptPath := f.Name() + ".txt"
+	cmd := exec.CommandContext(ctx, bin, "transcribe", audioPath, "--model", model, "--language", "auto", "--no-speakers", "--format", "txt", "--no-timestamps")
+	transcriptPath := audioPath + ".txt"
 	if engine == "whispercpp" {
 		defer os.Remove(transcriptPath)
-		cmd = exec.CommandContext(ctx, bin, "--model", modelPath, "--file", f.Name(), "--language", "auto", "--threads", "4", "--beam-size", "1", "--best-of", "1", "--no-timestamps", "--no-prints", "--output-txt", "--output-file", f.Name())
+		cmd = exec.CommandContext(ctx, bin, "--model", modelPath, "--file", audioPath, "--language", "auto", "--threads", "4", "--beam-size", "1", "--best-of", "1", "--no-timestamps", "--no-prints", "--output-txt", "--output-file", audioPath)
 	}
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -228,5 +263,5 @@ func (s *Speech) serve(w http.ResponseWriter, r *http.Request) {
 		fail(422, "No Speech Detected")
 		return
 	}
-	_, _ = w.Write(mustJSON(map[string]any{"text": text, "model": model, "durationMs": time.Since(start).Milliseconds()}))
+	_, _ = w.Write(mustJSON(map[string]any{"text": text, "model": model, "durationMs": time.Since(start).Milliseconds(), "audioBytes": audioBytes, "uploadBytes": len(b)}))
 }

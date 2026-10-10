@@ -61,6 +61,7 @@ class MainActivity : Activity() {
     private lateinit var voice: VoiceRecorder
     private var awaitingMic = false
     private var voiceRequestId = ""
+    private var voiceCompressed = false
     private lateinit var downloads: ImageDownloads
     private var pendingImage: File? = null
 
@@ -424,7 +425,7 @@ class MainActivity : Activity() {
         if (requestCode == REQ_MIC) {
             val wanted = awaitingMic; awaitingMic = false
             if (!wanted) return
-            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) voice.start(voiceRequestId)
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) voice.start(voiceRequestId, voiceCompressed)
             else webView.evaluateJavascript("window.onVoiceEvent && window.onVoiceEvent(${JSONObject().put("type", "error").put("id", voiceRequestId).put("message", "Microphone Permission Is Required")})", null)
         }
     }
@@ -461,9 +462,14 @@ class MainActivity : Activity() {
         fun downloadRemoteImage(url: String) { if (Uri.parse(url).scheme == "https") downloads.download(url) }
 
         @JavascriptInterface
-        fun startVoice(requestId: String) = runOnUiThread {
-            voiceRequestId = requestId
-            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) voice.start(requestId)
+        fun startVoice(requestId: String) = startVoiceRequest(requestId, false)
+
+        @JavascriptInterface
+        fun startVoiceCompressed(requestId: String) = startVoiceRequest(requestId, true)
+
+        private fun startVoiceRequest(requestId: String, compressed: Boolean) = runOnUiThread {
+            voiceRequestId = requestId; voiceCompressed = compressed
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) voice.start(requestId, compressed)
             else { awaitingMic = true; requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_MIC) }
         }
 

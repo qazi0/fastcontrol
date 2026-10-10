@@ -20,7 +20,7 @@ import kotlin.math.sqrt
 
 /** Captures PCM on one worker; uploads only when the user presses Transcribe. */
 class VoiceRecorder(private val context: Context, private val emit: (JSONObject) -> Unit) {
-    private class Session(val id: String) {
+    private class Session(val id: String, val compressed: Boolean) {
         @Volatile var stopped = false
         @Volatile var cancelled = false
         @Volatile var server: Server? = null
@@ -40,42 +40,47 @@ class VoiceRecorder(private val context: Context, private val emit: (JSONObject)
     }
 
     @SuppressLint("MissingPermission")
-    fun start(id: String) {
+    fun start(id: String, compressed: Boolean = false) {
         val s = synchronized(lock) {
             if (current != null) return
-            Session(id).also { current = it }
+            Session(id, compressed).also { current = it }
         }
         Thread({
             var file: File? = null
             var recorder: AudioRecord? = null
             try {
-                val min = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-                check(min > 0) { "Microphone Is Unavailable" }
-                val audio = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000,
-                    AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(min, 8192))
-                recorder = audio
-                check(audio.state == AudioRecord.STATE_INITIALIZED) { "Microphone Is Unavailable" }
-                file = File.createTempFile("voice-", ".wav", context.cacheDir)
-                var bytes = 0
-                RandomAccessFile(file, "rw").use { out ->
-                    out.write(ByteArray(44))
-                    audio.startRecording()
-                    check(audio.recordingState == AudioRecord.RECORDSTATE_RECORDING) { "Could Not Start Recording" }
-                    event(s, "recording")
-                    val samples = ShortArray(800)
-                    val buffer = ByteBuffer.allocate(1600).order(ByteOrder.LITTLE_ENDIAN)
-                    while (!s.stopped && bytes < 16000 * 2 * 120) {
-                        val count = audio.read(samples, 0, samples.size)
-                        check(count > 0) { "Microphone Recording Failed" }
-                        buffer.clear()
-                        var energy = 0.0
-                        for (i in 0 until count) { buffer.putShort(samples[i]); val v = samples[i] / 32768.0; energy += v * v }
-                        out.write(buffer.array(), 0, count * 2)
-                        bytes += count * 2
-                        event(s, "level", JSONObject().put("level", sqrt(energy / count)).put("seconds", bytes / 32000.0))
+                if (s.compressed) {
+                    file = File.createTempFile("voice-", ".m4a", context.cacheDir)
+                    captureAac(s, file)
+                } else {
+                    val min = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+                    check(min > 0) { "Microphone Is Unavailable" }
+                    val audio = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000,
+                        AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(min, 8192))
+                    recorder = audio
+                    check(audio.state == AudioRecord.STATE_INITIALIZED) { "Microphone Is Unavailable" }
+                    file = File.createTempFile("voice-", ".wav", context.cacheDir)
+                    var bytes = 0
+                    RandomAccessFile(file, "rw").use { out ->
+                        out.write(ByteArray(44))
+                        audio.startRecording()
+                        check(audio.recordingState == AudioRecord.RECORDSTATE_RECORDING) { "Could Not Start Recording" }
+                        event(s, "recording")
+                        val samples = ShortArray(800)
+                        val buffer = ByteBuffer.allocate(1600).order(ByteOrder.LITTLE_ENDIAN)
+                        while (!s.stopped && bytes < 16000 * 2 * 120) {
+                            val count = audio.read(samples, 0, samples.size)
+                            check(count > 0) { "Microphone Recording Failed" }
+                            buffer.clear()
+                            var energy = 0.0
+                            for (i in 0 until count) { buffer.putShort(samples[i]); val v = samples[i] / 32768.0; energy += v * v }
+                            out.write(buffer.array(), 0, count * 2)
+                            bytes += count * 2
+                            event(s, "level", JSONObject().put("level", sqrt(energy / count)).put("seconds", bytes / 32000.0))
+                        }
+                        audio.stop(); audio.release(); recorder = null
+                        out.seek(0); out.write(wavHeader(bytes))
                     }
-                    audio.stop(); audio.release(); recorder = null
-                    out.seek(0); out.write(wavHeader(bytes))
                 }
                 if (s.cancelled) return@Thread
                 val server = s.server
@@ -83,12 +88,12 @@ class VoiceRecorder(private val context: Context, private val emit: (JSONObject)
                     event(s, "error", JSONObject().put("message", "Recording Limit Reached. Try a Shorter Message"))
                     return@Thread
                 }
-                check(bytes >= 3200) { "Record a Little Longer" }
+                check(if (s.compressed) file.length() >= 100 else file.length() >= 3244) { "Record a Little Longer" }
                 event(s, "transcribing")
                 val started = System.nanoTime()
                 val request = Request.Builder().url(s.base.trimEnd('/') + "/transcribe")
                     .header("Authorization", "Bearer " + server.token)
-                    .post(file.asRequestBody("audio/wav".toMediaType())).build()
+                    .post(file.asRequestBody((if (s.compressed) "audio/mp4" else "audio/wav").toMediaType())).build()
                 val call = client.newCall(request); s.call = call
                 if (s.cancelled) { call.cancel(); return@Thread }
                 call.execute().use { response ->
@@ -98,7 +103,8 @@ class VoiceRecorder(private val context: Context, private val emit: (JSONObject)
                     val text = data.optString("text").trim()
                     check(text.isNotEmpty()) { "No Speech Detected" }
                     event(s, "transcript", JSONObject().put("text", text).put("durationMs", data.optLong("durationMs"))
-                        .put("totalMs", (System.nanoTime() - started) / 1000000))
+                        .put("totalMs", (System.nanoTime() - started) / 1000000)
+                        .put("audioBytes", data.optLong("audioBytes", file.length())).put("uploadBytes", file.length()))
                 }
             } catch (e: Exception) {
                 event(s, "error", JSONObject().put("message", e.message ?: "Voice Recording Failed"))
@@ -109,6 +115,30 @@ class VoiceRecorder(private val context: Context, private val emit: (JSONObject)
                 synchronized(lock) { if (current === s) current = null }
             }
         }, "RelayVoice").start()
+    }
+
+    @Suppress("DEPRECATION")
+    @SuppressLint("MissingPermission")
+    private fun captureAac(s: Session, file: File) {
+        val audio = MediaRecorder()
+        try {
+            audio.setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
+            audio.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            audio.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            audio.setAudioSamplingRate(16000)
+            audio.setAudioChannels(1)
+            audio.setAudioEncodingBitRate(32000)
+            audio.setOutputFile(file.absolutePath)
+            audio.prepare(); audio.start()
+            event(s, "recording")
+            val started = System.nanoTime()
+            while (!s.stopped && (System.nanoTime() - started) < 119500000000L) {
+                event(s, "level", JSONObject().put("level", audio.maxAmplitude / 32768.0)
+                    .put("seconds", (System.nanoTime() - started) / 1000000000.0))
+                Thread.sleep(50)
+            }
+            audio.stop()
+        } finally { audio.release() }
     }
 
     fun finish(server: Server, base: String) {
