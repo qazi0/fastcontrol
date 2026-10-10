@@ -2,7 +2,7 @@
 
 Control your Mac's coding sessions from an Android phone over Wi-Fi or Tailscale. The relay runs on your Mac and keeps transcripts and credentials there.
 
-The current baseline supports Codex desktop sessions. Claude Code support is the next implementation checkpoint.
+Choose Codex or Claude Code when you open the app. Each provider shows its own projects, sessions, model catalogue and permission controls.
 
 ## Features
 
@@ -12,15 +12,15 @@ The current baseline supports Codex desktop sessions. Claude Code support is the
 - Inline attachments, generated images and images opened by tools. Full-screen viewing supports zoom, pan and native image downloading.
 - Background notifications for finished turns and requests needing attention.
 
-## Install on a Mac
+## Install On a Mac
 
-This repository is private. You need repository access and an authenticated GitHub CLI (`gh auth login`). Once a release is available:
+This repository is private. You need repository access and an authenticated GitHub CLI (`gh auth login`). Install the latest release:
 
 ```sh
 bash -c 'set -euo pipefail; gh api repos/qazi0/fastcontrol/contents/install.sh --jq .content | base64 -D | bash'
 ```
 
-The installer downloads the Mac build, verifies its SHA-256 checksum and installs a login service. It works on Apple Silicon and Intel Macs. The first release is being prepared.
+The installer downloads the Mac build, verifies its SHA-256 checksum and installs a login service. It works on Apple Silicon and Intel Macs.
 
 The relay uses port 8787 and stores its token, binary and logs in `~/.fastcontrol/`. Pairing links appear in `~/.fastcontrol/relay.log`. Allow incoming connections if your firewall prompts.
 
@@ -40,7 +40,7 @@ make
 ./fastcontrol -no-qr
 ```
 
-Requirements: macOS, Go 1.23 or newer, and a running Codex desktop app with its local IPC socket and state database. The protocol is private and checked against the installed desktop bundle at startup. App updates can require protocol changes.
+Requirements: macOS, Go 1.23 or newer, and either Codex desktop or an authenticated Claude Code installation. Codex live control requires the desktop app and its local IPC socket and state database. The protocol is private and checked against the installed desktop bundle at startup. App updates can require protocol changes.
 
 ```sh
 make install                          # Login service
@@ -69,11 +69,23 @@ Run `make android-release` and `make package`, then upload the contents of `dist
 
 ## Architecture
 
-The Go server reads the Codex state database and transcript files and connects to the desktop IPC socket for live control. The same web UI runs in a browser and inside the Android WebView. Android adds microphone recording, notifications, pairing and device integration.
+The Go server reads the Codex state database and transcript files and connects to the desktop IPC socket for live control. For Claude Code it reads native JSONL sessions and uses the installed CLI with bidirectional streaming, tool approvals and interrupt controls. The same web UI runs in a browser and inside the Android WebView. Android adds microphone recording, notifications, pairing and device integration.
 
 Transcription uses the MacWhisper CLI and an explicitly selected installed local model. The current selection prefers Parakeet v3, with installed Whisper models as alternatives. The relay accepts bounded mono 16 kHz PCM WAV recordings and removes temporary audio after transcription. A paired Mac without a speech model can use another paired Mac's available model.
 
 The relay authenticates API requests with a random token and binds to loopback, Wi-Fi and Tailscale addresses. Use Tailscale when connecting outside a trusted LAN. Tokens grant control of sessions running with the permissions selected on the Mac.
+
+## Claude Code
+
+Install and sign in to Claude Code on each Mac. The relay finds the normal user and Homebrew binary locations. It lists sessions from `~/.claude/projects/`, follows transcript changes and resumes sessions through the CLI. Model choices come from the installed CLI, and the chat shows the resolved model name.
+
+A session already managed by a Mac process opens for viewing. Take Over explicitly stops that process before resuming it under the relay. Follow-ups queue while Claude is responding. Stop clears queued follow-ups and interrupts the current turn. Settings can change after the turn finishes. Archive hides a session in fastcontrol without deleting its native transcript.
+
+Claude Code CLI changes can require adapter updates. Live verification used Haiku 5.5 at Low effort, including approval, streaming, queued turns and sending after Stop.
+
+## Add Another Mac
+
+Run the installer on the second Mac, then open Macs in Android and choose Add Mac. Enter its LAN or Tailscale URL and pairing token from its private relay log. Each Mac keeps its own sessions and credentials. You can switch Macs or browse their combined lists.
 
 ## Verification
 

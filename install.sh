@@ -22,7 +22,9 @@ mkdir -p "$dir" "$HOME/Library/LaunchAgents"
 chmod 700 "$dir"
 install -m 755 fastcontrol "$dir/fastcontrol.next"
 mv "$dir/fastcontrol.next" "$dir/fastcontrol"
-sed -e "s#__BIN__#$dir/fastcontrol#" -e "s#__HOME__#$HOME#g" com.fastcontrol.plist > "$HOME/Library/LaunchAgents/com.fastcontrol.plist"
+if [[ ! -f "$HOME/Library/LaunchAgents/com.fastcontrol.plist" ]]; then
+  sed -e "s#__BIN__#$dir/fastcontrol#" -e "s#__HOME__#$HOME#g" com.fastcontrol.plist > "$HOME/Library/LaunchAgents/com.fastcontrol.plist"
+fi
 label="gui/$(id -u)/com.fastcontrol"
 launchctl bootout "$label" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.fastcontrol.plist"

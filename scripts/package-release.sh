@@ -8,7 +8,8 @@ for arch in arm64 amd64; do
   folder="$(mktemp -d)"
   GOOS=darwin GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o "$folder/fastcontrol" .
   cp contrib/com.fastcontrol.plist "$folder/"
-  tar -czf "dist/fastcontrol_darwin_${archive_arch}.tar.gz" -C "$folder" fastcontrol com.fastcontrol.plist
+  cp -R licenses "$folder/"
+  tar -czf "dist/fastcontrol_darwin_${archive_arch}.tar.gz" -C "$folder" fastcontrol com.fastcontrol.plist licenses
   rm -rf "$folder"
 done
 if [[ -f android/app/build/outputs/apk/release/app-release.apk ]]; then
