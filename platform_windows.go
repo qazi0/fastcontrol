@@ -19,6 +19,7 @@ func prepareProcess(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000 | 0x00000200}
 }
 func interruptProcess(p *os.Process) { killProcess(p) }
+func terminateProcess(p *os.Process) { killProcess(p) }
 func killProcess(p *os.Process) {
 	if p == nil {
 		return

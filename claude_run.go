@@ -596,7 +596,7 @@ func (r *ClaudeRun) approve(id, decision string, answers map[string][]string) er
 }
 func (r *ClaudeRun) kill() {
 	if r.cmd.Process != nil {
-		killProcess(r.cmd.Process)
+		terminateProcess(r.cmd.Process)
 	}
 }
 func (m *ClaudeManager) setModels(raw []any) {

@@ -12,6 +12,7 @@ import (
 
 func prepareProcess(cmd *exec.Cmd)                 { cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} }
 func interruptProcess(p *os.Process)               { _ = syscall.Kill(-p.Pid, syscall.SIGINT) }
+func terminateProcess(p *os.Process)               { _ = syscall.Kill(-p.Pid, syscall.SIGTERM) }
 func killProcess(p *os.Process)                    { _ = syscall.Kill(-p.Pid, syscall.SIGKILL) }
 func dialDesktopIPC(path string) (net.Conn, error) { return net.Dial("unix", path) }
 func platformIPCPath() string                      { return "" }
