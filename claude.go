@@ -404,7 +404,9 @@ func (m *ClaudeManager) open(c *Client, id string, more bool) error {
 	}
 	p := m.preference(id)
 	if p.Model != "" {
-		v.Meta.Model = p.Model
+		if resolved := m.resolvedModel(p.Model); strings.HasPrefix(resolved, "claude-") {
+			v.Meta.Model = resolved
+		}
 	}
 	if p.Effort != "" {
 		v.Meta.Effort = p.Effort

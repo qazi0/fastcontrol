@@ -1,6 +1,9 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -46,5 +49,31 @@ func TestClaudeStreamingFinalMessageReconciles(t *testing.T) {
 	meta, turns := r.snapshot()
 	if meta.Model != "claude-haiku-5-5" || len(turns[0].Items) != 1 || turns[0].Items[0].Text != "READY" {
 		t.Fatalf("stream duplication: %+v", turns)
+	}
+}
+
+func TestClaudeHistoryKeepsActualModelWhenSavedChoiceIsAlias(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	data := mustJSON(map[string]any{"type": "assistant", "message": map[string]any{"id": "reply", "model": "claude-haiku-5-5", "content": []any{map[string]any{"type": "text", "text": "READY"}}}})
+	if err := os.WriteFile(path, append(data, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHub(NewIPCClient("/nonexistent"), "")
+	m := newClaudeManager(h)
+	m.prefs = map[string]claudePreference{"test": {Model: "haiku", Effort: "low"}}
+	m.models = nil
+	m.entries = map[string]claudeEntry{"test": {Path: path, Meta: Meta{Model: "claude-haiku-5-5"}}}
+	c := &Client{out: make(chan []byte, 4)}
+	if err := m.open(c, "test", false); err != nil {
+		t.Fatal(err)
+	}
+	var message struct {
+		Meta Meta `json:"meta"`
+	}
+	if err := json.Unmarshal(<-c.out, &message); err != nil {
+		t.Fatal(err)
+	}
+	if message.Meta.Model != "claude-haiku-5-5" {
+		t.Fatalf("alias replaced actual model: %s", message.Meta.Model)
 	}
 }
