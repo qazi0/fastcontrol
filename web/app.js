@@ -44,6 +44,9 @@ const I = {
   spark: svg('<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M6 18l2.5-2.5M15.5 8.5L18 6"/>', "sm"),
 };
 
+// Agent logo paths from Simple Icons (CC0); trademarks remain with their owners.
+const AGENT_LOGOS = {"openai": "M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z", "claude": "m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"};
+
 // ------------------------------------------------------------------ state --
 
 const S = {
@@ -181,7 +184,7 @@ class Conn {
       const nonce = "n" + ++this.nonce;
       if (!this.send({ ...m, nonce })) { res({ ok: false, msg: "Not Connected To " + serverName(this.s.id) }); return; }
       this.pending[nonce] = res;
-      setTimeout(() => { if (this.pending[nonce]) { delete this.pending[nonce]; res({ ok: false, msg: "No Response From The Mac" }); } }, timeout);
+      setTimeout(() => { if (this.pending[nonce]) { delete this.pending[nonce]; res({ ok: false, msg: "No Response From The Computer" }); } }, timeout);
     });
   }
   onMessage(m) {
@@ -411,12 +414,12 @@ $("ask").onclick = () => openSheet("new", {});
 
 function renderMachines() {
   const dotCls = (c) => ({ on: "on", nodesk: "wait", off: "off", rejected: "off", bad: "off" }[c.state] || "wait");
-  let h = S.servers.length > 1 ? `<button class="chip ${S.machine === "all" ? "on" : ""}" data-m="all">All Macs</button>` : "";
+  let h = S.servers.length > 1 ? `<button class="chip ${S.machine === "all" ? "on" : ""}" data-m="all">All Computers</button>` : "";
   for (const s of S.servers) {
     const c = conns.get(s.id);
     h += `<button class="chip ${S.machine === s.id || S.servers.length === 1 ? "on" : ""}" data-m="${s.id}"><span class="dot ${dotCls(c)}"></span>${esc(s.name || hostOf(s.url))}</button>`;
   }
-  h += `<button class="chip" data-m="+">Add Mac</button>`;
+  h += `<button class="chip" data-m="+">Add Computer</button>`;
   $("machines").innerHTML = h;
 }
 $("machines").addEventListener("click", (e) => {
@@ -471,7 +474,7 @@ function renderHome() {
   const list = $("home-list");
   const threads = allThreads();
   if (!S.servers.length) {
-    list.innerHTML = `<div class="empty"><b>Pair A Mac</b>Run fastcontrol on your Mac and open the link it prints, or tap Add Mac.</div>`;
+    list.innerHTML = `<div class="empty"><b>Pair a Computer</b>Run fastcontrol on your computer and open the link it prints, or tap Add Computer.</div>`;
     return;
   }
   const q = S.query;
@@ -505,7 +508,7 @@ function renderHome() {
   }
   if (!threads.length) {
     const c = [...conns.values()].find((c) => S.machine === "all" || c.s.id === S.machine);
-    h = `<div class="empty"><b>${c && c.state === "rejected" ? "Pairing Rejected" : "Waiting For Your Mac"}</b>${c && c.state === "rejected" ? "The token was refused. Pair again with the link the relay prints." : "Make sure fastcontrol is running and this phone can reach it."}</div>`;
+    h = `<div class="empty"><b>${c && c.state === "rejected" ? "Pairing Rejected" : "Waiting For Your Computer"}</b>${c && c.state === "rejected" ? "The token was refused. Pair again with the link the relay prints." : "Make sure fastcontrol is running and this phone can reach it."}</div>`;
   }
   list.innerHTML = h;
 }
@@ -596,7 +599,7 @@ function renderThreadHeader() {
   const c = conn();
   const cwd = m.cwd || t.cwd;
   const mac = S.servers.length > 1 ? `<span><span class="dot ${c && c.ok ? "on" : "off"}"></span> ${esc(serverName(S.sid))}</span>` : c && !c.ok ? '<span><span class="dot off"></span> Offline</span>' : "";
-  $("t-sub").innerHTML = `<span class="provider-label">${S.provider==='claude'?'Claude Code':'Codex'}</span>` + (cwd ? `<span>${esc(base(cwd))}</span>` : "") + ((m.branch || t.branch) ? `<span class="mono">${esc(m.branch || t.branch)}</span>` : "") + mac;
+  $("t-sub").innerHTML = (cwd ? `<span>${esc(base(cwd))}</span>` : "") + ((m.branch || t.branch) ? `<span class="mono">${esc(m.branch || t.branch)}</span>` : "") + mac;
 }
 $("menu-btn").onclick = () => openSheet("menu");
 
@@ -696,7 +699,8 @@ function paintResponse(r) {
   const content = document.createElement("template");
   content.innerHTML = md(r.shown);
   preserveImages(el, content.content);
-  el.replaceChildren(content.content);
+  const oldChildren=[...el.childNodes];
+  reconcileChildren(el,[...content.content.childNodes].map((node,i)=>patchTranscriptNode(oldChildren[i],node,r.animate)));
   queueImages(el);
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
   const nodes = [];
@@ -748,20 +752,53 @@ function preserveImages(previous, next) {
  for(const button of previous.querySelectorAll('.image-preview')) {const id=key(button);if(!id)continue;if(!images.has(id))images.set(id,[]);images.get(id).push(button);}
  for(const button of next.querySelectorAll('.image-preview')) {const existing=images.get(key(button))?.shift();if(existing && existing!==button)button.replaceWith(existing);}
 }
-function renderTurn(el, t, animate) {
-  const old = new Map([...el.querySelectorAll("[data-response]")].map((p) => [p.dataset.response, p]));
-  const template = document.createElement("template");
-  template.innerHTML = turnHTML(t, animate);
-  for (const next of template.content.querySelectorAll("[data-response]")) {
-    const r = responses.get(next.dataset.response);
-    const node = old.get(r.key) || next;
-    if (node !== next) next.replaceWith(node);
-    r.el = node; paintResponse(r);
-  }
-  preserveImages(el, template.content);
-  el.replaceChildren(template.content);
-  queueImages(el);
+function enterTranscript(node, distance = 8) {
+ if (reducedMotion.matches || document.hidden) return;
+ node.animate([{opacity:0.2,transform:`translateY(${distance}px)`},{offset:0.78,opacity:1,transform:'translateY(-1px)'},{opacity:1,transform:'translateY(0)'}],{duration:180,easing:'cubic-bezier(0.22,1,0.36,1)'});
 }
+function patchTranscriptNode(old, next, animate = false) {
+ if (old === next) return old;
+ if (!old || old.nodeType !== next.nodeType || (old.nodeType === 1 && old.tagName !== next.tagName)) {
+  if (animate && next.nodeType === 1 && next.matches('.prose-line,li,.dl,.output-line')) next.dataset.enter="5";
+  return next;
+ }
+ if (old.nodeType === 3) {if(old.data!==next.data)old.data=next.data;return old;}
+ if (old.nodeType !== 1) return old;
+ for (const attr of [...old.attributes]) if (!next.hasAttribute(attr.name)) old.removeAttribute(attr.name);
+ for (const attr of next.attributes) if (old.getAttribute(attr.name)!==attr.value)old.setAttribute(attr.name,attr.value);
+ const children=[...old.childNodes],result=[...next.childNodes].map((node,i)=>patchTranscriptNode(children[i],node,animate));
+ reconcileChildren(old,result);
+ return old;
+}
+function entryHTML(html,key) {return html ? html.replace(/^<(\w+)/,`<$1 data-entry="${esc(key)}"`) : '';}
+function reconcileChildren(parent,nodes) {
+ for(let i=0;i<nodes.length;i++) if(parent.childNodes[i]!==nodes[i]) parent.insertBefore(nodes[i],parent.childNodes[i]||null);
+ while(parent.childNodes.length>nodes.length)parent.lastChild.remove();
+ for(const node of parent.querySelectorAll('[data-enter]')) {const distance=Number(node.dataset.enter);delete node.dataset.enter;enterTranscript(node,distance);}
+}
+function renderTurn(el, t, animate) {
+ const old = new Map([...el.querySelectorAll('[data-response],[data-entry]')].map(node=>[node.dataset.response||node.dataset.entry,node]));
+ const template=document.createElement('template');template.innerHTML=turnHTML(t,animate);
+ preserveImages(el,template.content);
+ const resolve = next => {
+  if(next.nodeType!==1)return next;
+  const key=next.dataset.response||next.dataset.entry;
+  let existing=key&&old.get(key);
+  if(!existing&&next.classList.contains('u')) {
+   existing=[...feed.querySelectorAll(':scope > .u.pending')].find(node=>node.dataset.text && next.textContent.startsWith(node.dataset.text));
+   if(existing)delete existing.dataset.text;
+  }
+  if(next.dataset.response) {
+   const node=existing||next,response=responses.get(key);response.el=node;paintResponse(response);return node;
+  }
+  if(existing)return patchTranscriptNode(existing,next,animate);
+  if(animate&&key)next.dataset.enter=next.classList.contains('u')?'12':'8';
+  reconcileChildren(next,[...next.childNodes].map(resolve));
+  return next;
+ };
+ reconcileChildren(el,[...template.content.childNodes].map(resolve));queueImages(el);
+}
+
 document.addEventListener("visibilitychange", () => {
   document.documentElement.classList.toggle("page-hidden", document.hidden);
   if (document.hidden) revealResponses(performance.now());
@@ -798,7 +835,7 @@ function stepHTML(s, t, key, active = false) {
   switch (s.k) {
     case "cmd":
       icon = I.term; label = `<code>${esc(firstLine(s.title))}</code>`;
-      body = `<pre>${s.body ? esc(s.body) : running ? "Running" : "No Output"}</pre>`;
+      body = `<pre>${outputLines(s.body || (running ? "Running" : "No Output"))}</pre>`;
       if (s.exit != null) x = `<span class="x ${s.exit === 0 ? "ok" : "bad"}">${s.exit === 0 ? "OK" : "Exit " + s.exit}</span>`;
       else if (running) x = '<span class="x run">Running</span>';
       else if (s.status === "inProgress" || s.status === "failed" || s.status === "declined") x = `<span class="x bad">${s.status === "declined" ? "Declined" : "Stopped"}</span>`;
@@ -821,7 +858,7 @@ function stepHTML(s, t, key, active = false) {
       body = rest ? `<div class="think md">${md(rest)}</div>` : "";
       break;
     }
-    case "tool": icon = I.plug; label = `<code>${esc(s.title)}</code>`; body = s.body ? `<pre>${esc(s.body)}</pre>` : ""; if (running) x = '<span class="x run">Running</span>'; break;
+    case "tool": icon = I.plug; label = `<code>${esc(s.title)}</code>`; body = s.body ? `<pre>${outputLines(s.body)}</pre>` : ""; if (running) x = '<span class="x run">Running</span>'; break;
     case "image": return `<div class="image-item"><div class="step-h"><span class="lbl">${esc(s.title || "Image")}</span></div>${imagesHTML(s.images)}</div>`;
     case "search": icon = I.globe; label = "Searched " + esc(s.title); break;
     case "agent": icon = I.agent; label = "Subagent " + esc(s.title); break;
@@ -843,7 +880,7 @@ function turnHTML(t, animate = false) {
   let run = [], ri = 0, userSeen = false;
   const flush = () => {
     if (!run.length) return;
-    const rows = run.map(([s, i]) => stepHTML(s, t, t.key + ":" + i, running && i === activeIndex && items.at(-1)?.k !== "assistant")).join("");
+    const rows = run.map(([s, i]) => entryHTML(stepHTML(s, t, t.key + ":" + i, running && i === activeIndex && items.at(-1)?.k !== "assistant"),t.key+":"+(s.id||i))).join("");
     const n = run.filter(([s]) => s.k !== "reasoning" || s.text).length;
     if (!running && n > 3) {
       const k = t.key + ":g" + ri;
@@ -856,18 +893,17 @@ function turnHTML(t, animate = false) {
   items.forEach((it, i) => {
     if (it.k === "user") {
       flush();
-      out += `<div class="u${userSeen ? " steer" : ""}">${esc((it.text || "").replace(/\[Image\]/g, it.images?.length ? "" : "[Image]").trim())}${imagesHTML(it.images)}</div>`;
+      out += `<div class="u${userSeen ? " steer" : ""}" data-entry="${esc(t.key+":"+(it.id||i))}">${esc((it.text || "").replace(/\[Image\]/g, it.images?.length ? "" : "[Image]").trim())}${imagesHTML(it.images)}</div>`;
       userSeen = true;
     } else if (it.k === "assistant") {
       flush();
       const r = responseState(t, it, i, animate);
       out += `<div class="prose md" data-response="${esc(r.key)}"></div>`;
       out += imagesHTML(it.images);
-    } else if (it.k === "image" || it.images?.length) { flush(); out += stepHTML(it, t, t.key + ":" + i); }
+    } else if (it.k === "image" || it.images?.length) { flush(); out += entryHTML(stepHTML(it, t, t.key + ":" + i),t.key+":"+(it.id||i)); }
     else run.push([it, i]);
   });
   flush();
-  if (running && !items.some((i) => i.k !== "user" && (i.text || i.title))) out += waitingHTML();
   const foot = [];
   if (!running && t.durationMs) foot.push(`<span>Worked For ${dur(t.durationMs)}</span>`);
   if (t.status === "interrupted") foot.push('<span class="err">Stopped</span>');
@@ -876,6 +912,8 @@ function turnHTML(t, animate = false) {
   if (foot.length) out += `<div class="foot">${foot.join("")}</div>`;
   return out;
 }
+
+function outputLines(text) { return text.split("\n").map(line => `<span class="output-line">${esc(line) || " "}</span>`).join(""); }
 
 function diffLines(text) {
   return text.split("\n").map((l) => {
@@ -969,7 +1007,7 @@ function md(src) {
   };
   const lines = src.split("\n");
   let out = "", list = null, para = [];
-  const endPara = () => { if (para.length) { out += `<p>${para.join("<br>")}</p>`; para = []; } };
+  const endPara = () => { if (para.length) { out += `<p>${para.map(line=>`<span class="prose-line">${line}</span>`).join("")}</p>`; para = []; } };
   const endList = () => { if (list) { out += `</${list}>`; list = null; } };
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -1009,11 +1047,17 @@ function md(src) {
 
 function renderStatus() {
   const m = S.meta;
+  renderActivity();
   if (!m) return;
   const st = $("t-status");
   const need = (m.requests || []).length > 0 || !!pendingAsk();
   st.className = "status hidden";
   $("t-ring").classList.toggle("need", need);
+}
+function renderActivity() {
+  const pending = !!feed.querySelector(":scope > .u.pending");
+  const running = !!S.meta?.running || S.turns.at(-1)?.status === "inProgress" || pending;
+  $("activity").classList.toggle("hidden", !running || !!S.meta?.requests?.length);
 }
 function renderMeta() {
   const m = S.meta;
@@ -1022,23 +1066,23 @@ function renderMeta() {
   renderStatus();
   const ring = $("t-ring");
   const known = m.ctxMax > 0 && m.ctxUsed != null;
-  const f = known ? Math.max(0, Math.min(1, m.ctxUsed / m.ctxMax)) : 0, c = 2 * Math.PI * 10;
+  const f = known ? Math.max(0, Math.min(1, m.ctxUsed / m.ctxMax)) : 0, c = 2 * Math.PI * 17;
   ring.classList.toggle("hot", f > 0.8);
   ring.title = known ? `Context ${Math.round(f * 100)}% Used` : "Context Usage Unavailable";
-  ring.setAttribute("aria-label", ring.title + ", Show Details");
-  ring.innerHTML = `<svg viewBox="0 0 26 26"><circle class="bg" cx="13" cy="13" r="10"/>${known ? `<circle class="fg" cx="13" cy="13" r="10" stroke-dasharray="${(f * c).toFixed(1)} ${c.toFixed(1)}"/>` : ""}</svg>`;
+  ring.setAttribute("aria-label", (S.provider==='claude'?'Claude Code':'Codex (OpenAI)') + ", " + ring.title + ", Show Details");
+  ring.innerHTML = `<svg viewBox="0 0 40 40"><g transform="rotate(-90 20 20)"><circle class="bg" cx="20" cy="20" r="17"/>${known ? `<circle class="fg" cx="20" cy="20" r="17" stroke-dasharray="${(f * c).toFixed(1)} ${c.toFixed(1)}"/>` : ""}</g><g class="agent-logo" transform="translate(10 10) scale(.833333)"><path d="${AGENT_LOGOS[S.provider==='claude'?'claude':'openai']}"/></g></svg>`;
   const b = $("banner");
   if (m.exec) {
     b.innerHTML = "<span>Starting Headless, Replies Queue</span>";
     b.classList.remove("hidden");
   } else if (m.mode !== "live") {
-    b.innerHTML = `<span>${m.mode==='external'?'Managed On Mac':'Read Only'}</span><button class="btn" id="wake">${S.provider==='claude'?(m.mode==='external'?'Take Over':'Resume'):'Open On Mac'}</button>`;
+    b.innerHTML = `<span>${m.mode==='external'?'Managed On Computer':'Read Only'}</span><button class="btn" id="wake">${S.provider==='claude'?(m.mode==='external'?'Take Over':'Resume'):'Open On Computer'}</button>`;
     b.classList.remove("hidden");
     $("wake").onclick = async (e) => {
       e.target.disabled = true; e.target.textContent = "Opening";
       const a = await conn().call({ op: "wake", id: S.id }, 20000);
       if (!a.ok) toast(nice(a.msg));
-      e.target.disabled = false; e.target.textContent = "Open On Mac";
+      e.target.disabled = false; e.target.textContent = "Open On Computer";
     };
   } else b.classList.add("hidden");
   const earlier = $("earlier");
@@ -1068,6 +1112,11 @@ function cardHTML(key, title, sub, body) {
   const min = S.minCards.has(key);
   return `<div class="card${min ? " min" : ""}" data-card="${esc(key)}"><button class="card-h" data-min="${esc(key)}" aria-expanded="${!min}"><span class="dot"></span><span class="ttl">${esc(min && sub ? sub : title)}</span>${I.down}</button><div class="card-b">${body}</div></div>`;
 }
+function optionHTML(label, description, action) {
+  const recommended = /\s*\(Recommended\)\s*$/i.test(label);
+  const title = label.replace(/\s*\(Recommended\)\s*$/i, '');
+  return `<button class="opt" ${action}="${esc(label)}"${action === 'data-pick' ? ' aria-pressed="false"' : ''}><span class="choice-mark" aria-hidden="true"></span><span class="choice-text"><span class="choice-title">${esc(title)}</span>${description ? `<span class="choice-desc">${esc(description)}</span>` : ''}</span>${recommended ? '<span class="recommended">Recommended</span>' : ''}</button>`;
+}
 let lastCards = "";
 function renderCards() {
   const m = S.meta || {};
@@ -1084,22 +1133,19 @@ function renderCards() {
         `<div class="btns"><button class="btn primary" data-req="${esc(q.id)}" data-d="accept">Approve</button><button class="btn" data-req="${esc(q.id)}" data-d="acceptForSession">Always</button><span class="grow"></span><button class="btn danger" data-req="${esc(q.id)}" data-d="decline">Decline</button></div>`;
       h += cardHTML(key, q.kind === "command" ? "Run Command" : "Apply Changes" + (files ? " To " + files : ""), q.kind === "command" ? firstLine(cmd) : files, body);
     } else if (q.kind === "question") {
-      const body = (q.questions || []).map((x) => `<div class="qq" data-q="${esc(x.id)}">${x.header ? `<div class="q-h">${esc(x.header)}</div>` : ""}<div class="q">${esc(x.question)}</div>` +
-        `<div class="opts">${(x.options || []).map((o, i) => `<button class="opt" data-pick="${esc(o)}"><span class="k">${i + 1}</span>${esc(o)}</button>`).join("")}</div>` +
-        (x.other || !(x.options || []).length ? `<div class="other" style="margin-bottom:10px"><input data-other placeholder="Your Answer" type="${x.secret ? "password" : "text"}"></div>` : "") + "</div>").join("") +
+      const body = (q.questions || []).map((x, index) => `<section class="qq" data-q="${esc(x.id)}" aria-label="${esc(x.header || 'Question ' + (index + 1))}">${x.header ? `<div class="q-h">${esc(x.header)}</div>` : ""}<div class="q md">${md(x.question)}</div>` +
+        `<div class="opts">${(x.options || []).map((o, i) => optionHTML(o, x.descriptions?.[i], 'data-pick')).join("")}</div>` +
+        (x.other || !(x.options || []).length ? `<label class="answer-field"><span>Your Answer</span><input data-other placeholder="Write Your Answer" type="${x.secret ? "password" : "text"}"></label>` : "") + "</section>").join("") +
         `<div class="btns"><button class="btn primary" data-answer="${esc(q.id)}">Send Answer</button></div>`;
-      const q0 = (q.questions && q.questions[0]) || {};
-      h += cardHTML(key, (q.questions || []).length === 1 ? q0.question : "Questions", q0.question || "", body.replace(`<div class="q">${esc(q0.question)}</div>`, (q.questions || []).length === 1 ? "" : `<div class="q">${esc(q0.question)}</div>`));
+      h += cardHTML(key, "Your Input", (q.questions || [])[0]?.question || "Your Input", body);
     } else {
-      h += cardHTML(key, q.title || "Request", "", `<div class="why">Answer This One On The Mac</div><pre>${esc(q.body || "")}</pre>`);
+      h += cardHTML(key, q.title || "Request", "", `<div class="why">Answer This One On The Computer</div><pre>${esc(q.body || "")}</pre>`);
     }
   }
   const ask = pendingAsk();
   if (ask) {
-    const a = ask.item.asks[0];
-    const body = `<div class="opts">${(a.options || []).map((o, i) => `<button class="opt" data-say="${esc(o)}"><span class="k">${i + 1}</span>${esc(o)}</button>`).join("")}</div>` +
-      `<div class="other"><input id="ask-other" placeholder="Something Else" enterkeyhint="send"><button class="round send" data-sayother="1" aria-label="Send">${svg('<path d="M12 19V5M6 11l6-6 6 6"/>')}</button></div>`;
-    h += cardHTML("a:" + ask.key, a.title, a.title, body);
+    const body = ask.item.asks.map((a,index) => `<section class="qq" data-async="${index}" data-title="${esc(a.title)}"><div class="q md">${md(a.title)}</div><div class="opts">${(a.options || []).map((o,i)=>optionHTML(o,a.descriptions?.[i],'data-pick')).join('')}</div><label class="answer-field"><span>Your Answer</span><input data-other placeholder="Write Your Answer" enterkeyhint="done"></label></section>`).join('') + '<div class="btns"><button class="btn primary" data-async-answer="1">Send Answer</button></div>';
+    h += cardHTML("a:" + ask.key, "Your Input", ask.item.asks[0].title, body);
   }
   // Re-rendering would wipe a half-typed answer, so skip identical markup.
   if (h === lastCards) return;
@@ -1121,9 +1167,18 @@ $("dockcards").addEventListener("click", async (e) => {
   const pick = t.closest("[data-pick]");
   if (pick) {
     const qq = pick.closest(".qq");
-    for (const b of qq.querySelectorAll(".opt")) b.classList.toggle("on", b === pick);
+    for (const b of qq.querySelectorAll(".opt")) { b.classList.toggle("on", b === pick); b.setAttribute("aria-pressed", String(b === pick)); }
     qq.dataset.value = pick.dataset.pick;
     return;
+  }
+  if(t.closest('[data-async-answer]')) {
+    const parts=[];
+    for(const question of t.closest('.card').querySelectorAll('.qq')) {
+      const value=question.querySelector('[data-other]').value.trim()||question.dataset.value;
+      if(!value){toast('Answer Each Question');question.querySelector('[data-other]').focus();return;}
+      parts.push(question.dataset.title+'\n'+value);
+    }
+    sendText(parts.join('\n\n'));return;
   }
   const card = t.closest(".card");
   const q = card && ((S.meta && S.meta.requests) || []).find((r) => "r:" + r.id === card.dataset.card);
@@ -1211,7 +1266,7 @@ input.addEventListener("input", autosize);
 input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && matchMedia("(pointer: fine)").matches) { e.preventDefault(); $("composer").requestSubmit(); }
 });
-$("composer").addEventListener("submit", (e) => { e.preventDefault(); sendText(input.value.trim()); });
+$("composer").addEventListener("submit", (e) => { e.preventDefault(); if (voiceState.phase === "idle") sendText(input.value.trim()); });
 $("perm-chip").onclick = () => openSheet("perms");
 $("model-chip").onclick = () => openSheet("model");
 $("effort-btn").onclick = () => openSheet("effort");
@@ -1219,14 +1274,18 @@ $("t-ring").onclick = () => openSheet("context");
 
 // Audio stays on the phone until Transcribe is pressed. The transcript is a
 // draft in the composer, never a message sent automatically to Codex.
-const voiceState = { phase: "idle", id: "", server: null, base: "", levels: Array(40).fill(0.08) };
+const voiceState = { phase: "idle", id: "", server: null, base: "", levels: Array(24).fill(0.08) };
 function renderVoice() {
   const active = voiceState.phase !== "idle";
   $("voice-panel").classList.toggle("hidden", !active);
-  input.classList.toggle("hidden", active);
-  $("composer").querySelector(".tools").classList.toggle("hidden", active);
+  input.classList.remove("hidden");
+  $("composer").querySelector(".tools").classList.remove("hidden");
+  $("voice").disabled = voiceState.phase === "transcribing" || voiceState.phase === "preparing";
+  $("voice").classList.toggle("voice-active", active);
+  $("voice").setAttribute("aria-pressed", String(active));
+  $("voice").setAttribute("aria-label", voiceState.phase === "recording" ? "Stop And Transcribe" : active ? "Transcribing Voice" : "Record Voice");
+  $("send").disabled = active;
   $("voice-label").textContent = voiceState.phase === "recording" ? "Listening" : voiceState.phase === "transcribing" ? "Transcribing" : "Starting";
-  $("voice-transcribe").disabled = voiceState.phase !== "recording";
   $("voice-wave").classList.toggle("transcribing", voiceState.phase === "transcribing");
   $("voice-spinner").classList.toggle("hidden", voiceState.phase !== "transcribing");
 }
@@ -1245,11 +1304,12 @@ async function speechCapability(c) {
   c.speechAt = Date.now(); return c.speech;
 }
 $("voice").onclick = async () => {
+  if (voiceState.phase === "recording") { transcribeVoice(); return; }
   if (!Native?.startVoice || voiceState.phase !== "idle") return;
   voiceState.id = sid(); const request = voiceState.id;
   voiceState.phase = "preparing"; renderVoice();
   const c = conn();
-  if (!c?.ok) {cancelVoice();toast("Connect To This Mac First");return;}
+  if (!c?.ok) {cancelVoice();toast("Connect To This Computer First");return;}
   const capability = await speechCapability(c);
   if (voiceState.id !== request) return;
   if (!capability.available) {cancelVoice();openSheet("speech",{server:c.s.id});return;}
@@ -1262,11 +1322,11 @@ $("voice").onclick = async () => {
   else Native.startVoice(request);
 };
 $("voice-cancel").onclick = cancelVoice;
-$("voice-transcribe").onclick = () => {
+function transcribeVoice() {
   if (voiceState.phase !== "recording") return;
   voiceState.phase = "transcribing"; renderVoice();
   Native.stopVoice(voiceState.server.id, voiceState.base);
-};
+}
 window.onVoiceEvent = (e) => {
   if (e.id !== voiceState.id || voiceState.phase === "idle") return;
   if (e.type === "recording") { voiceState.phase = "recording"; renderVoice(); }
@@ -1317,8 +1377,9 @@ async function sendText(text) {
   const empty = feed.querySelector(":scope > .empty");
   if (empty) empty.remove();
   feed.appendChild(pending);
-  const waiting = !steering ? document.createElement("div") : null;
-  if (waiting) { waiting.innerHTML = waitingHTML(); waiting.className = "reply-wait-wrap"; feed.appendChild(waiting); }
+  enterTranscript(pending,12);
+  const waiting = null;
+  renderActivity();
   feed.scrollTop = feed.scrollHeight;
   $("send").disabled = true;
   const fromInput = input.value.trim() === text;
@@ -1327,8 +1388,9 @@ async function sendText(text) {
   S.stick = true;
   const a = await conn().call({ op: "send", id: S.id, text, images }, 40000);
   $("send").disabled = false;
-  if (!a.ok) { pending.remove(); waiting?.remove(); if (fromInput) { input.value = keep; autosize(); } toast(nice(a.msg)); return; }
+  if (!a.ok) { pending.remove(); waiting?.remove(); if (fromInput) { input.value = keep; autosize(); } toast(nice(a.msg)); renderActivity(); return; }
   S.attach = []; renderAttachments();
+  renderActivity();
   if (a.queued) toast("Queued");
 }
 $("stop").onclick = async () => {
@@ -1340,7 +1402,7 @@ $("stop").onclick = async () => {
 // applySettings changes thread settings right away, like the desktop menus.
 async function applySettings(ch, label) {
   const m = S.meta || {};
-  if (m.mode !== "live") toast("Opening On Mac");
+  if (m.mode !== "live") toast("Opening On Computer");
   const a = await conn().call({ op: "settings", id: S.id, ...ch }, 30000);
   toast(a.ok ? label : nice(a.msg));
 }
@@ -1483,7 +1545,7 @@ const SHEETS = {
    sh.innerHTML='<div class="grip"></div><h2>'+ (ready?'Speech Is Ready':downloading?'Installing Speech Model':'Speech Model Not Installed')+'</h2>'+`<p class="hint">${ready?'You can now record voice on ':downloading?'Downloading and preparing the model on ':'Install the local speech model on '}${esc(c.s.name)}.${!ready&&!downloading?' The download is about 57 MiB.':''}</p>`+
     (downloading?`<div class="speech-install-progress" role="status"><span class="voice-spinner"></span><span>${progress>=95?'Preparing Model':`Downloading ${Math.min(95,progress)}%`}</span></div><progress max="100" value="${progress}"></progress>`:'')+
     (status.error?`<p class="err">${esc(status.error)}</p>`:'')+
-    `<div class="sheet-actions"><button class="btn" data-x="close">${downloading||ready?'Close':'Later'}</button><span class="grow"></span><button class="btn primary" data-x="install" ${downloading||requesting?'disabled':''}>${ready?'Record Voice':status.error?'Retry':'Install On Mac'}</button></div>`;
+    `<div class="sheet-actions"><button class="btn" data-x="close">${downloading||ready?'Close':'Later'}</button><span class="grow"></span><button class="btn primary" data-x="install" ${downloading||requesting?'disabled':''}>${ready?'Record Voice':status.error?'Retry':'Install On Computer'}</button></div>`;
   };
   const poll=async()=>{
    if(!active())return;
@@ -1561,7 +1623,7 @@ const SHEETS = {
     sh.innerHTML = `<div class="grip"></div>` +
       mi("diff", I.diff, "View Latest Changes") +
       mi("compact", I.squash, "Compact Context", m.ctxMax ? `${Math.round((m.ctxUsed || 0) / m.ctxMax * 100)}% Used` : "") +
-      (m.mode !== "live" ? mi("wake", I.mac, S.provider==='claude' ? (m.mode==='external'?'Take Over':'Resume') : "Open On Mac") : "") +
+      (m.mode !== "live" ? mi("wake", I.mac, S.provider==='claude' ? (m.mode==='external'?'Take Over':'Resume') : "Open On Computer") : "") +
       mi("copy", I.copy, "Copy Thread ID") +
       (Native ? mi("share", I.share, "Share Last Reply") : "") +
       mi("archive", I.box, t ? "Archive Thread" : "Unarchive Thread", "", "", "danger");
@@ -1576,7 +1638,7 @@ const SHEETS = {
         const last = [...S.turns].reverse().flatMap((t) => [...(t.items || [])].reverse()).find((i) => i && i.k === "assistant" && i.text);
         if (last) try { Native.share(last.text); } catch {}
       }
-      if (act === "wake") { toast("Opening On Mac"); const a = await c.call({ op: "wake", id: S.id }, 20000); if (!a.ok) toast(nice(a.msg)); }
+      if (act === "wake") { toast("Opening On Computer"); const a = await c.call({ op: "wake", id: S.id }, 20000); if (!a.ok) toast(nice(a.msg)); }
       if (act === "compact") { const a = await c.call({ op: "compact", id: S.id }, 60000); toast(a.ok ? "Compacting" : nice(a.msg)); }
       if (act === "archive") {
         const op = t ? "archive" : "unarchive", id = S.id;
@@ -1762,7 +1824,7 @@ const SHEETS = {
     const draw = () => {
       const notif = Native ? (() => { try { return Native.notificationsEnabled(); } catch { return false; } })() : false;
       const stateText = { on: "Connected", nodesk: "Connected, Desktop App Not Running", off: "Not Reachable", rejected: "Token Rejected", bad: "Bad Address", wait: "Connecting" };
-      sh.innerHTML = `<div class="grip"></div><h2>Macs</h2>` +
+      sh.innerHTML = `<div class="grip"></div><h2>Computers</h2>` +
         S.servers.map((s) => {
           const c = conns.get(s.id);
           const link = `fastcontrol://pair?url=${encodeURIComponent(s.url)}&t=${encodeURIComponent(s.token)}&name=${encodeURIComponent(s.name || "")}`;
@@ -1774,7 +1836,7 @@ const SHEETS = {
         `<h3>Add A Mac</h3><div class="field"><input id="sv-url" placeholder="Pairing Link Or http://100.64.0.2:8787" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="url"></div>` +
         `<div class="field"><input id="sv-token" placeholder="Token" autocomplete="off" autocapitalize="off" spellcheck="false"></div>` +
         `<div class="field"><input id="sv-name" placeholder="Name (Optional)" autocomplete="off"></div>` +
-        `<div class="sheet-actions"><span class="grow"></span><button class="btn primary" data-x="add">Add Mac</button></div>`;
+        `<div class="sheet-actions"><span class="grow"></span><button class="btn primary" data-x="add">Add Computer</button></div>`;
       const u = sh.querySelector("#sv-url");
       u.oninput = () => {
         const m = u.value.match(/^(https?:\/\/[^/#?\s]+)\/?#t=([0-9a-f]+)/) || u.value.match(/^fastcontrol:\/\/pair\?(.*)$/);
@@ -1812,7 +1874,7 @@ const SHEETS = {
         let ok = false, msg = "";
         try { const r = await fetch(url + "/auth?t=" + encodeURIComponent(token)); ok = r.ok; msg = r.status === 401 ? "Wrong Token" : "Relay Error " + r.status; }
         catch { msg = "Cannot Reach " + url; }
-        e.target.disabled = false; e.target.textContent = "Add Mac";
+        e.target.disabled = false; e.target.textContent = "Add Computer";
         if (!ok) { toast(msg); return; }
         const s = addServer({ url, token, name, custom: !!name });
         S.machine = s.id; store.set("machine", s.id);

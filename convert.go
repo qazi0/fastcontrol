@@ -28,8 +28,9 @@ type Item struct {
 }
 
 type Ask struct {
-	Title   string   `json:"title"`
-	Options []string `json:"options,omitempty"`
+	Title        string   `json:"title"`
+	Options      []string `json:"options,omitempty"`
+	Descriptions []string `json:"descriptions,omitempty"`
 }
 
 func parseAsks(v any) []Ask {
@@ -49,8 +50,10 @@ func parseAsks(v any) []Ask {
 			switch ov := o.(type) {
 			case string:
 				a.Options = append(a.Options, ov)
+				a.Descriptions = append(a.Descriptions, "")
 			case map[string]any:
 				a.Options = append(a.Options, str(ov, "label"))
+				a.Descriptions = append(a.Descriptions, str(ov, "description"))
 			}
 		}
 		out = append(out, a)
@@ -70,12 +73,13 @@ type Turn struct {
 }
 
 type Question struct {
-	ID       string   `json:"id"`
-	Header   string   `json:"header"`
-	Question string   `json:"question"`
-	Options  []string `json:"options,omitempty"`
-	Other    bool     `json:"other,omitempty"`
-	Secret   bool     `json:"secret,omitempty"`
+	ID           string   `json:"id"`
+	Header       string   `json:"header"`
+	Question     string   `json:"question"`
+	Options      []string `json:"options,omitempty"`
+	Descriptions []string `json:"descriptions,omitempty"`
+	Other        bool     `json:"other,omitempty"`
+	Secret       bool     `json:"secret,omitempty"`
 }
 
 type Request struct {
@@ -498,6 +502,7 @@ func desktopMeta(state map[string]any, title string) Meta {
 				for _, o := range opts {
 					if om, ok := o.(map[string]any); ok {
 						qq.Options = append(qq.Options, str(om, "label"))
+						qq.Descriptions = append(qq.Descriptions, str(om, "description"))
 					}
 				}
 				req.Questions = append(req.Questions, qq)
