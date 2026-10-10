@@ -1,0 +1,126 @@
+package net.siraj.fastcontrol
+
+import android.annotation.SuppressLint
+import android.content.Context
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
+import okhttp3.Call
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
+import org.json.JSONObject
+import java.io.File
+import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.concurrent.TimeUnit
+import kotlin.math.sqrt
+
+/** Captures PCM on one worker; uploads only when the user presses Transcribe. */
+class VoiceRecorder(private val context: Context, private val emit: (JSONObject) -> Unit) {
+    private class Session(val id: String) {
+        @Volatile var stopped = false
+        @Volatile var cancelled = false
+        @Volatile var server: Server? = null
+        @Volatile var base = ""
+        @Volatile var call: Call? = null
+    }
+    private val lock = Any()
+    private var current: Session? = null
+    private val client = OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(100, TimeUnit.SECONDS).callTimeout(105, TimeUnit.SECONDS).build()
+
+    private fun event(s: Session, type: String, extra: JSONObject = JSONObject()) {
+        synchronized(lock) {
+            if (current !== s || s.cancelled) return
+            emit(extra.put("type", type).put("id", s.id))
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun start(id: String) {
+        val s = synchronized(lock) {
+            if (current != null) return
+            Session(id).also { current = it }
+        }
+        Thread({
+            var file: File? = null
+            var recorder: AudioRecord? = null
+            try {
+                val min = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+                check(min > 0) { "Microphone Is Unavailable" }
+                val audio = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000,
+                    AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(min, 8192))
+                recorder = audio
+                check(audio.state == AudioRecord.STATE_INITIALIZED) { "Microphone Is Unavailable" }
+                file = File.createTempFile("voice-", ".wav", context.cacheDir)
+                var bytes = 0
+                RandomAccessFile(file, "rw").use { out ->
+                    out.write(ByteArray(44))
+                    audio.startRecording()
+                    check(audio.recordingState == AudioRecord.RECORDSTATE_RECORDING) { "Could Not Start Recording" }
+                    event(s, "recording")
+                    val samples = ShortArray(800)
+                    val buffer = ByteBuffer.allocate(1600).order(ByteOrder.LITTLE_ENDIAN)
+                    while (!s.stopped && bytes < 16000 * 2 * 120) {
+                        val count = audio.read(samples, 0, samples.size)
+                        check(count > 0) { "Microphone Recording Failed" }
+                        buffer.clear()
+                        var energy = 0.0
+                        for (i in 0 until count) { buffer.putShort(samples[i]); val v = samples[i] / 32768.0; energy += v * v }
+                        out.write(buffer.array(), 0, count * 2)
+                        bytes += count * 2
+                        event(s, "level", JSONObject().put("level", sqrt(energy / count)).put("seconds", bytes / 32000.0))
+                    }
+                    audio.stop(); audio.release(); recorder = null
+                    out.seek(0); out.write(wavHeader(bytes))
+                }
+                if (s.cancelled) return@Thread
+                val server = s.server
+                if (server == null) {
+                    event(s, "error", JSONObject().put("message", "Recording Limit Reached. Try a Shorter Message"))
+                    return@Thread
+                }
+                check(bytes >= 3200) { "Record a Little Longer" }
+                event(s, "transcribing")
+                val started = System.nanoTime()
+                val request = Request.Builder().url(s.base.trimEnd('/') + "/transcribe")
+                    .header("Authorization", "Bearer " + server.token)
+                    .post(file.asRequestBody("audio/wav".toMediaType())).build()
+                val call = client.newCall(request); s.call = call
+                if (s.cancelled) { call.cancel(); return@Thread }
+                call.execute().use { response ->
+                    val body = response.body?.string() ?: ""
+                    val data = try { JSONObject(body) } catch (_: Exception) { JSONObject() }
+                    check(response.isSuccessful) { data.optString("error").ifEmpty { "Could Not Transcribe On The Mac" } }
+                    val text = data.optString("text").trim()
+                    check(text.isNotEmpty()) { "No Speech Detected" }
+                    event(s, "transcript", JSONObject().put("text", text).put("durationMs", data.optLong("durationMs"))
+                        .put("totalMs", (System.nanoTime() - started) / 1000000))
+                }
+            } catch (e: Exception) {
+                event(s, "error", JSONObject().put("message", e.message ?: "Voice Recording Failed"))
+            } finally {
+                try { recorder?.stop() } catch (_: Exception) {}
+                recorder?.release()
+                file?.delete()
+                synchronized(lock) { if (current === s) current = null }
+            }
+        }, "RelayVoice").start()
+    }
+
+    fun finish(server: Server, base: String) {
+        synchronized(lock) { current?.let { it.server = server; it.base = base; it.stopped = true } }
+    }
+
+    fun cancel() {
+        synchronized(lock) { current?.let { it.cancelled = true; it.stopped = true; it.call?.cancel() }; current = null }
+    }
+
+    private fun wavHeader(bytes: Int): ByteArray = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
+        .put("RIFF".toByteArray()).putInt(bytes + 36).put("WAVEfmt ".toByteArray()).putInt(16)
+        .putShort(1).putShort(1).putInt(16000).putInt(32000).putShort(2).putShort(16)
+        .put("data".toByteArray()).putInt(bytes).array()
+}
