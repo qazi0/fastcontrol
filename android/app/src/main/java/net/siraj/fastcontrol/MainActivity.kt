@@ -38,6 +38,7 @@ import android.window.OnBackInvokedDispatcher
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.FileNotFoundException
+import java.io.File
 
 class MainActivity : Activity() {
 
@@ -50,6 +51,7 @@ class MainActivity : Activity() {
         private const val REQ_FILES = 1
         private const val REQ_NOTIFY = 2
         private const val REQ_MIC = 3
+        private const val REQ_SAVE_IMAGE = 4
     }
 
     private lateinit var container: FrameLayout
@@ -58,6 +60,8 @@ class MainActivity : Activity() {
     private lateinit var voice: VoiceRecorder
     private var awaitingMic = false
     private var voiceRequestId = ""
+    private lateinit var downloads: ImageDownloads
+    private var pendingImage: File? = null
 
     @Volatile private var pendingLaunch = ""
 
@@ -98,6 +102,15 @@ class MainActivity : Activity() {
         voice = VoiceRecorder(this) { event ->
             runOnUiThread { if (!isDestroyed) webView.evaluateJavascript("window.onVoiceEvent && window.onVoiceEvent($event)", null) }
         }
+        downloads = ImageDownloads(this, { event -> runOnUiThread {
+            if (!isDestroyed) webView.evaluateJavascript("window.onImageDownload && window.onImageDownload($event)", null)
+        } }, { file, mime -> runOnUiThread {
+            if (isDestroyed) { file.delete(); return@runOnUiThread }
+            pendingImage?.delete(); pendingImage = file
+            val save = Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+                .setType(mime).putExtra(Intent.EXTRA_TITLE, "Image." + file.extension)
+            startActivityForResult(save, REQ_SAVE_IMAGE)
+        } })
 
         if (savedInstanceState == null) {
             pendingLaunch = describeIntent(intent)
@@ -372,6 +385,20 @@ class MainActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == REQ_SAVE_IMAGE) {
+            val file = pendingImage; pendingImage = null
+            if (file != null) {
+                Thread({
+                    try {
+                        if (resultCode == RESULT_OK && data?.data != null) {
+                            (contentResolver.openOutputStream(data.data!!) ?: error("Could Not Save Image")).use { out -> file.inputStream().use { it.copyTo(out) } }
+                            runOnUiThread { if (!isDestroyed) webView.evaluateJavascript("window.onImageDownload && window.onImageDownload({ok:true,message:'Image Saved'})", null) }
+                        }
+                    } finally { file.delete() }
+                }, "SaveImage").start()
+            }
+            return
+        }
         if (requestCode != REQ_FILES) {
             super.onActivityResult(requestCode, resultCode, data)
             return
@@ -417,6 +444,19 @@ class MainActivity : Activity() {
     /** Exposed to the page as window.CodexAndroid. Calls arrive on a WebView binder thread. */
     inner class Bridge {
         private val ctx: Context get() = this@MainActivity
+
+        @JavascriptInterface
+        fun getServers(): String = Store.serversJson(ctx)
+
+        @JavascriptInterface
+        fun downloadImage(serverId: String, base: String, path: String) {
+            val server = Store.servers(ctx).firstOrNull { it.id == serverId && base.trimEnd('/') in it.urls.map { u -> u.trimEnd('/') } } ?: return
+            val url = base.trimEnd('/') + "/image?path=" + java.net.URLEncoder.encode(path, "UTF-8")
+            downloads.download(url, server.token)
+        }
+
+        @JavascriptInterface
+        fun downloadRemoteImage(url: String) { if (Uri.parse(url).scheme == "https") downloads.download(url) }
 
         @JavascriptInterface
         fun startVoice(requestId: String) = runOnUiThread {

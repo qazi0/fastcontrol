@@ -60,6 +60,9 @@ const S = {
   sheet: null,
   showAllProjects: false, pinnedClosed: store.get("pinnedClosed", false), recentLimit: 40,
 };
+if (!S.servers.length && Native?.getServers) {
+  try { S.servers = JSON.parse(Native.getServers()); } catch {}
+}
 const conns = new Map(); // server id -> Conn
 
 function sid() { return Math.random().toString(36).slice(2, 10); }
@@ -741,7 +744,7 @@ feed.addEventListener("click", (e) => {
 const firstLine = (s) => String(s || "").split("\n")[0];
 
 // Step rows: one per command, edit, search, tool call or thought. Tap to expand.
-function stepHTML(s, t, key) {
+function stepHTML(s, t, key, active = false) {
   if (hiddenTool(s)) return imagesHTML(s.images);
   const done = t.status && t.status !== "inProgress";
   const running = s.status === "inProgress" && !done;
@@ -782,19 +785,20 @@ function stepHTML(s, t, key) {
     default: return "";
   }
   const tog = body ? ` data-tog="${esc(key)}"` : "";
-  return `<div class="step${open}"><button class="step-h"${tog}>${icon}<span class="lbl">${label}</span>${x}</button>${body ? `<div class="step-b">${body}</div>` : ""}${imagesHTML(s.images)}</div>`;
+  return `<div class="step${open}"><button class="step-h"${tog}>${icon}<span class="lbl${running || active ? " step-progress" : ""}">${label}</span>${x}</button>${body ? `<div class="step-b">${body}</div>` : ""}${imagesHTML(s.images)}</div>`;
 }
 
 function hiddenTool(it) { return it?.k === "tool" && (it.title || "").replace(/__/g, ".").endsWith("cua_repl.js"); }
 function turnHTML(t, animate = false) {
   const items = (t.items || []).filter((it) => it && (!hiddenTool(it) || it.images?.length));
   const running = t.status === "inProgress";
+  const activeIndex = running ? items.findLastIndex((it) => it.k !== "user" && it.k !== "assistant" && !hiddenTool(it)) : -1;
   let out = t.startedAt ? `<div class="stamp">${new Date(t.startedAt).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</div>` : "";
   // Finished turns fold runs of more than three steps into one summary row.
   let run = [], ri = 0, userSeen = false;
   const flush = () => {
     if (!run.length) return;
-    const rows = run.map(([s, i]) => stepHTML(s, t, t.key + ":" + i)).join("");
+    const rows = run.map(([s, i]) => stepHTML(s, t, t.key + ":" + i, running && i === activeIndex && items.at(-1)?.k !== "assistant")).join("");
     const n = run.filter(([s]) => s.k !== "reasoning" || s.text).length;
     if (!running && n > 3) {
       const k = t.key + ":g" + ri;
@@ -1225,6 +1229,10 @@ window.onVoiceEvent = (e) => {
     mark("voiceTranscript");
     window.lastVoiceTiming = { serverMs: e.durationMs, totalMs: e.totalMs };
   } else if (e.type === "error") { cancelVoice(); toast(nice(e.message)); }
+};
+window.onImageDownload = (e) => {
+  if (S.sheet === "image") $("sheet").querySelector('[data-x="download"]').disabled = false;
+  toast(e.message || (e.ok ? "Image Saved" : "Could Not Download Image"));
 };
 document.addEventListener("visibilitychange", () => {
   // The microphone permission dialog can briefly pause the WebView.

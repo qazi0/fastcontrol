@@ -9,7 +9,7 @@ The current baseline supports Codex desktop sessions. Claude Code support is the
 - Several Macs, projects, pinned chats, live messages, steering, Stop, approvals, questions, model and effort controls.
 - Text reveal and a Thinking indicator, quick screen transitions, and a context ring with activity details.
 - Android voice recording with a waveform and transcription spinner. Audio goes to an available paired Mac running a local MacWhisper model. The transcript becomes an editable draft.
-- Inline attachments, generated images and images opened by tools. Full-screen viewing supports zoom and pan. Native image downloading is still being completed.
+- Inline attachments, generated images and images opened by tools. Full-screen viewing supports zoom, pan and native image downloading.
 - Background notifications for finished turns and requests needing attention.
 
 ## Install on a Mac

@@ -186,10 +186,12 @@ input, textarea { font: inherit; color: inherit; }
 .stream-in { animation: stream-in 180ms ease-out both; }
 @keyframes stream-in { from { opacity: 0.4; } to { opacity: 1; } }
 .reply-wait { display: flex; align-items: center; gap: 5px; height: 32px; margin: 8px 0 10px; }
-.thinking { font-size: 14px; color: var(--muted); background: linear-gradient(100deg, var(--muted) 35%, var(--ink) 50%, var(--muted) 65%); background-size: 250% 100%; background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; animation: thinking-flow 1700ms linear infinite; }
+.thinking, .step-progress { color: var(--muted); background: linear-gradient(100deg, var(--muted) 35%, var(--ink) 50%, var(--muted) 65%); background-size: 250% 100%; background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; animation: thinking-flow 1700ms linear infinite; }
+.thinking { font-size: 14px; }
+.step-progress code { background: transparent; -webkit-text-fill-color: inherit; }
 @keyframes thinking-flow { from { background-position: 140% 0; } to { background-position: -40% 0; } }
-html.page-hidden .thinking { animation-play-state: paused; }
-@media (prefers-reduced-motion: reduce) { .thinking { background: none; -webkit-text-fill-color: var(--muted); } }
+html.page-hidden .thinking, html.page-hidden .step-progress { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) { .thinking, .step-progress { background: none; -webkit-text-fill-color: var(--muted); } }
 
 /* one row per command, edit, search or thought; tap to expand */
 .step-h { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 40px; padding: 4px 0; color: var(--muted); font-size: 14px; min-width: 0; }
@@ -369,8 +371,12 @@ textarea, input { caret-color: var(--ink); }
 .eo-dot.in { background: rgba(255, 255, 255, 0.45); }
 .gauge .ico { width: 28px; height: 28px; stroke-width: 2.5; color: var(--ink); }
 .gauge .g-on { stroke: var(--ink); }
-.model-chip { min-width: 60px; padding: 0 8px; }
-.model-chip b { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.model-chip .ico { width: 14px; height: 14px; flex: none; color: var(--ink); }
+.model-chip { flex: none; min-width: 0; padding: 0 2px; overflow: visible; gap: 4px; }
+.model-chip b { flex: none; white-space: nowrap; }
+.model-chip .ico { width: 10px; height: 10px; flex: none; color: var(--ink); }
+.tools .grow { flex: 0 0 2px; }
+.tools .icon-btn, .tools .tool-chip.icon, .tools .round { width: 36px; min-width: 36px; }
+.tools .round.stop { width: 32px; min-width: 32px; margin-right: 4px; }
+.tools #send { margin-left: auto; }
 .scrim.dark { background: rgba(0, 0, 0, 0.82); }
 @media (prefers-color-scheme: light) { .gauge .g-on { stroke: var(--ink); } }
