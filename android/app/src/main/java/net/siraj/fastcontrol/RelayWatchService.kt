@@ -48,11 +48,11 @@ class RelayWatchService : Service() {
             instance?.reload()
         }
 
-        private fun tag(serverId: String, threadId: String) = "$serverId/$threadId"
+        private fun tag(serverId: String, threadId: String, provider: String) = "$serverId/$provider/$threadId"
 
-        fun cancelThreadNotification(ctx: Context, serverId: String, threadId: String) {
+        fun cancelThreadNotification(ctx: Context, serverId: String, threadId: String, provider: String) {
             ctx.getSystemService(NotificationManager::class.java)
-                ?.cancel(tag(serverId, threadId), THREAD_ID)
+                ?.cancel(tag(serverId, threadId, provider), THREAD_ID)
         }
     }
 
@@ -186,7 +186,8 @@ class RelayWatchService : Service() {
         }
         val threadId = msg.optString("id")
         if (threadId.isEmpty()) return
-        if (UiState.isShowing(server.id, threadId)) return
+        val provider = msg.optString("provider", "codex")
+ if (UiState.isShowing(server.id, threadId, provider)) return
         if (!canNotify()) return
 
         val title = msg.optString("title").ifEmpty { "Codex" }
@@ -197,11 +198,12 @@ class RelayWatchService : Service() {
                 else -> "Turn Completed"
             }
         }
-        val tag = tag(server.id, threadId)
+        val tag = tag(server.id, threadId, provider)
         val open = Intent(this, MainActivity::class.java)
             .setAction(MainActivity.ACTION_OPEN_THREAD)
             .putExtra(MainActivity.EXTRA_SERVER, server.id)
             .putExtra(MainActivity.EXTRA_THREAD, threadId)
+ .putExtra(MainActivity.EXTRA_PROVIDER, provider)
         val pi = PendingIntent.getActivity(
             this, tag.hashCode(), open,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
@@ -212,7 +214,7 @@ class RelayWatchService : Service() {
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text))
-            .setSubText(server.name)
+            .setSubText(server.name + " · " + if (provider == "claude") "Claude Code" else "Codex")
             .setAutoCancel(true)
             .setContentIntent(pi)
             .setCategory(

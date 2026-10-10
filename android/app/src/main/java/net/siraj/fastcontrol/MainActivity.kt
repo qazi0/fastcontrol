@@ -48,6 +48,7 @@ class MainActivity : Activity() {
         const val ACTION_OPEN_THREAD = "net.siraj.fastcontrol.OPEN_THREAD"
         const val EXTRA_SERVER = "server"
         const val EXTRA_THREAD = "thread"
+ const val EXTRA_PROVIDER = "provider"
         private const val REQ_FILES = 1
         private const val REQ_NOTIFY = 2
         private const val REQ_MIC = 3
@@ -168,6 +169,7 @@ class MainActivity : Activity() {
             val thread = intent.getStringExtra(EXTRA_THREAD) ?: return ""
             return JSONObject()
                 .put("type", "thread").put("server", server).put("thread", thread)
+ .put("provider", intent.getStringExtra(EXTRA_PROVIDER) ?: "codex")
                 .toString()
         }
         val data = intent.data
@@ -490,11 +492,12 @@ class MainActivity : Activity() {
         fun notificationsEnabled(): Boolean = Store.notificationsEnabled(ctx)
 
         @JavascriptInterface
-        fun setActiveThread(serverId: String, threadId: String) {
+        fun setActiveThread(serverId: String, threadId: String, provider: String) {
+ UiState.activeProvider = provider
             UiState.activeServer = serverId
             UiState.activeThread = threadId
             if (serverId.isNotEmpty() && threadId.isNotEmpty()) {
-                RelayWatchService.cancelThreadNotification(ctx, serverId, threadId)
+                RelayWatchService.cancelThreadNotification(ctx, serverId, threadId, provider)
             }
         }
 

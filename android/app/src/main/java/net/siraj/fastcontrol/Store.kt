@@ -52,7 +52,8 @@ object UiState {
     @Volatile var resumed = false
     @Volatile var activeServer = ""
     @Volatile var activeThread = ""
+ @Volatile var activeProvider = ""
 
-    fun isShowing(serverId: String, threadId: String) =
-        resumed && activeServer == serverId && activeThread == threadId
+    fun isShowing(serverId: String, threadId: String, provider: String) =
+        resumed && activeServer == serverId && activeThread == threadId && activeProvider == provider
 }

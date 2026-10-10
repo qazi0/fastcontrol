@@ -47,6 +47,7 @@ const I = {
 // ------------------------------------------------------------------ state --
 
 const S = {
+  provider: store.get("provider", "codex"),
   servers: store.get("servers", []),
   machine: store.get("machine", "all"), // "all" or a server id
   query: "",
@@ -106,6 +107,9 @@ class Conn {
     this.base = server.url; // the address that last worked; alternates come from hello
     this.byCwd = {}; // full thread lists of opened projects
     this.dead = false;
+    this.byProvider = {};
+    this.capabilities = {};
+    this.threads = store.get("threads:" + server.id + ":" + S.provider, []);
     this.connect();
   }
   // connect races every known address of the Mac (the last one that worked,
@@ -169,7 +173,7 @@ class Conn {
   pause() { this.paused = true; this.attempt = (this.attempt || 0) + 1; clearTimeout(this.timer); if (this.ws) { this.ws.onclose = null; try { this.ws.close(); } catch {} this.ws = null; } this.ok = false; }
   close() { this.dead = true; clearTimeout(this.timer); if (this.ws) { this.ws.onclose = null; try { this.ws.close(); } catch {} } }
   setState(st) { this.state = st; scheduleRender(); }
-  send(m) { if (this.ws && this.ws.readyState === 1) { this.ws.send(JSON.stringify(m)); return true; } return false; }
+  send(m) { if (this.ws && this.ws.readyState === 1) { this.ws.send(JSON.stringify({ provider:S.provider, ...m })); return true; } return false; }
   call(m, timeout = 30000) {
     return new Promise((res) => {
       const nonce = "n" + ++this.nonce;
@@ -179,10 +183,19 @@ class Conn {
     });
   }
   onMessage(m) {
-    const here = S.view === "thread" && S.sid === this.s.id && m.id === S.id;
+    const provider = m.provider || "codex";
+    if (["threads", "projects", "models"].includes(m.t)) {
+      const cached = this.byProvider[provider] || (this.byProvider[provider] = {});
+      if (m.t === "threads") { cached.threads = m.threads || []; store.set("threads:" + this.s.id + ":" + provider, cached.threads.slice(0,200)); }
+      if (m.t === "projects") { cached.projects = m.projects || []; cached.home = m.home; }
+      if (m.t === "models") cached.models = m;
+      if (provider !== S.provider) return;
+    }
+    const here = provider === S.provider && S.view === "thread" && S.sid === this.s.id && m.id === S.id;
     switch (m.t) {
       case "hello":
         this.desktop = m.desktop;
+        this.capabilities = m.providers || { codex:true, claude:false };
         if (Array.isArray(m.addrs) && JSON.stringify(m.addrs) !== JSON.stringify(this.s.alts || [])) { this.s.alts = m.addrs; saveServers(); }
         // Show the name the Mac reports, unless the user named it.
         if (m.host && !this.s.custom && this.s.name !== m.host) { this.s.name = m.host; saveServers(); scheduleRender(); }
@@ -190,8 +203,8 @@ class Conn {
         break;
       case "threads":
         mark("threads:" + this.s.id);
-        this.threads = m.threads;
-        store.set("threads:" + this.s.id, m.threads.filter((t) => !t.subagent).slice(0, 200));
+        this.threads = m.threads || [];
+        store.set("threads:" + this.s.id, this.threads.filter((t) => !t.subagent).slice(0, 200));
         scheduleRender();
         break;
       case "open": if (here) { mark("thread:" + m.meta.mode); S.meta = m.meta; S.turns = m.turns; renderThread(m.more); } break;
@@ -217,7 +230,7 @@ class Conn {
       case "event": onEvent(this, m); break;
       case "models": this.models = m; if (S.redraw) S.redraw(); break;
       case "projects": this.projects = m.projects; this.home = m.home; if (S.redraw) S.redraw(); scheduleRender(); break;
-      case "project": this.byCwd[m.cwd] = m.threads; if (S.view === "project" && S.cwd === m.cwd) renderProject(); break;
+      case "project": if(provider===S.provider){this.byCwd[m.cwd] = m.threads || []; if (S.view === "project" && S.cwd === m.cwd) renderProject();} break;
       case "diff": if (here) showDiff(m); break;
     }
   }
@@ -248,9 +261,9 @@ window.addEventListener("online", () => { for (const c of conns.values()) { c.ba
 
 function onEvent(c, e) {
   if (e.kind === "started") return;
-  if (S.view === "thread" && S.id === e.id && document.visibilityState === "visible") return;
+  if (S.provider === (e.provider || "codex") && S.view === "thread" && S.id === e.id && document.visibilityState === "visible") return;
   const label = { completed: "Finished", failed: "Failed", attention: "Needs You" }[e.kind] || "";
-  toast(`${label}: ${e.title}`, () => openThread(c.s.id, e.id, true));
+  toast(`${label}: ${e.title}`, () => { selectProvider(e.provider || "codex",false);openThread(c.s.id, e.id, true); });
   if (e.kind === "attention") buzz(40);
 }
 
@@ -315,12 +328,12 @@ function show(view) {
   for (const a of pageAnimations) a.cancel();
   pageAnimations = [];
   S.view = view;
-  for (const v of ["home", "project", "thread"]) {
+  for (const v of ["providers", "home", "project", "thread"]) {
     $(v).classList.toggle("hidden", v !== view);
     $(v).inert = v !== view;
   }
   if (!animate) return;
-  const direction = ["home", "project", "thread"].indexOf(view) > ["home", "project", "thread"].indexOf(previous) ? 1 : -1;
+  const direction = ["providers", "home", "project", "thread"].indexOf(view) > ["providers", "home", "project", "thread"].indexOf(previous) ? 1 : -1;
   from.classList.remove("hidden");
   const timing = { duration: 180, easing: "cubic-bezier(0.22, 1, 0.36, 1)" };
   const outgoing = from.animate([{ transform: "translateX(0)", opacity: 1 }, { transform: `translateX(${-direction * 24}px)`, opacity: 0 }], timing);
@@ -330,11 +343,30 @@ function show(view) {
 }
 window.addEventListener("popstate", (e) => {
   const st = e.state || {};
+  if (st.provider && st.provider !== S.provider) selectProvider(st.provider,false);
   if (S.sheet && !st.sheet) closeSheet(true);
   if (st.view === "thread") { if (S.id !== st.id || S.view !== "thread") openThread(st.sid, st.id, false); }
   else if (st.view === "project") { leaveThread(); openProject(st.cwd, false); }
-  else if (!st.sheet) { leaveThread(); show("home"); renderHome(); }
+  else if (!st.sheet) { leaveThread(); show(st.view === "home" ? "home" : "providers"); renderHome(); }
 });
+function selectProvider(provider, push = true) {
+  if (!['codex','claude'].includes(provider)) return;
+  leaveThread();
+  S.newDraft=null;S.newAttach=[];
+  S.provider=provider;store.set('provider',provider);
+  $('provider-switch').textContent=provider==='claude'?'Claude Code':'Codex';
+ $('ask').querySelector('span').textContent=provider==='claude'?'Ask Claude':'Ask Codex';
+  for (const c of conns.values()) {
+    const cache=c.byProvider[provider] || {};
+    c.threads=cache.threads || store.get('threads:'+c.s.id+':'+provider,[]);c.projects=cache.projects || null;c.models=cache.models || null;c.home=cache.home || '';c.byCwd={};
+    c.send({op:'threads'});c.refreshProjects(true);c.send({op:'models'});
+  }
+  if(push)history.pushState({view:'home',provider},'');
+  show('home');renderHome();
+}
+$('provider-switch').onclick=()=>{leaveThread();history.replaceState({view:'providers'},'');show('providers');};
+$('provider-macs').onclick=()=>openSheet('macs');
+for(const button of document.querySelectorAll('[data-provider]'))button.onclick=()=>selectProvider(button.dataset.provider);
 for (const b of document.querySelectorAll(".back")) b.onclick = () => history.back();
 
 // Every list render goes through one animation frame.
@@ -492,7 +524,7 @@ setInterval(() => { if (S.view !== "thread" && document.visibilityState === "vis
 // ---------------------------------------------------------------- project --
 
 function openProject(cwd, push) {
-  if (push) history.pushState({ view: "project", cwd }, "");
+  if (push) history.pushState({ view: "project", cwd, provider:S.provider }, "");
   S.cwd = cwd;
   $("p-search").value = "";
   for (const [id, c] of conns) if (S.machine === "all" || S.machine === id) c.send({ op: "project", cwd });
@@ -530,7 +562,7 @@ $("p-new").onclick = () => {
 
 function openThread(sidv, id, push) {
   if (!conns.has(sidv)) { toast("That Mac Is No Longer Paired"); return; }
-  if (push) history.pushState({ view: "thread", sid: sidv, id }, "");
+  if (push) history.pushState({ view: "thread", sid: sidv, id, provider:S.provider }, "");
   if (S.view === "thread" && (S.sid !== sidv || S.id !== id)) leaveThread();
   if (S.id !== id) { S.open = new Set(); S.minCards = new Set(); S.attach = []; renderAttachments(); }
   resetResponses();
@@ -545,7 +577,7 @@ function openThread(sidv, id, push) {
   $("banner").classList.add("hidden");
   renderComposer();
   conn().send({ op: "open", id });
-  if (Native) try { Native.setActiveThread(sidv, id); } catch {}
+  if (Native) try { Native.setActiveThread(sidv, id, S.provider); } catch {}
 }
 function leaveThread() {
   cancelVoice();
@@ -553,7 +585,7 @@ function leaveThread() {
   resetResponses();
   if (S.id && conn()) conn().send({ op: "close", id: S.id });
   S.id = ""; S.meta = null; S.turns = [];
-  if (Native) try { Native.setActiveThread("", ""); } catch {}
+  if (Native) try { Native.setActiveThread("", "", ""); } catch {}
 }
 function renderThreadHeader() {
   const t = findThread(S.sid, S.id) || {};
@@ -562,7 +594,7 @@ function renderThreadHeader() {
   const c = conn();
   const cwd = m.cwd || t.cwd;
   const mac = S.servers.length > 1 ? `<span><span class="dot ${c && c.ok ? "on" : "off"}"></span> ${esc(serverName(S.sid))}</span>` : c && !c.ok ? '<span><span class="dot off"></span> Offline</span>' : "";
-  $("t-sub").innerHTML = (cwd ? `<span>${esc(base(cwd))}</span>` : "") + ((m.branch || t.branch) ? `<span class="mono">${esc(m.branch || t.branch)}</span>` : "") + mac;
+  $("t-sub").innerHTML = `<span class="provider-label">${S.provider==='claude'?'Claude Code':'Codex'}</span>` + (cwd ? `<span>${esc(base(cwd))}</span>` : "") + ((m.branch || t.branch) ? `<span class="mono">${esc(m.branch || t.branch)}</span>` : "") + mac;
 }
 $("menu-btn").onclick = () => openSheet("menu");
 
@@ -987,7 +1019,7 @@ function renderMeta() {
     b.innerHTML = "<span>Starting Headless, Replies Queue</span>";
     b.classList.remove("hidden");
   } else if (m.mode !== "live") {
-    b.innerHTML = '<span>Read Only</span><button class="btn" id="wake">Open On Mac</button>';
+    b.innerHTML = `<span>${m.mode==='external'?'Managed On Mac':'Read Only'}</span><button class="btn" id="wake">${S.provider==='claude'?(m.mode==='external'?'Take Over':'Resume'):'Open On Mac'}</button>`;
     b.classList.remove("hidden");
     $("wake").onclick = async (e) => {
       e.target.disabled = true; e.target.textContent = "Opening";
@@ -1117,7 +1149,15 @@ const PERMS = [
   { id: "read", icon: I.lock, name: "Read Only", short: "Read Only", d: "Asks before edits and commands", set: { approvalPolicy: "on-request", sandbox: "readOnly", reviewer: "user" } },
   { id: "full", icon: I.rocket, name: "Full Access", short: "Full Access", d: "No sandbox, never asks", set: { approvalPolicy: "never", sandbox: "dangerFullAccess", reviewer: "user" } },
 ];
+const CLAUDE_PERMS = [
+ {id:'default',icon:I.shield,name:'Default',set:{permissionMode:'default'}},
+ {id:'acceptEdits',icon:I.edit,name:'Accept Edits',set:{permissionMode:'acceptEdits'}},
+ {id:'plan',icon:I.lock,name:'Plan Mode',set:{permissionMode:'plan'}},
+ {id:'auto',icon:I.shieldok,name:'Auto Review',set:{permissionMode:'auto'}},
+ {id:'bypassPermissions',icon:I.rocket,name:'Full Access',set:{permissionMode:'bypassPermissions'}}
+];
 function permOf(m) {
+ if(S.provider==='claude')return CLAUDE_PERMS.find(p=>p.id===(m?.permissionMode||'default'))||CLAUDE_PERMS[0];
   if (!m || !m.approval) return null;
   if (m.approval === "never" && m.sandbox === "dangerFullAccess") return PERMS[3];
   if (m.reviewer === "auto_review") return PERMS[1];
@@ -1125,7 +1165,7 @@ function permOf(m) {
   if (m.sandbox === "workspaceWrite") return PERMS[0];
   return { id: "custom", icon: I.gear, name: "Custom", short: "Custom", d: `${m.approval}, ${m.sandbox || "default sandbox"}` };
 }
-function shortModel(slug) { return String(slug || "").replace(/^gpt-/i, "").replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()); }
+function shortModel(slug) { return String(slug || "").replace(/^(gpt-|claude-)/i, "").replace(/(\d+)-(\d+)(?:-\d{8})?$/, "$1.$2").replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()); }
 const EFFORT_D = { minimal: "Quickest Replies", low: "Fast Replies", medium: "Balanced", high: "More Thorough", xhigh: "Deep Reasoning", max: "Maximum Reasoning", ultra: "Several Agents In Parallel" };
 function effortName(e) { return { xhigh: "Extra High", low: "Low", medium: "Medium", high: "High", max: "Max", ultra: "Ultra", minimal: "Minimal" }[e] || cap(e || ""); }
 function cap(s) { return String(s).replace(/(^|[\s-])\w/g, (c) => c.toUpperCase()); }
@@ -1138,15 +1178,15 @@ function renderComposer() {
   $("stop").classList.toggle("hidden", !running);
   const sendBtn = $("send");
   sendBtn.classList.toggle("steer", running && !m.exec);
-  sendBtn.setAttribute("aria-label", running ? (m.exec ? "Queue" : "Steer") : "Send");
-  input.placeholder = running ? (m.exec ? "Queue A Follow Up" : "Steer") : "Message Codex";
+  sendBtn.setAttribute("aria-label", running ? (m.exec || S.provider==='claude' ? "Queue" : "Steer") : "Send");
+  input.placeholder = running ? (m.exec || S.provider==='claude' ? 'Queue a Follow-Up' : 'Steer') : (S.provider==='claude' ? "Message Claude" : "Message Codex");
   const p = permOf(m);
   const pc = $("perm-chip");
   pc.innerHTML = p ? p.icon : I.shield;
-  pc.className = "tool-chip icon" + (p && p.id === "full" ? " warn" : "");
+  pc.className = "tool-chip icon" + (p && (p.id === "full" || p.id === "bypassPermissions") ? " warn" : "");
   pc.setAttribute("aria-label", "Permissions: " + (p ? p.name : "Unknown"));
   $("model-chip").innerHTML = `<b>${m.model ? esc(shortModel(m.model)) : "Model"}</b>${I.down}`;
-  const mm = ((conn() && conn().models && conn().models.models) || []).find((x) => x.slug === m.model);
+  const mm = ((conn() && conn().models && conn().models.models) || []).find((x) => x.slug === m.model || x.resolved === m.model);
   const efforts = mm ? mm.efforts : ["low", "medium", "high", "xhigh", "max", "ultra"];
   const lvl = Math.max(0, efforts.indexOf(m.effort));
   $("effort-btn").innerHTML = gauge(efforts.length > 1 ? lvl / (efforts.length - 1) : 1);
@@ -1475,7 +1515,7 @@ const SHEETS = {
     sh.innerHTML = `<div class="grip"></div>` +
       mi("diff", I.diff, "View Latest Changes") +
       mi("compact", I.squash, "Compact Context", m.ctxMax ? `${Math.round((m.ctxUsed || 0) / m.ctxMax * 100)}% Used` : "") +
-      (m.mode !== "live" ? mi("wake", I.mac, "Open On Mac") : "") +
+      (m.mode !== "live" ? mi("wake", I.mac, S.provider==='claude' ? (m.mode==='external'?'Take Over':'Resume') : "Open On Mac") : "") +
       mi("copy", I.copy, "Copy Thread ID") +
       (Native ? mi("share", I.share, "Share Last Reply") : "") +
       mi("archive", I.box, t ? "Archive Thread" : "Unarchive Thread", "", "", "danger");
@@ -1505,12 +1545,12 @@ const SHEETS = {
   perms(sh) {
     const cur = permOf(S.meta);
     sh.innerHTML = `<div class="grip"></div><h2>Permissions</h2>` +
-      PERMS.map((p) => mi(p.id, p.icon, p.name, p.d, cur && cur.id === p.id ? I.check : "", p.id === "full" ? "warn" : "")).join("") +
+      (S.provider==='claude'?CLAUDE_PERMS:PERMS).map((p) => mi(p.id, p.icon, p.name, p.d, cur && cur.id === p.id ? I.check : "", p.id === "full" ? "warn" : "")).join("") +
       (cur && cur.id === "custom" ? mi("custom", I.gear, "Custom", esc(cur.d), I.check) : "");
     sh.onclick = (e) => {
       const b = e.target.closest("[data-act]");
       if (!b) return;
-      const p = PERMS.find((x) => x.id === b.dataset.act);
+      const p = (S.provider==='claude'?CLAUDE_PERMS:PERMS).find((x) => x.id === b.dataset.act);
       closeSheet();
       if (p && (!cur || cur.id !== p.id)) applySettings(p.set, "Permissions: " + p.name);
     };
@@ -1521,7 +1561,7 @@ const SHEETS = {
       const m = S.meta || {};
       const models = (conn().models && conn().models.models) || [];
       sh.innerHTML = `<div class="grip"></div><h2>Model</h2>` +
-        (models.length ? models.map((x) => mi("m:" + x.slug, "", esc(x.name), esc(x.description || ""), m.model === x.slug ? I.check : "")).join("") : '<p class="hint">Loading Models</p>');
+        (models.length ? models.map((x) => mi("m:" + x.slug, "", esc(x.name), esc(x.description || ""), (m.model === x.slug || m.model === x.resolved) ? I.check : "")).join("") : '<p class="hint">Loading Models</p>');
     };
     S.redraw = draw;
     if (!conn().models) conn().send({ op: "models" });
@@ -1545,7 +1585,7 @@ const SHEETS = {
   // the ChatGPT app. Drag or tap a stop; the level applies on release.
   effort(sh) {
     const m = S.meta || {};
-    const mm = ((conn().models && conn().models.models) || []).find((x) => x.slug === m.model);
+    const mm = ((conn().models && conn().models.models) || []).find((x) => x.slug === m.model || x.resolved === m.model);
     const efforts = mm ? mm.efforts : ["low", "medium", "high", "xhigh"];
     let idx = Math.max(0, efforts.indexOf(m.effort));
     const start = idx;
@@ -1623,7 +1663,7 @@ const SHEETS = {
         `<input id="nt-cwd" style="margin-top:8px" placeholder="Or Type A Folder Path" value="${esc(d.cwd)}" autocomplete="off" autocapitalize="off" spellcheck="false"></div>` +
         `<div class="field"><span class="lab">Model</span><div class="seg" data-key="model"><button class="${!d.model ? "on" : ""}" data-v="">Default${def.model ? " (" + esc(shortModel(def.model)) + ")" : ""}</button>${models.map((x) => `<button class="${d.model === x.slug ? "on" : ""}" data-v="${esc(x.slug)}">${esc(shortModel(x.slug))}</button>`).join("")}</div></div>` +
         (model ? `<div class="field"><span class="lab">Intelligence</span><div class="seg" data-key="effort"><button class="${!d.effort ? "on" : ""}" data-v="">Default</button>${model.efforts.map((e) => `<button class="${d.effort === e ? "on" : ""}" data-v="${e}">${effortName(e)}</button>`).join("")}</div></div>` : "") +
-        `<div class="field"><span class="lab">Prompt</span><textarea id="nt-text" placeholder="What Should Codex Do?">${esc(d.text)}</textarea></div>` +
+        `<div class="field"><span class="lab">Prompt</span><textarea id="nt-text" placeholder="What Should ${S.provider==='claude'?'Claude':'Codex'} Do?">${esc(d.text)}</textarea></div>` +
         `<div class="attachments" id="nt-att">${attHTML(S.newAttach)}</div>` +
         `<div class="sheet-actions"><button class="btn" data-x="img">Attach Image</button><span class="grow"></span><button class="btn primary" data-x="start">Start Chat</button></div>`;
       const ta = sh.querySelector("#nt-text");
@@ -1666,7 +1706,7 @@ const SHEETS = {
         S.newDraft = null; S.newAttach = [];
         closeSheet(true);
         // The sheet's history entry becomes the thread.
-        history.replaceState({ view: "thread", sid: target, id: a.thread }, "");
+        history.replaceState({ view: "thread", sid: target, id: a.thread, provider:S.provider }, "");
         openThread(target, a.thread, false);
       }
     };
@@ -1748,6 +1788,7 @@ window.onAndroidIntent = function () {
     toast("Paired With " + (s.name || s.url));
     if (S.view === "home") renderHome();
   } else if (it.type === "thread" && it.thread) {
+    selectProvider(it.provider || "codex",false);
     // Reuse an open sheet's history entry; going back first would race the push.
     const reuse = !!S.sheet;
     if (reuse) closeSheet(true);
@@ -1758,10 +1799,10 @@ window.onAndroidIntent = function () {
 
 // ------------------------------------------------------------------- boot --
 
-history.replaceState({}, "");
+history.replaceState({view:"providers"}, "");
 syncConns();
 if (Native) saveServers();
-show("home");
+show("providers");
 renderHome();
 mark("firstRender");
 if (Native) window.onAndroidIntent();
