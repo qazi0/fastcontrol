@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"time"
 )
 
@@ -39,12 +40,16 @@ func (s *Speech) downloadModel(path string) error {
 		}
 	}()
 	// Use macOS curl for the system's HTTPS certificates and network configuration.
-	cmd := exec.CommandContext(ctx, "/usr/bin/curl", "-fL", "--retry", "3", "--max-time", "600", "--output", path, speechModelURL)
+	curl := "/usr/bin/curl"
+	if runtime.GOOS == "windows" {
+		curl = "curl.exe"
+	}
+	cmd := exec.CommandContext(ctx, curl, "-fL", "--retry", "3", "--max-time", "600", "--output", path, speechModelURL)
 	err := cmd.Run()
 	close(finished)
 	<-observed
 	if err != nil {
-		return errors.New("Could Not Download The Speech Model. Check This Mac's Internet Connection")
+		return errors.New("Could Not Download The Speech Model. Check This Computer's Internet Connection")
 	}
 	return nil
 }
@@ -73,9 +78,9 @@ func (s *Speech) install() (err error) {
 	return s.installModel()
 }
 func (s *Speech) installModel() error {
-	runtime := filepath.Join(s.home, ".fastcontrol/speech/whisper-cli")
+	runtime := filepath.Join(s.home, ".fastcontrol", "speech", speechRuntimeName())
 	if !speechExecutable(runtime) {
-		return errors.New("Speech Runtime Is Missing. Update fastcontrol On This Mac")
+		return errors.New("Speech Runtime Is Missing. Update fastcontrol On This Computer")
 	}
 	dir := filepath.Join(s.home, ".fastcontrol/models")
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -185,10 +190,10 @@ func (s *Speech) serveInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.installing {
-		if !speechExecutable(filepath.Join(s.home, ".fastcontrol/speech/whisper-cli")) {
+		if !speechExecutable(filepath.Join(s.home, ".fastcontrol", "speech", speechRuntimeName())) {
 			s.mu.Unlock()
 			w.WriteHeader(503)
-			_, _ = w.Write(mustJSON(map[string]string{"error": "Speech Runtime Is Missing. Update fastcontrol On This Mac"}))
+			_, _ = w.Write(mustJSON(map[string]string{"error": "Speech Runtime Is Missing. Update fastcontrol On This Computer"}))
 			return
 		}
 		s.installing = true

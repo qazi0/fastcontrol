@@ -93,6 +93,9 @@ type IPCClient struct {
 }
 
 func defaultIPCPath() string {
+	if path := platformIPCPath(); path != "" {
+		return path
+	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".codex", "ipc", "ipc.sock")
 }
@@ -137,7 +140,7 @@ func (c *IPCClient) Run() {
 }
 
 func (c *IPCClient) session() error {
-	conn, err := net.Dial("unix", c.path)
+	conn, err := dialDesktopIPC(c.path)
 	if err != nil {
 		return err
 	}

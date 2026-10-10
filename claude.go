@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -51,8 +52,8 @@ type ClaudeManager struct {
 
 func claudeBinary() string {
 	home, _ := os.UserHomeDir()
-	for _, path := range []string{filepath.Join(home, ".local/bin/claude"), "/opt/homebrew/bin/claude", "/usr/local/bin/claude"} {
-		if st, err := os.Stat(path); err == nil && st.Mode()&0111 != 0 {
+	for _, path := range []string{filepath.Join(home, ".local", "bin", "claude.exe"), filepath.Join(home, ".local/bin/claude"), "/opt/homebrew/bin/claude", "/usr/local/bin/claude"} {
+		if st, err := os.Stat(path); err == nil && (runtime.GOOS == "windows" || st.Mode()&0111 != 0) {
 			return path
 		}
 	}

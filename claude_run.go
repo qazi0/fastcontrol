@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -107,7 +106,7 @@ func (m *ClaudeManager) start(id, cwd string, p claudePreference, resume bool) (
 	}
 	cmd := exec.Command(m.bin, args...)
 	cmd.Dir = cwd
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	prepareProcess(cmd)
 	for _, e := range codexEnv() {
 		if !strings.HasPrefix(e, "CLAUDECODE=") {
 			cmd.Env = append(cmd.Env, e)
@@ -226,6 +225,7 @@ func (r *ClaudeRun) snapshotLocked() (Meta, []Turn) {
 				question := Question{ID: fmt.Sprint(i), Header: str(v, "header"), Question: str(v, "question"), Other: true}
 				for _, opt := range arrayValue(v["options"]) {
 					question.Options = append(question.Options, str(mapValue(opt), "label"))
+					question.Descriptions = append(question.Descriptions, str(mapValue(opt), "description"))
 				}
 				q.Questions = append(q.Questions, question)
 			}
@@ -596,7 +596,7 @@ func (r *ClaudeRun) approve(id, decision string, answers map[string][]string) er
 }
 func (r *ClaudeRun) kill() {
 	if r.cmd.Process != nil {
-		_ = syscall.Kill(-r.cmd.Process.Pid, syscall.SIGTERM)
+		killProcess(r.cmd.Process)
 	}
 }
 func (m *ClaudeManager) setModels(raw []any) {

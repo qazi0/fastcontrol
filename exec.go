@@ -17,7 +17,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -60,11 +59,11 @@ func (x *execRun) stop() {
 	x.queued = nil
 	x.mu.Unlock()
 	if p := x.cmd.Process; p != nil {
-		_ = syscall.Kill(-p.Pid, syscall.SIGINT)
+		interruptProcess(p)
 		go func() {
 			time.Sleep(5 * time.Second)
 			if x.running() {
-				_ = syscall.Kill(-p.Pid, syscall.SIGKILL)
+				killProcess(p)
 			}
 		}()
 	}
@@ -115,7 +114,7 @@ func (h *Hub) newThread(cwd, text, model, effort string, images []string) (strin
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = cwd
 	cmd.Env = codexEnv()
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	prepareProcess(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return "", err
@@ -193,7 +192,7 @@ func (h *Hub) newThread(cwd, text, model, effort string, images []string) (strin
 		go h.refreshList()
 		return id, nil
 	case <-time.After(45 * time.Second):
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		killProcess(cmd.Process)
 		return "", errors.New("codex exec did not start a thread within 45 s")
 	}
 }

@@ -76,7 +76,7 @@ func listProjectThreads(db, cwd string) ([]ThreadInfo, error) {
 	return queryThreads(db, threadCols+` and cwd=`+sqlQuote(cwd)+` order by recency_at_ms desc limit 500`)
 }
 
-func sqliteJSON(db, query string) ([]byte, error) {
+func sqliteJSONCLI(db, query string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	var out []byte
@@ -88,7 +88,7 @@ func sqliteJSON(db, query string) ([]byte, error) {
 		if attempt == 2 {
 			uri = "file:" + db + "?immutable=1"
 		}
-		out, err = exec.CommandContext(ctx, "/usr/bin/sqlite3", "-json", "-cmd", ".timeout 500", uri, query).Output()
+		out, err = exec.CommandContext(ctx, sqliteBinary(), "-json", "-cmd", ".timeout 500", uri, query).Output()
 		if err == nil {
 			return out, nil
 		}

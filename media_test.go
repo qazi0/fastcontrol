@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -106,6 +107,9 @@ func TestImageServingAndDesktopRolloutParity(t *testing.T) {
 }
 
 func TestWhisperTranscriptFileAndCleanup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows uses the native test executable in TestWindowsSpeechCleanup")
+	}
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "whisper-cli")
 	script := `#!/bin/sh
@@ -148,7 +152,7 @@ func TestSpeechDiscoveryRejectsMissingOrCorruptModel(t *testing.T) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "whisper-cli"), []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, speechRuntimeName()), []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	if discoverSpeech(home, false).model != "" {

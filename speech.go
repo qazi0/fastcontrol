@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -41,7 +42,7 @@ func newSpeech() *Speech {
 }
 func discoverSpeech(home string, preferMacWhisper bool) *Speech {
 	s := &Speech{busy: make(chan struct{}, 1), home: home, preferMacWhisper: preferMacWhisper}
-	if preferMacWhisper {
+	if preferMacWhisper && runtime.GOOS == "darwin" {
 		for _, path := range []string{"/Applications/MacWhisper.app/Contents/MacOS/mw", "/usr/local/bin/mw"} {
 			if !speechExecutable(path) {
 				continue
@@ -62,7 +63,7 @@ func discoverSpeech(home string, preferMacWhisper bool) *Speech {
 			}
 		}
 	}
-	path := filepath.Join(home, ".fastcontrol", "speech", "whisper-cli")
+	path := filepath.Join(home, ".fastcontrol", "speech", speechRuntimeName())
 	model := filepath.Join(home, ".fastcontrol", "models", bundledSpeechModel)
 	if speechExecutable(path) && validSpeechModel(model) {
 		s.bin = path
@@ -74,7 +75,7 @@ func discoverSpeech(home string, preferMacWhisper bool) *Speech {
 }
 func speechExecutable(path string) bool {
 	st, err := os.Stat(path)
-	return err == nil && st.Mode().IsRegular() && st.Mode()&0111 != 0
+	return err == nil && st.Mode().IsRegular() && (runtime.GOOS == "windows" || st.Mode()&0111 != 0)
 }
 func validSpeechModel(path string) bool {
 	f, err := os.Open(path)
@@ -95,7 +96,11 @@ func validSpeechModel(path string) bool {
 func (s *Speech) capability() map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return map[string]any{"available": s.availableLocked(), "model": s.model, "engine": s.engine, "installable": speechExecutable(filepath.Join(s.home, ".fastcontrol/speech/whisper-cli")), "installing": s.installing, "progress": s.progress, "error": s.installError, "formats": []string{"wav", "aac"}}
+	formats := []string{"wav"}
+	if compressedVoiceAvailable() {
+		formats = append(formats, "aac")
+	}
+	return map[string]any{"available": s.availableLocked(), "model": s.model, "engine": s.engine, "installable": speechExecutable(filepath.Join(s.home, ".fastcontrol", "speech", speechRuntimeName())), "installing": s.installing, "progress": s.progress, "error": s.installError, "formats": formats}
 }
 func (s *Speech) availableLocked() bool {
 	if s.bin == "" || s.model == "" {

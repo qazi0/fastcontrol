@@ -7,7 +7,6 @@ import (
 	"errors"
 	"log"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -1075,7 +1074,7 @@ func (s *Session) ensureLive(timeout time.Duration) (liveInfo, error) {
 	}
 	w := make(chan struct{})
 	s.cmds <- func() { s.waiters = append(s.waiters, w) }
-	if err := exec.Command("/usr/bin/open", "-g", "codex://threads/"+s.id).Run(); err != nil {
+	if err := openDesktopThread(s.id); err != nil {
 		return liveInfo{}, err
 	}
 	deadline := time.After(timeout)

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -189,6 +190,10 @@ func (s *Session) updateSettings(model, effort, approval, sandbox, reviewer *str
 // codexBin prefers the CLI bundled with the desktop app, which matches its
 // models and protocol. LaunchAgents have a minimal PATH, so look in fixed places.
 func codexBin() (string, error) {
+	if runtime.GOOS == "windows" {
+		return windowsCodexBin()
+	}
+
 	for _, p := range []string{
 		"/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
 		"/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex",
@@ -207,6 +212,9 @@ func codexBin() (string, error) {
 
 func codexEnv() []string {
 	env := os.Environ()
+	if runtime.GOOS == "windows" {
+		return env
+	}
 	for i, e := range env {
 		if strings.HasPrefix(e, "PATH=") {
 			env[i] = e + ":/opt/homebrew/bin:/usr/local/bin"

@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"os"
-	"os/exec"
 	"time"
 )
 
@@ -35,7 +34,7 @@ func decodeVoice(parent context.Context, input, output string) ([]byte, error) {
 			}
 		}
 	}()
-	err := exec.CommandContext(ctx, "/usr/bin/afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1", input, output).Run()
+	err := audioDecodeCommand(ctx, input, output).Run()
 	close(done)
 	<-observed
 	if tooLarge {

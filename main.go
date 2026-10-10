@@ -16,7 +16,6 @@ import (
 	"net/http"
 	neturl "net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -81,7 +80,7 @@ func main() {
 	bind := flag.String("bind", "auto", "comma-separated IPs to bind, or 'auto' for loopback, Tailscale and the default-route (Wi-Fi) address")
 	tokenFile := flag.String("token-file", filepath.Join(home, ".fastcontrol", "token"), "pairing token file (created if missing)")
 	ipcPath := flag.String("ipc", defaultIPCPath(), "desktop app IPC socket")
-	flag.String("asar", "/Applications/ChatGPT.app/Contents/Resources/app.asar", "desktop app bundle, checked for IPC protocol changes")
+	flag.String("asar", desktopBundlePath(), "desktop app bundle, checked for IPC protocol changes")
 	installSpeech := flag.Bool("install-speech", false, "download and prepare the local speech model")
 	speechStatus := flag.Bool("speech-status", false, "print local speech model availability and exit")
 	noQR := flag.Bool("no-qr", false, "do not print the pairing QR code")
@@ -281,40 +280,6 @@ func serveClient(ctx context.Context, hub *Hub, conn *websocket.Conn, eventsOnly
 		}
 		hub.handle(c, data)
 	}
-}
-
-// defaultRouteIP returns the IPv4 address of the interface carrying the default route (usually Wi-Fi).
-func defaultRouteIP() string {
-	out, err := exec.Command("/sbin/route", "-n", "get", "default").Output()
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		f := strings.Fields(line)
-		if len(f) == 2 && f[0] == "interface:" {
-			ifc, err := net.InterfaceByName(f[1])
-			if err != nil {
-				return ""
-			}
-			as, _ := ifc.Addrs()
-			for _, a := range as {
-				if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil {
-					return ipn.IP.String()
-				}
-			}
-		}
-	}
-	return ""
-}
-
-func hostName() string {
-	if out, err := exec.Command("/usr/sbin/scutil", "--get", "ComputerName").Output(); err == nil {
-		if n := strings.TrimSpace(string(out)); n != "" {
-			return n
-		}
-	}
-	h, _ := os.Hostname()
-	return strings.TrimSuffix(h, ".local")
 }
 
 // cors lets the Android app (https://appassets.androidplatform.net) and pages
