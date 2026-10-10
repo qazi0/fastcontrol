@@ -82,8 +82,13 @@ func main() {
 	tokenFile := flag.String("token-file", filepath.Join(home, ".fastcontrol", "token"), "pairing token file (created if missing)")
 	ipcPath := flag.String("ipc", defaultIPCPath(), "desktop app IPC socket")
 	flag.String("asar", "/Applications/ChatGPT.app/Contents/Resources/app.asar", "desktop app bundle, checked for IPC protocol changes")
+	speechStatus := flag.Bool("speech-status", false, "print local speech model availability and exit")
 	noQR := flag.Bool("no-qr", false, "do not print the pairing QR code")
 	flag.Parse()
+	if *speechStatus {
+		fmt.Println(string(mustJSON(newSpeech().capability())))
+		return
+	}
 	log.SetFlags(log.Ltime)
 
 	token, err := loadToken(*tokenFile)

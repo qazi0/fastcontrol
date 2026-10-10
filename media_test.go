@@ -104,3 +104,64 @@ func TestImageServingAndDesktopRolloutParity(t *testing.T) {
 		t.Fatalf("served active non-image content: %d", w.Code)
 	}
 }
+
+func TestWhisperTranscriptFileAndCleanup(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "whisper-cli")
+	script := `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-file" ]; then shift; output="$1"; fi
+  shift
+done
+printf '%s' "$output" > "$(dirname "$0")/path"
+printf 'Spoken Draft.\n' > "$output.txt"
+printf 'Runtime Log Should Not Be The Draft\n'
+`
+	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s := &Speech{bin: bin, model: "whisper.cpp:base-q5_1", engine: "whispercpp", modelPath: "/model with spaces.bin", busy: make(chan struct{}, 1)}
+	r := httptest.NewRequest("POST", "/transcribe", bytes.NewReader(testVoiceWAV()))
+	r.Header.Set("Content-Type", "audio/wav")
+	w := httptest.NewRecorder()
+	s.serve(w, r)
+	if w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte("Spoken Draft.")) || bytes.Contains(w.Body.Bytes(), []byte("Runtime Log")) {
+		t.Fatalf("transcript response: %d %s", w.Code, w.Body.String())
+	}
+	path, err := os.ReadFile(filepath.Join(dir, "path"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []string{string(path), string(path) + ".txt"} {
+		if _, err := os.Stat(file); !os.IsNotExist(err) {
+			t.Fatalf("temporary recording or transcript remained: %s", file)
+		}
+	}
+	if len(s.busy) != 0 {
+		t.Fatal("transcription slot leaked")
+	}
+}
+
+func TestSpeechDiscoveryRejectsMissingOrCorruptModel(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".fastcontrol", "speech")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "whisper-cli"), []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if discoverSpeech(home, false).model != "" {
+		t.Fatal("missing model reported available")
+	}
+	models := filepath.Join(home, ".fastcontrol", "models")
+	if err := os.MkdirAll(models, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(models, bundledSpeechModel), []byte("incomplete"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if discoverSpeech(home, false).model != "" {
+		t.Fatal("partial model reported available")
+	}
+}

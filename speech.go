@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -15,39 +17,76 @@ import (
 )
 
 const maxVoiceBytes = 44 + 16000*2*120
+const bundledSpeechModel = "ggml-base-q5_1.bin"
+const bundledSpeechModelSHA256 = "422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898"
 
 type Speech struct {
-	bin   string
-	model string
-	busy  chan struct{}
+	bin       string
+	model     string
+	engine    string
+	modelPath string
+	busy      chan struct{}
 }
 
 func newSpeech() *Speech {
+	home, _ := os.UserHomeDir()
+	return discoverSpeech(home, os.Getenv("FASTCONTROL_SPEECH_ENGINE") != "whispercpp")
+}
+func discoverSpeech(home string, preferMacWhisper bool) *Speech {
 	s := &Speech{busy: make(chan struct{}, 1)}
-	for _, p := range []string{"/Applications/MacWhisper.app/Contents/MacOS/mw", "/usr/local/bin/mw"} {
-		if st, err := os.Stat(p); err == nil && st.Mode()&0111 != 0 {
-			s.bin = p
-			break
+	if preferMacWhisper {
+		for _, path := range []string{"/Applications/MacWhisper.app/Contents/MacOS/mw", "/usr/local/bin/mw"} {
+			if !speechExecutable(path) {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			out, err := exec.CommandContext(ctx, path, "models", "list").Output()
+			cancel()
+			if err != nil {
+				continue
+			}
+			for _, model := range []string{"parakeet-pro:nvidia_parakeet-v3", "parakeet-pro:nvidia_parakeet-v3_494MB", "whisper-cpp:ggml-model-whisper-turbo", "whisper-cpp:ggml-model-whisper-tiny"} {
+				if strings.Contains(string(out), model+" ") {
+					s.bin = path
+					s.model = model
+					s.engine = "macwhisper"
+					return s
+				}
+			}
 		}
 	}
-	if s.bin == "" {
-		return s
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, s.bin, "models", "list").Output()
-	if err != nil {
-		s.bin = ""
-		return s
-	}
-	models := string(out)
-	for _, m := range []string{"parakeet-pro:nvidia_parakeet-v3", "parakeet-pro:nvidia_parakeet-v3_494MB", "whisper-cpp:ggml-model-whisper-turbo", "whisper-cpp:ggml-model-whisper-tiny"} {
-		if strings.Contains(models, m+" ") {
-			s.model = m
-			break
-		}
+	path := filepath.Join(home, ".fastcontrol", "speech", "whisper-cli")
+	model := filepath.Join(home, ".fastcontrol", "models", bundledSpeechModel)
+	if speechExecutable(path) && validSpeechModel(model) {
+		s.bin = path
+		s.model = "whisper.cpp:base-q5_1"
+		s.engine = "whispercpp"
+		s.modelPath = model
 	}
 	return s
+}
+func speechExecutable(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.Mode().IsRegular() && st.Mode()&0111 != 0
+}
+func validSpeechModel(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || !st.Mode().IsRegular() || st.Size() != 59707625 {
+		return false
+	}
+	hash := sha256.New()
+	if _, err = io.Copy(hash, f); err != nil {
+		return false
+	}
+	return hex.EncodeToString(hash.Sum(nil)) == bundledSpeechModelSHA256
+}
+func (s *Speech) capability() map[string]any {
+	return map[string]any{"available": s.bin != "" && s.model != "", "model": s.model, "engine": s.engine}
 }
 
 // Voice accepts a bounded PCM WAV, rather than arbitrary paths or commands.
@@ -72,7 +111,7 @@ func (s *Speech) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(mustJSON(map[string]string{"error": msg}))
 	}
 	if r.Method == http.MethodGet {
-		_, _ = w.Write(mustJSON(map[string]any{"available": s.bin != "" && s.model != "", "model": s.model}))
+		_, _ = w.Write(mustJSON(s.capability()))
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -128,17 +167,39 @@ func (s *Speech) serve(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	start := time.Now()
 	cmd := exec.CommandContext(ctx, s.bin, "transcribe", f.Name(), "--model", s.model, "--language", "auto", "--no-speakers", "--format", "txt", "--no-timestamps")
+	transcriptPath := f.Name() + ".txt"
+	if s.engine == "whispercpp" {
+		defer os.Remove(transcriptPath)
+		cmd = exec.CommandContext(ctx, s.bin, "--model", s.modelPath, "--file", f.Name(), "--language", "auto", "--threads", "4", "--beam-size", "1", "--best-of", "1", "--no-timestamps", "--no-prints", "--output-txt", "--output-file", f.Name())
+	}
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
 			fail(504, "Transcription Timed Out. Try a Shorter Recording")
 		} else {
-			fail(502, "Transcription Failed. Check MacWhisper On The Mac")
+			fail(502, "Transcription Failed. Check The Speech Runtime On The Mac")
 		}
 		return
 	}
 	text := strings.TrimSpace(out.String())
+	if s.engine == "whispercpp" {
+		file, err := os.Open(transcriptPath)
+		if err != nil {
+			fail(502, "Could Not Read The Transcript")
+			return
+		}
+		data, readErr := io.ReadAll(io.LimitReader(file, 1<<20))
+		_ = file.Close()
+		if readErr != nil {
+			fail(502, "Could Not Read The Transcript")
+			return
+		}
+		text = strings.TrimSpace(string(data))
+		if text == "[BLANK_AUDIO]" {
+			text = ""
+		}
+	}
 	if text == "" {
 		fail(422, "No Speech Detected")
 		return

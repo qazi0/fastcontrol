@@ -20,7 +20,7 @@ This repository is private. You need repository access and an authenticated GitH
 bash -c 'set -euo pipefail; gh api repos/qazi0/fastcontrol/contents/install.sh --jq .content | base64 -D | bash'
 ```
 
-The installer downloads the Mac build, verifies its SHA-256 checksum and installs a login service. It works on Apple Silicon and Intel Macs.
+The installer downloads the Mac build, verifies its SHA-256 checksum, sets up local speech transcription and installs a login service. It requires macOS 13.3 or newer. It works on Apple Silicon and Intel Macs.
 
 The relay uses port 8787 and stores its token, binary and logs in `~/.fastcontrol/`. Pairing links appear in `~/.fastcontrol/relay.log`. Allow incoming connections if your firewall prompts.
 
@@ -65,13 +65,15 @@ keyPassword=YOUR_PASSWORD
 
 Keep the keystore and its password private and backed up. Subsequent APK releases must use the same key.
 
-Run `make android-release` and `make package`, then upload the contents of `dist/` to a GitHub release. The archives contain the relay and its LaunchAgent template. Never commit tokens, transcripts, recordings, signing keys or machine-specific settings.
+Packaging the speech runtime requires CMake and the macOS developer tools on the build machine. End users install prebuilt binaries. Run `make android-release` and `make package`, then upload the contents of `dist/` to a GitHub release. The archives contain the relay and its LaunchAgent template. Never commit tokens, transcripts, recordings, signing keys or machine-specific settings.
 
 ## Architecture
 
 The Go server reads the Codex state database and transcript files and connects to the desktop IPC socket for live control. For Claude Code it reads native JSONL sessions and uses the installed CLI with bidirectional streaming, tool approvals and interrupt controls. The same web UI runs in a browser and inside the Android WebView. Android adds microphone recording, notifications, pairing and device integration.
 
-Transcription uses the MacWhisper CLI and an explicitly selected installed local model. The current selection prefers Parakeet v3, with installed Whisper models as alternatives. The relay accepts bounded mono 16 kHz PCM WAV recordings and removes temporary audio after transcription. A paired Mac without a speech model can use another paired Mac's available model.
+The installer reuses a supported installed MacWhisper model, preferring Parakeet v3. When none is available, it automatically downloads a multilingual Whisper Base Q5 model (57 MiB) and uses the bundled whisper.cpp runtime. The runtime and model work without MacWhisper, Homebrew, Python, a paid speech app or an API key. Source archives and model downloads are pinned and verified with SHA-256 checksums. Recordings are transcribed locally on the Mac. The relay accepts bounded mono 16 kHz PCM WAV recordings and removes temporary audio after transcription. A paired Mac without a speech model can use another paired Mac's available model.
+
+The first installation needs internet access to download the model. The installer validates the fallback runtime and prepares its model before starting the relay. Existing working models are kept, and subsequent installations skip the model download. Run the installer again to repair a missing or corrupted fallback model. `./fastcontrol -speech-status` reports the chosen engine and model. Set `FASTCONTROL_SPEECH_ENGINE=whispercpp` when invoking the relay to select the bundled engine explicitly.
 
 The relay authenticates API requests with a random token and binds to loopback, Wi-Fi and Tailscale addresses. Use Tailscale when connecting outside a trusted LAN. Tokens grant control of sessions running with the permissions selected on the Mac.
 
@@ -91,4 +93,4 @@ Run the installer on the second Mac, then open Macs in Android and choose Add Ma
 
 Go tests cover transcript conversion, patches, paging, voice input validation and image serving. Both Mac installations and the Galaxy A73 have been exercised with real desktop sessions. Recent phone transcription checks returned drafts in 1.08 to 1.38 seconds over Wi-Fi for a short recorded test phrase. These are measured examples, not latency guarantees.
 
-Ubuntu fonts are distributed under the licence in `licenses/Ubuntu-Font-Licence.txt`.
+Ubuntu fonts are distributed under the licence in `licenses/Ubuntu-Font-Licence.txt`. The bundled [whisper.cpp runtime](https://github.com/ggml-org/whisper.cpp) and [OpenAI Whisper model](https://github.com/openai/whisper) use MIT licences included in the release.
