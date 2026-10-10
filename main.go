@@ -1,0 +1,348 @@
+// fastcontrol serves a fast phone UI for Codex threads running in the
+// ChatGPT/Codex desktop app on this Mac, over the LAN or Tailscale.
+package main
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"embed"
+	"encoding/hex"
+	"flag"
+	"fmt"
+	"io"
+	"io/fs"
+	"log"
+	"net"
+	"net/http"
+	neturl "net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/coder/websocket"
+	"github.com/mdp/qrterminal/v3"
+)
+
+//go:embed web
+var webFS embed.FS
+
+func loadToken(path string) (string, error) {
+	if b, err := os.ReadFile(path); err == nil {
+		if t := strings.TrimSpace(string(b)); len(t) >= 32 {
+			return t, nil
+		}
+	}
+	var b [24]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	t := hex.EncodeToString(b[:])
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", err
+	}
+	return t, os.WriteFile(path, []byte(t+"\n"), 0o600)
+}
+
+// autoAddrs picks loopback, Tailscale (100.64.0.0/10) and the default-route
+// interface (usually Wi-Fi). VPN and virtual adapters are left out.
+func autoAddrs() (addrs []string, preferred string) {
+	addrs = []string{"127.0.0.1"}
+	_, cgnat, _ := net.ParseCIDR("100.64.0.0/10")
+	ifaces, _ := net.Interfaces()
+	for _, ifc := range ifaces {
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		as, _ := ifc.Addrs()
+		for _, a := range as {
+			if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil && cgnat.Contains(ipn.IP.To4()) {
+				addrs = append(addrs, ipn.IP.String())
+				preferred = ipn.IP.String()
+			}
+		}
+	}
+	if lan := defaultRouteIP(); lan != "" && net.ParseIP(lan).IsPrivate() {
+		addrs = append(addrs, lan)
+		if preferred == "" {
+			preferred = lan
+		}
+	}
+	if preferred == "" {
+		preferred = "127.0.0.1"
+	}
+	return addrs, preferred
+}
+
+func main() {
+	home, _ := os.UserHomeDir()
+	port := flag.Int("port", 8787, "port to listen on")
+	bind := flag.String("bind", "auto", "comma-separated IPs to bind, or 'auto' for loopback, Tailscale and the default-route (Wi-Fi) address")
+	tokenFile := flag.String("token-file", filepath.Join(home, ".fastcontrol", "token"), "pairing token file (created if missing)")
+	ipcPath := flag.String("ipc", defaultIPCPath(), "desktop app IPC socket")
+	flag.String("asar", "/Applications/ChatGPT.app/Contents/Resources/app.asar", "desktop app bundle, checked for IPC protocol changes")
+	noQR := flag.Bool("no-qr", false, "do not print the pairing QR code")
+	flag.Parse()
+	log.SetFlags(log.Ltime)
+
+	token, err := loadToken(*tokenFile)
+	if err != nil {
+		log.Fatalf("token: %v", err)
+	}
+	db := stateDBPath()
+	if db == "" {
+		log.Fatalf("no ~/.codex/state_*.sqlite found; is Codex installed?")
+	}
+
+	asar := flag.Lookup("asar").Value.String()
+	if drift, err := checkProtocolDrift(asar); err != nil {
+		log.Printf("WARNING: could not verify the desktop IPC protocol (%v); live mode may fail", err)
+	} else if len(drift) > 0 {
+		log.Printf("WARNING: the desktop app changed its IPC protocol; live mode may fail until ipc.go is updated:")
+		for _, d := range drift {
+			log.Printf("  %s", d)
+		}
+	} else {
+		log.Printf("desktop IPC protocol versions match")
+	}
+
+	ipc := NewIPCClient(*ipcPath)
+	go ipc.Run()
+	hub := NewHub(ipc, db)
+	hub.refreshList()
+	go hub.RunList(context.Background())
+
+	sub, _ := fs.Sub(webFS, "web")
+	static := http.FileServer(http.FS(sub))
+	mux := http.NewServeMux()
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		static.ServeHTTP(w, r)
+	}))
+	authed := func(r *http.Request) bool {
+		t := r.URL.Query().Get("t")
+		if b, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+			t = b
+		}
+		return subtle.ConstantTimeCompare([]byte(t), []byte(token)) == 1
+	}
+	mux.HandleFunc("/auth", cors(func(w http.ResponseWriter, r *http.Request) {
+		if !authed(r) {
+			http.Error(w, "bad token", http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	speech := newSpeech()
+	mux.HandleFunc("/image", cors(func(w http.ResponseWriter, r *http.Request) {
+		if !authed(r) {
+			http.Error(w, "bad token", http.StatusUnauthorized)
+			return
+		}
+		serveImage(w, r)
+	}))
+	mux.HandleFunc("/transcribe", cors(func(w http.ResponseWriter, r *http.Request) {
+		if !authed(r) {
+			http.Error(w, "bad token", http.StatusUnauthorized)
+			return
+		}
+		speech.serve(w, r)
+	}))
+	mux.HandleFunc("/upload", cors(func(w http.ResponseWriter, r *http.Request) {
+		if !authed(r) {
+			http.Error(w, "bad token", http.StatusUnauthorized)
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST an image", http.StatusMethodNotAllowed)
+			return
+		}
+		path, err := saveUpload(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(mustJSON(map[string]string{"path": path}))
+	}))
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		if !authed(r) {
+			http.Error(w, "bad token", http.StatusUnauthorized)
+			return
+		}
+		// Origins are not checked: the Android app loads the UI from
+		// https://appassets.androidplatform.net and a browser may switch between
+		// Macs. The token is the authentication.
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionContextTakeover, InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		conn.SetReadLimit(1 << 20)
+		serveClient(r.Context(), hub, conn, r.URL.Query().Get("events") == "1")
+	})
+
+	var addrs []string
+	preferred := ""
+	if *bind == "auto" {
+		addrs, preferred = autoAddrs()
+	} else {
+		addrs = strings.Split(*bind, ",")
+		preferred = addrs[len(addrs)-1]
+	}
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	for _, a := range addrs {
+		if a = strings.TrimSpace(a); a != "127.0.0.1" && a != "::1" {
+			hub.addrs = append(hub.addrs, fmt.Sprintf("http://%s", net.JoinHostPort(a, fmt.Sprint(*port))))
+		}
+	}
+	for _, a := range addrs {
+		ln, err := net.Listen("tcp", net.JoinHostPort(strings.TrimSpace(a), fmt.Sprint(*port)))
+		if err != nil {
+			log.Printf("listen %s: %v", a, err)
+			continue
+		}
+		log.Printf("listening on http://%s", ln.Addr())
+		go func() { log.Println(srv.Serve(ln)) }()
+	}
+
+	base := fmt.Sprintf("http://%s:%d", preferred, *port)
+	url := fmt.Sprintf("%s/#t=%s", base, token)
+	app := fmt.Sprintf("fastcontrol://pair?url=%s&t=%s&name=%s", neturl.QueryEscape(base), token, neturl.QueryEscape(hostName()))
+	fmt.Printf("\nOpen on your phone:\n  %s\n\nPair the Android app:\n  %s\n\n", url, app)
+	if !*noQR {
+		qrterminal.GenerateHalfBlock(url, qrterminal.L, os.Stdout)
+	}
+	select {}
+}
+
+func serveClient(ctx context.Context, hub *Hub, conn *websocket.Conn, eventsOnly bool) {
+	c := &Client{hub: hub, out: make(chan []byte, 1024), done: make(chan struct{}), eventsOnly: eventsOnly, events: eventsOnly}
+	hub.addClient(c)
+	defer hub.removeClient(c)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		defer cancel()
+		ping := time.NewTicker(20 * time.Second)
+		defer ping.Stop()
+		for {
+			select {
+			case b := <-c.out:
+				wctx, wc := context.WithTimeout(ctx, 15*time.Second)
+				err := conn.Write(wctx, websocket.MessageText, b)
+				wc()
+				if err != nil {
+					return
+				}
+			case <-ping.C:
+				pctx, pc := context.WithTimeout(ctx, 10*time.Second)
+				err := conn.Ping(pctx)
+				pc()
+				if err != nil {
+					return
+				}
+			case <-c.done:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	// addrs lets clients fall back between Wi-Fi and Tailscale with one pairing.
+	c.push(mustJSON(map[string]any{"t": "hello", "host": hostName(), "desktop": hub.ipc.ClientID() != "", "v": 2, "addrs": hub.addrs}))
+	for {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			conn.CloseNow()
+			return
+		}
+		hub.handle(c, data)
+	}
+}
+
+// defaultRouteIP returns the IPv4 address of the interface carrying the default route (usually Wi-Fi).
+func defaultRouteIP() string {
+	out, err := exec.Command("/sbin/route", "-n", "get", "default").Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) == 2 && f[0] == "interface:" {
+			ifc, err := net.InterfaceByName(f[1])
+			if err != nil {
+				return ""
+			}
+			as, _ := ifc.Addrs()
+			for _, a := range as {
+				if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil {
+					return ipn.IP.String()
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func hostName() string {
+	if out, err := exec.Command("/usr/sbin/scutil", "--get", "ComputerName").Output(); err == nil {
+		if n := strings.TrimSpace(string(out)); n != "" {
+			return n
+		}
+	}
+	h, _ := os.Hostname()
+	return strings.TrimSuffix(h, ".local")
+}
+
+// cors lets the Android app (https://appassets.androidplatform.net) and pages
+// served by another Mac's relay call the HTTP endpoints. Private Network
+// Access preflights need the extra header.
+func cors(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if o := r.Header.Get("Origin"); o != "" {
+			w.Header().Set("Access-Control-Allow-Origin", o)
+			w.Header().Set("Vary", "Origin")
+		}
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.Header().Set("Access-Control-Allow-Private-Network", "true")
+			w.Header().Set("Access-Control-Max-Age", "600")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		h(w, r)
+	}
+}
+
+var imageExts = map[string]string{"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp", "image/heic": ".heic"}
+
+// saveUpload stores a raw image body in ~/.fastcontrol/uploads and returns its path.
+func saveUpload(r *http.Request) (string, error) {
+	const limit = 25 << 20
+	body := http.MaxBytesReader(nil, r.Body, limit)
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return "", fmt.Errorf("image too large or unreadable: %v", err)
+	}
+	ct := strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0])
+	if imageExts[ct] == "" {
+		ct = http.DetectContentType(data)
+	}
+	ext := imageExts[ct]
+	if ext == "" {
+		return "", fmt.Errorf("not an image (%s)", ct)
+	}
+	dir := uploadDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	p := filepath.Join(dir, uuid()+ext)
+	if err := os.WriteFile(p, data, 0o600); err != nil {
+		return "", err
+	}
+	log.Printf("upload: %s (%d KB)", filepath.Base(p), len(data)/1024)
+	return p, nil
+}

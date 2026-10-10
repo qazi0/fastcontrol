@@ -1,0 +1,12 @@
+fastcontrol
+relay.log
+dist/
+.remember/
+HANDOFF.md
+LAUNCH-PROMPT.txt
+sessions/
+*.keystore
+*.jks
+*.env
+signing.properties
+.DS_Store
