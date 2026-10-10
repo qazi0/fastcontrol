@@ -23,6 +23,17 @@ try {
     Copy-Item (Join-Path $Build 'bin/Release/whisper-cli.exe') (Join-Path $Package 'speech/whisper-cli.exe')
     Copy-Item (Join-Path $Work 'whisper.cpp-1.9.5/LICENSE') (Join-Path $Package 'speech/Whisper-LICENSE.txt')
     Copy-Item licenses (Join-Path $Package 'licenses') -Recurse
+    $ModuleLicenses = Join-Path $Package 'licenses/go-modules'
+    New-Item -ItemType Directory $ModuleLicenses -Force | Out-Null
+    foreach ($Module in (& go list -m -f '{{.Path}}|{{.Dir}}' all)) {
+        $Parts = $Module -split '\|', 2
+        if ($Parts.Count -eq 2 -and $Parts[1]) {
+            foreach ($License in Get-ChildItem $Parts[1] -File | Where-Object { $_.Name -match '^(LICENSE|COPYING|NOTICE)' }) {
+                $Name = ($Parts[0] -replace '[^a-zA-Z0-9.-]', '_') + '_' + $License.Name
+                Copy-Item $License.FullName (Join-Path $ModuleLicenses $Name)
+            }
+        }
+    }
     Copy-Item contrib/run-windows.ps1 $Package
     $env:CGO_ENABLED = '0'
     go build -trimpath -ldflags '-s -w' -o (Join-Path $Package 'fastcontrol.exe') .

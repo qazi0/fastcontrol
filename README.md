@@ -1,6 +1,6 @@
 # fastcontrol
 
-Control your Mac's coding sessions from an Android phone over Wi-Fi or Tailscale. The relay runs on your Mac and keeps transcripts and credentials there.
+Control your computer's coding sessions from an Android phone over Wi-Fi or Tailscale. The relay runs on your Mac or Windows PC and keeps transcripts and credentials there.
 
 Choose Codex or Claude Code when you open the app. Each provider shows its own projects, sessions, model catalogue and permission controls.
 
@@ -17,8 +17,10 @@ Choose Codex or Claude Code when you open the app. Each provider shows its own p
 This repository is private. You need repository access and an authenticated GitHub CLI (`gh auth login`). Install the latest release:
 
 ```sh
-bash -c 'set -euo pipefail; gh api repos/qazi0/fastcontrol/contents/install.sh --jq .content | base64 -D | bash'
+curl -fsSL -H "Authorization: Bearer $(gh auth token)" https://raw.githubusercontent.com/qazi0/fastcontrol/main/install.sh | bash
 ```
+
+The script lives in this private repository. The authorization header lets curl download it using your GitHub CLI login.
 
 The installer downloads the Mac build, verifies its SHA-256 checksum, sets up local speech transcription and installs a login service. It requires macOS 13.3 or newer. It supports Apple Silicon Macs.
 
@@ -27,8 +29,20 @@ The relay uses port 8787 and stores its token, binary and logs in `~/.fastcontro
 To skip speech setup from the one-line installer:
 
 ```sh
-bash -c 'set -euo pipefail; gh api repos/qazi0/fastcontrol/contents/install.sh --jq .content | base64 -D | bash -s -- --skip-speech'
+curl -fsSL -H "Authorization: Bearer $(gh auth token)" https://raw.githubusercontent.com/qazi0/fastcontrol/main/install.sh | bash -s -- --skip-speech
 ```
+
+## Install On Windows
+
+Native Windows support targets Windows 11 ARM64. Sign in with GitHub CLI and install Codex desktop or native Claude Code first. In PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/qazi0/fastcontrol/main/install.ps1 -Headers @{Authorization="Bearer $(gh auth token)"} | iex
+```
+
+The installer checks the release checksum, installs the relay and whisper.cpp, and creates a per-user login task. Its speech model prompt allows skipping the download. Set `$env:FASTCONTROL_SKIP_SPEECH = '1'` before installation to skip it directly. Pairing links appear in `%USERPROFILE%\.fastcontrol\relay.log`. Allow the executable through Windows Firewall on your trusted private network when prompted.
+
+Codex uses the desktop's native named pipe. Claude Code uses its native Windows executable and JSONL sessions. Windows reads the Codex SQLite database with a bundled pure Go driver. Speech uses Whisper Base Q5 locally. Compressed AAC uploads are available when `ffmpeg.exe` is on PATH; otherwise Android negotiates PCM WAV. Windows support is checked by the ARM64 build workflow. Live control against a signed-in Windows desktop needs a Windows machine for final verification.
 
 ## Android App
 
@@ -46,7 +60,7 @@ make
 ./fastcontrol -no-qr
 ```
 
-Requirements: macOS, Go 1.23 or newer, and either Codex desktop or an authenticated Claude Code installation. Codex live control requires the desktop app and its local IPC socket and state database. The protocol is private and checked against the installed desktop bundle at startup. App updates can require protocol changes.
+Requirements: macOS or Windows 11 ARM64, Go 1.23 or newer, and either Codex desktop or an authenticated Claude Code installation. Codex live control requires the desktop app and its local IPC socket and state database. The protocol is private and checked against the installed desktop bundle at startup. App updates can require protocol changes.
 
 ```sh
 make install                          # Login service
@@ -71,7 +85,7 @@ keyPassword=YOUR_PASSWORD
 
 Keep the keystore and its password private and backed up. Subsequent APK releases must use the same key.
 
-Packaging the speech runtime requires CMake and the macOS developer tools on the build machine. End users install prebuilt binaries. Run `make android-release` and `make package`, then upload the contents of `dist/` to a GitHub release. The archives contain the relay and its LaunchAgent template. Never commit tokens, transcripts, recordings, signing keys or machine-specific settings.
+Packaging the Mac speech runtime requires CMake and the macOS developer tools on the build machine. Windows packaging uses `scripts/build-windows.ps1`, CMake and Visual Studio ARM64 C++ build tools. End users install prebuilt binaries. Run `make android-release` and `make package`, then upload the contents of `dist/` to a GitHub release. The archives contain the relay and its LaunchAgent template. Never commit tokens, transcripts, recordings, signing keys or machine-specific settings.
 
 ## Architecture
 
@@ -100,3 +114,5 @@ Run the installer on the second Mac, then open Macs in Android and choose Add Ma
 Go tests cover transcript conversion, patches, paging, voice input validation and image serving. Both Mac installations and the Galaxy A73 have been exercised with real desktop sessions. Recent phone transcription checks returned drafts in 1.08 to 1.38 seconds over Wi-Fi for a short recorded test phrase. A compressed phone check returned the correct draft in 0.55 seconds, uploading 19.6 KB instead of 143.3 KB of decoded PCM. These are measured examples, not latency guarantees.
 
 Ubuntu fonts are distributed under the licence in `licenses/Ubuntu-Font-Licence.txt`. The bundled [whisper.cpp runtime](https://github.com/ggml-org/whisper.cpp) and [OpenAI Whisper model](https://github.com/openai/whisper) use MIT licences included in the release.
+
+OpenAI and Claude interface marks come from [Simple Icons](https://simpleicons.org/) under the licence in `licenses/Simple-Icons-CC0.txt`. The marks remain trademarks of their respective owners.

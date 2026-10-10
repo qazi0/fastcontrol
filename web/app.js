@@ -10,7 +10,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const base = (p) => (p || "").split("/").filter(Boolean).pop() || p || "";
+const base = (p) => (p || "").split(/[\\/]/).filter(Boolean).pop() || p || "";
 const svg = (d, cls = "") => `<svg class="ico ${cls}" viewBox="0 0 24 24">${d}</svg>`;
 const I = {
   chev: svg('<path d="M9 6l6 6-6 6"/>', "sm chev"),

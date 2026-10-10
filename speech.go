@@ -176,6 +176,10 @@ func (s *Speech) serve(w http.ResponseWriter, r *http.Request) {
 		fail(413, "Recording Is Too Large")
 		return
 	}
+	if compressed && !compressedVoiceAvailable() {
+		fail(415, "Compressed Voice Is Unavailable On This Computer. Record Again As WAV")
+		return
+	}
 	if !compressed {
 		if err := validateVoice(b); err != nil {
 			fail(400, err.Error())
@@ -242,7 +246,7 @@ func (s *Speech) serve(w http.ResponseWriter, r *http.Request) {
 		if ctx.Err() != nil {
 			fail(504, "Transcription Timed Out. Try a Shorter Recording")
 		} else {
-			fail(502, "Transcription Failed. Check The Speech Runtime On The Mac")
+			fail(502, "Transcription Failed. Check The Speech Runtime On The Computer")
 		}
 		return
 	}
