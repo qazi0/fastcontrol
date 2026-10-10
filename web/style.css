@@ -390,3 +390,6 @@ textarea, input { caret-color: var(--ink); }
 .h-sub > .provider-label { flex: none; }
 .scrim.dark { background: rgba(0, 0, 0, 0.82); }
 @media (prefers-color-scheme: light) { .gauge .g-on { stroke: var(--ink); } }
+
+#provider-switch { display: inline-flex; align-items: center; gap: 5px; flex: none; padding: 0 8px; font-size: 13px; }
+#provider-switch .ico { width: 10px; height: 10px; }

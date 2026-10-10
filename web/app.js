@@ -347,14 +347,14 @@ window.addEventListener("popstate", (e) => {
   if (S.sheet && !st.sheet) closeSheet(true);
   if (st.view === "thread") { if (S.id !== st.id || S.view !== "thread") openThread(st.sid, st.id, false); }
   else if (st.view === "project") { leaveThread(); openProject(st.cwd, false); }
-  else if (!st.sheet) { leaveThread(); show(st.view === "home" ? "home" : "providers"); renderHome(); }
+  else if (!st.sheet) { leaveThread(); show("home"); renderHome(); }
 });
 function selectProvider(provider, push = true) {
   if (!['codex','claude'].includes(provider)) return;
   leaveThread();
   S.newDraft=null;S.newAttach=[];
   S.provider=provider;store.set('provider',provider);
-  $('provider-switch').textContent=provider==='claude'?'Claude Code':'Codex';
+  $('provider-switch').innerHTML=`<span>${provider==='claude'?'Claude Code':'Codex'}</span>${I.down}`;
  $('ask').querySelector('span').textContent=provider==='claude'?'Ask Claude':'Ask Codex';
   for (const c of conns.values()) {
     const cache=c.byProvider[provider] || {};
@@ -364,7 +364,7 @@ function selectProvider(provider, push = true) {
   if(push)history.pushState({view:'home',provider},'');
   show('home');renderHome();
 }
-$('provider-switch').onclick=()=>{leaveThread();history.replaceState({view:'providers'},'');show('providers');};
+$('provider-switch').onclick=()=>openSheet('providers');
 $('provider-macs').onclick=()=>openSheet('macs');
 for(const button of document.querySelectorAll('[data-provider]'))button.onclick=()=>selectProvider(button.dataset.provider);
 for (const b of document.querySelectorAll(".back")) b.onclick = () => history.back();
@@ -691,7 +691,10 @@ function paintResponse(r) {
   el.classList.toggle("live", r.live || r.shown !== r.target);
   if (el.dataset.shown === r.shown) return;
   el.dataset.shown = r.shown;
-  el.innerHTML = md(r.shown);
+  const content = document.createElement("template");
+  content.innerHTML = md(r.shown);
+  preserveImages(el, content.content);
+  el.replaceChildren(content.content);
   queueImages(el);
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
   const nodes = [];
@@ -736,6 +739,13 @@ function revealResponses(now) {
   if (changed) { responsePaintAt = now; if (S.stick) feed.scrollTop = feed.scrollHeight; }
   if (pending) responseFrame = requestAnimationFrame(revealResponses);
 }
+// Reuse decoded images so unrelated live updates cannot collapse their height.
+function preserveImages(previous, next) {
+ const key = button => {const image=button.querySelector('img');return image?.dataset.relayImage ? image.dataset.server+':'+image.dataset.relayImage : image?.getAttribute('src');};
+ const images=new Map();
+ for(const button of previous.querySelectorAll('.image-preview')) {const id=key(button);if(!id)continue;if(!images.has(id))images.set(id,[]);images.get(id).push(button);}
+ for(const button of next.querySelectorAll('.image-preview')) {const existing=images.get(key(button))?.shift();if(existing && existing!==button)button.replaceWith(existing);}
+}
 function renderTurn(el, t, animate) {
   const old = new Map([...el.querySelectorAll("[data-response]")].map((p) => [p.dataset.response, p]));
   const template = document.createElement("template");
@@ -746,6 +756,7 @@ function renderTurn(el, t, animate) {
     if (node !== next) next.replaceWith(node);
     r.el = node; paintResponse(r);
   }
+  preserveImages(el, template.content);
   el.replaceChildren(template.content);
   queueImages(el);
 }
@@ -1459,6 +1470,10 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.sheet)
 const mi = (act, icon, name, d = "", side = "", cls = "") => `<button class="mi ${cls}" data-act="${act}">${icon || ""}<span class="txt">${name}${d ? `<span class="d">${d}</span>` : ""}</span>${side}</button>`;
 
 const SHEETS = {
+ providers(sh) {
+ sh.innerHTML='<div class="grip"></div><h2>Choose Agent</h2>'+['codex','claude'].map(provider=>mi(provider,'',provider==='claude'?'Claude Code':'Codex','',S.provider===provider?I.check:'')).join('');
+ sh.onclick=(event)=>{const button=event.target.closest('[data-act]');if(!button)return;closeSheet(true);selectProvider(button.dataset.act,false);history.replaceState({view:'home',provider:S.provider},'');};
+ },
   image(sh, { src, path, server }) {
     sh.innerHTML = `<header class="diff-head"><button class="icon-btn" data-x="close" aria-label="Back">${I.chev}</button><h2>Image</h2><button class="icon-btn" data-x="download" aria-label="Download Image">${I.download}</button></header><div class="image-stage"><img src="${esc(src)}" alt="Image" draggable="false" referrerpolicy="no-referrer"></div><div class="image-zoom"><button class="icon-btn" data-x="minus" aria-label="Zoom Out">${I.minus}</button><button class="chip" data-x="fit">Fit</button><button class="icon-btn" data-x="plus" aria-label="Zoom In">${I.plus}</button></div>`;
     const stage = sh.querySelector(".image-stage"), img = stage.querySelector("img"), fit = sh.querySelector('[data-x="fit"]');
@@ -1799,11 +1814,10 @@ window.onAndroidIntent = function () {
 
 // ------------------------------------------------------------------- boot --
 
-history.replaceState({view:"providers"}, "");
+history.replaceState({view:"home",provider:S.provider}, "");
 syncConns();
 if (Native) saveServers();
-show("providers");
-renderHome();
+selectProvider(S.provider,false);
 mark("firstRender");
 if (Native) window.onAndroidIntent();
 if (!Native && "serviceWorker" in navigator && window.isSecureContext && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
