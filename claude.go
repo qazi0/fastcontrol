@@ -240,8 +240,32 @@ func (m *ClaudeManager) refreshActive() {
 		active[a.SessionID] = a
 	}
 	m.mu.Lock()
+	previous := m.active
 	m.active = active
+	managed := make(map[string]bool, len(m.runs))
+	for id := range m.runs {
+		managed[id] = true
+	}
+	entries := m.entries
 	m.mu.Unlock()
+	for id, next := range active {
+		if managed[id] {
+			continue
+		}
+		old, known := previous[id]
+		if known && old.State != next.State && next.State == "blocked" {
+			m.event(id, "attention", entries[id].Info.Title, "Needs Your Attention")
+		}
+	}
+	for id, old := range previous {
+		if managed[id] {
+			continue
+		}
+		next, exists := active[id]
+		if (old.State == "running" || old.State == "blocked") && (!exists || next.State == "idle") {
+			m.event(id, "completed", entries[id].Info.Title, entries[id].Info.LastMsg)
+		}
+	}
 }
 func (m *ClaudeManager) run(ctx context.Context) {
 	m.refresh()
@@ -314,6 +338,45 @@ func (m *ClaudeManager) open(c *Client, id string, more bool) error {
 	active := m.active[id]
 	m.mu.Unlock()
 	if run != nil {
+		if more && exists {
+			size := int64(2 << 20)
+			var history *claudeTranscript
+			for {
+				var err error
+				history, err = readClaudeTranscript(entry.Path, window, size)
+				if err != nil {
+					return err
+				}
+				if len(history.Turns) >= window || size >= entry.Size || size >= 64<<20 {
+					break
+				}
+				size *= 2
+			}
+			run.mu.Lock()
+			live := map[string]Turn{}
+			for _, turn := range run.view.Turns {
+				live[turn.Key] = turn
+			}
+			for i, turn := range history.Turns {
+				if current, ok := live[turn.Key]; ok {
+					history.Turns[i] = current
+					delete(live, turn.Key)
+				}
+			}
+			for _, turn := range run.view.Turns {
+				if _, ok := live[turn.Key]; ok {
+					history.Turns = append(history.Turns, turn)
+				}
+			}
+			for k, d := range run.view.Diffs {
+				history.Diffs[k] = d
+			}
+			history.Meta = run.view.Meta
+			history.Meta.HasOlder = history.More
+			history.reindex()
+			run.view = history
+			run.mu.Unlock()
+		}
 		meta, turns := run.snapshot()
 		m.emit(c, map[string]any{"t": "open", "id": id, "meta": meta, "turns": turns, "more": more})
 		return nil

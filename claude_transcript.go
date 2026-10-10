@@ -331,6 +331,12 @@ func readClaudeTranscript(path string, window int, tailBytes int64) (*claudeTran
 		v.Turns = v.Turns[len(v.Turns)-window:]
 		v.More = true
 	}
+	v.reindex()
+	v.Meta.HasOlder = v.More
+	return v, nil
+}
+
+func (v *claudeTranscript) reindex() {
 	v.cur = len(v.Turns) - 1
 	v.tools = map[string][2]int{}
 	for ti, turn := range v.Turns {
@@ -340,6 +346,4 @@ func readClaudeTranscript(path string, window int, tailBytes int64) (*claudeTran
 			}
 		}
 	}
-	v.Meta.HasOlder = v.More
-	return v, nil
 }

@@ -325,6 +325,15 @@ func (r *ClaudeRun) dispatchNext() error {
 	r.queue = r.queue[1:]
 	r.running = true
 	r.interrupted = false
+	if len(r.view.Turns) >= 1000 {
+		for _, turn := range r.view.Turns[:len(r.view.Turns)-999] {
+			delete(r.view.Diffs, turn.Key)
+			delete(r.lastPublished, turn.Key)
+		}
+		r.view.Turns = r.view.Turns[len(r.view.Turns)-999:]
+		r.view.Meta.HasOlder = true
+		r.view.reindex()
+	}
 	r.view.ensureTurn(next.ID, time.Now().UnixMilli())
 	r.view.current().Status = "inProgress"
 	r.view.Meta.TurnAt = time.Now().UnixMilli()
@@ -371,13 +380,13 @@ func (r *ClaudeRun) read(stdout io.Reader) {
 		r.view.current().Error = "Claude Process Stopped"
 	}
 	r.mu.Unlock()
-	close(r.done)
 	r.publish()
 	r.manager.mu.Lock()
 	if r.manager.runs[r.id] == r {
 		delete(r.manager.runs, r.id)
 	}
 	r.manager.mu.Unlock()
+	close(r.done)
 }
 func (r *ClaudeRun) consume(m map[string]any) {
 	if str(m, "type") == "result" {

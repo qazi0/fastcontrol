@@ -1,5 +1,4 @@
-// fastcontrol serves a fast phone UI for Codex threads running in the
-// ChatGPT/Codex desktop app on this Mac, over the LAN or Tailscale.
+// fastcontrol serves coding sessions from Codex and Claude Code over LAN or Tailscale.
 package main
 
 import (
@@ -93,7 +92,7 @@ func main() {
 	}
 	db := stateDBPath()
 	if db == "" && claudeBinary() == "" {
-		log.Fatalf("no ~/.codex/state_*.sqlite found; is Codex installed?")
+		log.Fatalf("Install Codex Desktop Or Claude Code Before Starting fastcontrol")
 	}
 
 	asar := flag.Lookup("asar").Value.String()
