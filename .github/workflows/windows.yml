@@ -11,6 +11,15 @@ on:
       - 'scripts/build-windows.ps1'
       - 'contrib/run-windows.ps1'
       - '.github/workflows/windows.yml'
+  pull_request:
+    paths:
+      - '*.go'
+      - 'go.*'
+      - 'web/**'
+      - 'install.ps1'
+      - 'scripts/build-windows.ps1'
+      - 'contrib/run-windows.ps1'
+      - '.github/workflows/windows.yml'
 permissions:
   contents: read
 jobs:
