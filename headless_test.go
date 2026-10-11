@@ -106,13 +106,17 @@ func TestHeadlessStopRetriesCodexStartupRace(t *testing.T) {
 			delete(response, "result")
 			response["error"] = map[string]any{"message": "no active turn to interrupt"}
 		}
+		if attempts == 2 {
+			delete(response, "result")
+			response["error"] = map[string]any{"message": "expected active turn id new but found previous"}
+		}
 		a.receive(mustJSON(response))
 		return nil
 	}
 	if err := a.interrupt("chat"); err != nil {
 		t.Fatal(err)
 	}
-	if attempts != 2 {
+	if attempts != 3 {
 		t.Fatalf("interrupt attempts: %d", attempts)
 	}
 }

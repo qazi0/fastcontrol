@@ -31,6 +31,9 @@ cmake --build "$build" --target whisper-cli --parallel 4
 mkdir -p "$folder/speech"
 install -m 755 "$build/bin/whisper-cli" "$folder/speech/whisper-cli"
 cp "$source_dir/LICENSE" "$folder/speech/Whisper-LICENSE.txt"
+gcc_major="$(gcc -dumpversion | cut -d. -f1)"
+cp "/usr/share/doc/gcc-$gcc_major-base/copyright" "$folder/speech/GCC-Runtime-LICENSE.txt"
+cp /usr/share/common-licenses/GPL-3 "$folder/speech/GPL-3.txt"
 cp scripts/setup-speech.sh "$folder/speech/setup.sh"
 CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags '-s -w' -o "$folder/fastcontrol" .
 cp contrib/fastcontrol.service "$folder/"

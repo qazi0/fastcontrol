@@ -836,7 +836,7 @@ func lastTurnIDJSON(thread map[string]any) string {
 }
 
 func (a *HeadlessCodex) interrupt(threadID string) error {
-	for attempt := 0; attempt < 5; attempt++ {
+	for attempt := 0; attempt < 10; attempt++ {
 		a.mu.Lock()
 		turnID := lastTurnIDJSON(a.threads[threadID])
 		a.mu.Unlock()
@@ -847,7 +847,9 @@ func (a *HeadlessCodex) interrupt(threadID string) error {
 		if err == nil {
 			return nil
 		}
-		if !strings.Contains(strings.ToLower(err.Error()), "no active turn") || attempt == 4 {
+		message := strings.ToLower(err.Error())
+		starting := strings.Contains(message, "no active turn") || strings.HasPrefix(message, "expected active turn id ")
+		if !starting || attempt == 9 {
 			return err
 		}
 		// Codex can acknowledge a new turn before its interrupt handler sees it.
