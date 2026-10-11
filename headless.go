@@ -773,14 +773,7 @@ func (a *HeadlessCodex) handle(c *Client, raw []byte) bool {
 			}
 		case "wake":
 		case "stop":
-			a.mu.Lock()
-			id := lastTurnIDJSON(a.threads[m.ID])
-			a.mu.Unlock()
-			if id == "" {
-				err = errors.New("No Active Turn")
-			} else {
-				_, err = a.call("turn/interrupt", map[string]any{"threadId": m.ID, "turnId": id})
-			}
+			err = a.interrupt(m.ID)
 		case "compact":
 			_, err = a.call("thread/compact/start", map[string]any{"threadId": m.ID})
 		case "settings":
@@ -840,6 +833,27 @@ func lastTurnIDJSON(thread map[string]any) string {
 		return ""
 	}
 	return str(turn, "id")
+}
+
+func (a *HeadlessCodex) interrupt(threadID string) error {
+	for attempt := 0; attempt < 5; attempt++ {
+		a.mu.Lock()
+		turnID := lastTurnIDJSON(a.threads[threadID])
+		a.mu.Unlock()
+		if turnID == "" {
+			return nil
+		}
+		_, err := a.call("turn/interrupt", map[string]any{"threadId": threadID, "turnId": turnID})
+		if err == nil {
+			return nil
+		}
+		if !strings.Contains(strings.ToLower(err.Error()), "no active turn") || attempt == 4 {
+			return err
+		}
+		// Codex can acknowledge a new turn before its interrupt handler sees it.
+		time.Sleep(100 * time.Millisecond)
+	}
+	return nil
 }
 func (a *HeadlessCodex) sendTurn(id, text string, images []string) error {
 	if strings.TrimSpace(text) == "" && len(images) == 0 {

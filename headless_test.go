@@ -90,3 +90,29 @@ func TestHeadlessTurnResponsePrecedesImmediateStop(t *testing.T) {
 		t.Fatalf("immediate Stop cannot find acknowledged turn: %q", id)
 	}
 }
+
+func TestHeadlessStopRetriesCodexStartupRace(t *testing.T) {
+	a := newHeadlessCodex(NewHub(NewIPCClient(""), ""))
+	a.threads["chat"] = map[string]any{"turns": []any{map[string]any{"id": "turn", "status": "inProgress"}}}
+	attempts := 0
+	a.write = func(data []byte) error {
+		var request map[string]any
+		if err := json.Unmarshal(data, &request); err != nil {
+			return err
+		}
+		attempts++
+		response := map[string]any{"id": request["id"], "result": map[string]any{}}
+		if attempts == 1 {
+			delete(response, "result")
+			response["error"] = map[string]any{"message": "no active turn to interrupt"}
+		}
+		a.receive(mustJSON(response))
+		return nil
+	}
+	if err := a.interrupt("chat"); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("interrupt attempts: %d", attempts)
+	}
+}
