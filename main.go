@@ -17,6 +17,7 @@ import (
 	neturl "net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -108,12 +109,15 @@ func main() {
 		log.Fatalf("token: %v", err)
 	}
 	db := stateDBPath()
-	if db == "" && claudeBinary() == "" {
-		log.Fatalf("Install Codex Desktop Or Claude Code Before Starting fastcontrol")
+	_, codexErr := codexBin()
+	if db == "" && claudeBinary() == "" && codexErr != nil {
+		log.Fatalf("Install Codex Or Claude Code Before Starting fastcontrol")
 	}
 
 	asar := flag.Lookup("asar").Value.String()
-	if drift, err := checkProtocolDrift(asar); err != nil {
+	if asar == "" {
+		log.Printf("Codex Uses The Local CLI On This Platform")
+	} else if drift, err := checkProtocolDrift(asar); err != nil {
 		log.Printf("WARNING: could not verify the desktop IPC protocol (%v); live mode may fail", err)
 	} else if len(drift) > 0 {
 		log.Printf("WARNING: the desktop app changed its IPC protocol; live mode may fail until ipc.go is updated:")
@@ -125,8 +129,12 @@ func main() {
 	}
 
 	ipc := NewIPCClient(*ipcPath)
-	go ipc.Run()
 	hub := NewHub(ipc, db)
+	if runtime.GOOS == "linux" {
+		hub.headless = newHeadlessCodex(hub)
+	} else {
+		go ipc.Run()
+	}
 	hub.claude = newClaudeManager(hub)
 	go hub.claude.run(context.Background())
 	hub.refreshList()

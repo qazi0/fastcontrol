@@ -48,8 +48,7 @@ type ThreadInfo struct {
 }
 
 func stateDBPath() string {
-	home, _ := os.UserHomeDir()
-	matches, _ := filepath.Glob(filepath.Join(home, ".codex", "state_*.sqlite"))
+	matches, _ := filepath.Glob(filepath.Join(codexHome(), "state_*.sqlite"))
 	best := ""
 	for _, m := range matches {
 		if m > best {
@@ -316,8 +315,7 @@ func errorText(s string) string {
 // findRollout locates a thread's rollout before the database lists it
 // (a codex exec run writes the file first).
 func findRollout(id string) string {
-	home, _ := os.UserHomeDir()
-	m, _ := filepath.Glob(filepath.Join(home, ".codex", "sessions", "*", "*", "*", "rollout-*-"+id+".jsonl"))
+	m, _ := filepath.Glob(filepath.Join(codexHome(), "sessions", "*", "*", "*", "rollout-*-"+id+".jsonl"))
 	if len(m) == 0 {
 		return ""
 	}

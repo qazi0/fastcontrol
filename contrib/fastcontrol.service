@@ -1,0 +1,16 @@
+[Unit]
+Description=fastcontrol Relay
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart="%h/.fastcontrol/fastcontrol" -no-qr
+WorkingDirectory=%h
+Restart=on-failure
+RestartSec=3
+UMask=0077
+StandardOutput=append:%h/.fastcontrol/relay.log
+StandardError=append:%h/.fastcontrol/relay.log
+
+[Install]
+WantedBy=default.target

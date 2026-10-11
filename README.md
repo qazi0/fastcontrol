@@ -29,6 +29,20 @@ curl -fsSL https://raw.githubusercontent.com/qazi0/fastcontrol/main/install.sh |
 
 You can install the model later from the Android microphone button.
 
+## Install on Linux
+
+Supports ARM64 and x86_64 Linux with glibc 2.35 or newer, including Ubuntu 22.04 and later. Install the Codex CLI or Claude Code and sign in, then run the same installer:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/qazi0/fastcontrol/main/install.sh | bash
+```
+
+The installer verifies the package checksum, installs local Whisper transcription and starts a systemd user service. On systems without a user service manager, it starts the relay in the background. Use `--skip-speech` to defer the 56.94 MiB model download. Install FFmpeg for compressed voice uploads.
+
+Codex chats run through the local app-server, with streaming, follow-up messages, stop controls and approval prompts. An existing shared Codex daemon is reused when available. Claude Code uses its installed CLI. A desktop app is not required.
+
+Manage the service with `systemctl --user restart fastcontrol` or `systemctl --user stop fastcontrol`. For a headless host that must stay online after logout, enable user lingering with `loginctl enable-linger "$USER"`.
+
 ## Install on Windows
 
 Requires Windows 11 ARM64 and a signed-in Codex desktop or native Claude Code installation. Run in PowerShell:
@@ -45,7 +59,7 @@ Windows installation and speech setup are tested on ARM64. Live control of signe
 
 Download [fastcontrol_android.apk from the latest release](https://github.com/qazi0/fastcontrol/releases/latest). Android 8 or newer is required.
 
-Open the pairing link from `~/.fastcontrol/relay.log` on Mac or `%USERPROFILE%\.fastcontrol\relay.log` on Windows. You can also choose Add Computer in Android and enter the computer's address and token. The relay uses port 8787. Allow the relay through your firewall when prompted. Use Tailscale to connect outside your LAN.
+Open the pairing link from `~/.fastcontrol/relay.log` on Mac or Linux, or `%USERPROFILE%\.fastcontrol\relay.log` on Windows. You can also choose Add Computer in Android and enter the computer's address and token. The relay uses port 8787. Allow the relay through your firewall when prompted. Use Tailscale to connect outside your LAN.
 
 Repeat the computer installation to add another host. Each computer keeps its own coding sessions and credentials.
 
@@ -53,7 +67,7 @@ Repeat the computer installation to add another host. Each computer keeps its ow
 
 Subscription limits come from the account signed in on the selected computer. Computers sharing an account share its quota. Token and cost totals come from that computer's local logs. Dollar amounts estimate the API value of those tokens, including cached usage; they are separate from subscription charges. Unpriced models are identified rather than assigned a guessed cost.
 
-Audio is sent to the computer selected for the chat, transcribed locally and returned as a draft. No speech model runs on the phone. Mac uploads use 16 kHz mono AAC at 32 kbps. Windows supports AAC when FFmpeg is installed and uses WAV otherwise. Recordings are limited to two minutes and temporary audio is removed after transcription.
+Audio is sent to the computer selected for the chat, transcribed locally and returned as a draft. No speech model runs on the phone. Mac uploads use 16 kHz mono AAC at 32 kbps. Linux and Windows support AAC when FFmpeg is installed and use WAV otherwise. Recordings are limited to two minutes and temporary audio is removed after transcription.
 
 ## Build From Source
 
@@ -76,7 +90,7 @@ make android-release  # Signed APK
 make package          # Mac archive and checksums
 ```
 
-Android builds use Java 17 and Android SDK 36. The Makefile builds Gradle offline; populate the dependency cache with a normal Gradle build on a new machine. Windows packaging uses `scripts/build-windows.ps1`, CMake and Visual Studio with Clang and ARM64 C++ tools.
+Android builds use Java 17 and Android SDK 36. The Makefile builds Gradle offline; populate the dependency cache with a normal Gradle build on a new machine. Linux packaging uses `scripts/package-linux.sh`, GCC and CMake. Windows packaging uses `scripts/build-windows.ps1`, CMake and Visual Studio with Clang and ARM64 C++ tools.
 
 Create `android/signing.properties` locally for signed APKs:
 
@@ -89,6 +103,6 @@ keyPassword=YOUR_PASSWORD
 
 Keep the signing key, tokens and recordings out of Git. A pairing token grants control of the sessions available through its relay.
 
-The Codex adapter uses the desktop app's local IPC protocol, which can change with app updates. Claude Code uses native transcripts and the installed CLI. External Claude sessions open for viewing; Take Over stops the existing process before resuming it through fastcontrol. Archive preserves the native transcript.
+On Mac and Windows, the Codex adapter uses the desktop app's local IPC protocol, which can change with app updates. Linux uses the CLI app-server protocol. Claude Code uses native transcripts and the installed CLI. External Claude sessions open for viewing; Take Over stops the existing process before resuming it through fastcontrol. Archive preserves the native transcript.
 
 [Release downloads](https://github.com/qazi0/fastcontrol/releases) include the relay, speech runtime and Android APK. Dependency licences are in `licenses/`. Ubuntu fonts, whisper.cpp, Whisper and the provider marks retain their respective licences and trademarks.

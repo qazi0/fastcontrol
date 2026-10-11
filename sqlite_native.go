@@ -1,3 +1,5 @@
+//go:build windows || linux
+
 package main
 
 import (
@@ -6,13 +8,22 @@ import (
 	"encoding/json"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
 func sqliteJSON(path, query string) ([]byte, error) {
-	uri := (&url.URL{Scheme: "file", Path: "/" + filepath.ToSlash(path)}).String() + "?mode=ro&_pragma=busy_timeout(500)"
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	uriPath := filepath.ToSlash(absolute)
+	if !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	uri := (&url.URL{Scheme: "file", Path: uriPath}).String() + "?mode=ro&_pragma=busy_timeout(500)"
 	db, err := sql.Open("sqlite", uri)
 	if err != nil {
 		return nil, err

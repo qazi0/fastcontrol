@@ -56,9 +56,10 @@ func mustJSON(v any) []byte {
 // ---- hub ----
 
 type Hub struct {
-	claude *ClaudeManager
-	ipc    *IPCClient
-	db     string
+	claude   *ClaudeManager
+	headless *HeadlessCodex
+	ipc      *IPCClient
+	db       string
 
 	listMu sync.Mutex // serializes refreshList
 	addrs  []string   // http://ip:port for every non-loopback listener, sent in hello
@@ -188,7 +189,9 @@ func (h *Hub) refreshList() {
 	defer h.listMu.Unlock()
 	var ts []ThreadInfo
 	var err error
-	if h.db != "" {
+	if h.headless != nil {
+		ts, err = h.headless.listThreads()
+	} else if h.db != "" {
 		ts, err = listThreads(h.db)
 	} else {
 		ts = []ThreadInfo{}
@@ -249,6 +252,14 @@ func (h *Hub) threadInfo(id string) (ThreadInfo, bool) {
 }
 
 func (h *Hub) session(id string, create bool) *Session {
+	var headlessInfo ThreadInfo
+	if h.headless != nil {
+		h.headless.mu.Lock()
+		if thread := h.headless.threads[id]; thread != nil {
+			headlessInfo = ThreadInfo{ID: id, Title: firstNonEmpty(str(thread, "name"), str(thread, "preview"), "New Chat"), Cwd: str(thread, "cwd"), Rollout: str(thread, "path")}
+		}
+		h.headless.mu.Unlock()
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if s := h.sessions[id]; s != nil || !create {
@@ -262,6 +273,11 @@ func (h *Hub) session(id string, create bool) *Session {
 		}
 		return ThreadInfo{}, false
 	}()
+	if !ok {
+		if headlessInfo.ID != "" {
+			info, ok = headlessInfo, true
+		}
+	}
 	if !ok {
 		// A codex exec run writes its rollout before the database lists it.
 		r := findRollout(id)
@@ -303,6 +319,9 @@ func (h *Hub) handle(c *Client, raw []byte) {
 	}
 	if route.Provider != "" && route.Provider != "codex" && route.Provider != "claude" {
 		c.push(mustJSON(map[string]any{"t": "ack", "op": route.Op, "nonce": route.Nonce, "ok": false, "msg": "Unknown Provider"}))
+		return
+	}
+	if h.headless != nil && h.headless.handle(c, raw) {
 		return
 	}
 	var m struct {
@@ -728,7 +747,9 @@ func (s *Session) run() {
 		case fn := <-s.cmds:
 			fn()
 		case <-s.resync:
-			if s.owner != "" {
+			if s.hub.headless != nil {
+				go s.hub.headless.attach(s)
+			} else if s.owner != "" {
 				s.follow(s.owner, true)
 			}
 		case <-flush.C:
@@ -777,6 +798,10 @@ func (s *Session) dropLive() {
 // tryFollow asks the IPC router which desktop window owns the thread and, if
 // one does, subscribes as a follower. Runs off the session goroutine.
 func (s *Session) tryFollow() {
+	if s.hub.headless != nil {
+		s.hub.headless.attach(s)
+		return
+	}
 	s.cmds <- func() { s.lastTry = time.Now() }
 	r, err := s.hub.ipc.Request("thread-owner-discovery", map[string]string{"hostId": "local", "conversationId": s.id}, "", 1500*time.Millisecond, nil)
 	if err != nil || r.HandledBy == "" {

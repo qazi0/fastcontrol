@@ -199,8 +199,9 @@ func codexBin() (string, error) {
 		"/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex",
 		"/opt/homebrew/bin/codex",
 		"/usr/local/bin/codex",
+		filepath.Join(userHome(), ".local", "bin", "codex"),
 	} {
-		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+		if speechExecutable(p) {
 			return p, nil
 		}
 	}
@@ -210,6 +211,8 @@ func codexBin() (string, error) {
 	return "", errors.New("codex CLI not found")
 }
 
+func userHome() string { home, _ := os.UserHomeDir(); return home }
+
 func codexEnv() []string {
 	env := os.Environ()
 	if runtime.GOOS == "windows" {
@@ -217,7 +220,7 @@ func codexEnv() []string {
 	}
 	for i, e := range env {
 		if strings.HasPrefix(e, "PATH=") {
-			env[i] = e + ":/opt/homebrew/bin:/usr/local/bin"
+			env[i] = e + ":" + filepath.Join(userHome(), ".local", "bin") + ":/opt/homebrew/bin:/usr/local/bin"
 			return env
 		}
 	}
