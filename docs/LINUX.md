@@ -7,7 +7,7 @@ fastcontrol supports Linux ARM64 and x86_64. Release packages are built on Ubunt
 Install and sign in to the Codex CLI or Claude Code first. Then run:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/qazi0/fastcontrol/main/install.sh | bash
+curl -fsSL https://github.com/qazi0/fastcontrol/releases/latest/download/install.sh | bash
 ```
 
 Add `bash -s -- --skip-speech` in place of `bash` to defer the model download. The default model is multilingual Whisper Base Q5, 59,707,625 bytes (56.94 MiB). FFmpeg enables compressed voice uploads. WAV works without it.

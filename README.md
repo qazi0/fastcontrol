@@ -16,7 +16,7 @@ Instant access to your existing Codex and Claude Code sessions from Android. fas
 Requires Apple Silicon and macOS 13.3 or newer. Install Codex desktop or Claude Code and sign in, then run:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/qazi0/fastcontrol/main/install.sh | bash
+curl -fsSL https://github.com/qazi0/fastcontrol/releases/latest/download/install.sh | bash
 ```
 
 The installer downloads the relay, verifies its checksum and starts it at login. It also sets up speech transcription. The default model is multilingual Whisper Base Q5: **59,707,625 bytes (56.94 MiB)**. If a supported local MacWhisper model is already installed, fastcontrol reuses it, preferring Parakeet v3.
@@ -24,7 +24,7 @@ The installer downloads the relay, verifies its checksum and starts it at login.
 To skip the model download:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/qazi0/fastcontrol/main/install.sh | bash -s -- --skip-speech
+curl -fsSL https://github.com/qazi0/fastcontrol/releases/latest/download/install.sh | bash -s -- --skip-speech
 ```
 
 You can install the model later from the Android microphone button.
@@ -34,7 +34,7 @@ You can install the model later from the Android microphone button.
 Supports ARM64 and x86_64 Linux with glibc 2.35 or newer, including Ubuntu 22.04 and later. Install the Codex CLI or Claude Code and sign in, then run the same installer:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/qazi0/fastcontrol/main/install.sh | bash
+curl -fsSL https://github.com/qazi0/fastcontrol/releases/latest/download/install.sh | bash
 ```
 
 The installer verifies the package checksum, installs local Whisper transcription and starts a systemd user service. On systems without a user service manager, it starts the relay in the background. Use `--skip-speech` to defer the 56.94 MiB model download. Install FFmpeg for compressed voice uploads.
@@ -48,7 +48,7 @@ Manage the service with `systemctl --user restart fastcontrol` or `systemctl --u
 Requires Windows 11 ARM64 and a signed-in Codex desktop or native Claude Code installation. Run in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/qazi0/fastcontrol/main/install.ps1 | iex
+irm https://github.com/qazi0/fastcontrol/releases/latest/download/install.ps1 | iex
 ```
 
 The installer sets up the relay, a login task and local Whisper transcription. To skip the model download, set `$env:FASTCONTROL_SKIP_SPEECH = '1'` before running it.
