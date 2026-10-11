@@ -362,7 +362,7 @@ func (a *HeadlessCodex) stateLocked(id string) []byte {
 			requests = append(requests, request)
 		}
 	}
-	return mustJSON(map[string]any{"title": firstNonEmpty(str(t, "name"), str(t, "preview"), "New Chat"), "cwd": t["cwd"], "latestModel": t["model"], "latestReasoningEffort": t["reasoningEffort"], "latestThreadSettings": a.settings[id], "latestTokenUsageInfo": t["tokenUsage"], "gitInfo": t["gitInfo"], "threadRuntimeStatus": t["status"], "requests": requests, "turnHistory": map[string]any{"history": map[string]any{"entitiesByKey": entities, "islands": []any{map[string]any{"entries": entries}}}}})
+	return mustJSON(map[string]any{"title": firstNonEmpty(str(t, "name"), str(t, "preview"), "New Chat"), "cwd": t["cwd"], "latestModel": t["model"], "latestReasoningEffort": t["reasoningEffort"], "latestThreadSettings": a.settings[id], "latestTokenUsageInfo": t["tokenUsage"], "gitInfo": t["gitInfo"], "threadRuntimeStatus": t["status"], "turnsPagination": t["turnsPagination"], "requests": requests, "turnHistory": map[string]any{"history": map[string]any{"entitiesByKey": entities, "islands": []any{map[string]any{"entries": entries}}}}})
 }
 func (a *HeadlessCodex) publishLocked(id string) {
 	a.hub.mu.Lock()
@@ -474,12 +474,43 @@ func (a *HeadlessCodex) resume(id string) error {
 	if loaded {
 		return nil
 	}
-	result, err := a.call("thread/resume", map[string]any{"threadId": id})
+	result, err := a.call("thread/resume", map[string]any{"threadId": id, "excludeTurns": true})
 	if err != nil {
 		return err
 	}
 	_, err = a.remember(result)
+	if err == nil {
+		err = a.loadTurns(id, windowTurns)
+	}
 	return err
+}
+
+func (a *HeadlessCodex) loadTurns(id string, limit int) error {
+	result, err := a.call("thread/turns/list", map[string]any{"threadId": id, "limit": limit, "sortDirection": "desc", "itemsView": "full"})
+	if err != nil {
+		return err
+	}
+	turns := anySlice(result["data"])
+	for left, right := 0, len(turns)-1; left < right; left, right = left+1, right-1 {
+		turns[left], turns[right] = turns[right], turns[left]
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	thread := a.threads[id]
+	if thread == nil {
+		return errors.New("Codex Thread Is Unavailable")
+	}
+	live := anySlice(thread["turns"])
+	thread["turns"] = turns
+	for _, raw := range live {
+		turn, _ := raw.(map[string]any)
+		if str(turn, "status") == "inProgress" {
+			putHeadlessTurn(thread, turn)
+		}
+	}
+	thread["turnsPagination"] = map[string]any{"hasLoadedOldest": str(result, "nextCursor") == ""}
+	a.publishLocked(id)
+	return nil
 }
 func (a *HeadlessCodex) listThreads() ([]ThreadInfo, error) {
 	if _, err := codexBin(); err != nil {
@@ -528,6 +559,13 @@ func (a *HeadlessCodex) handle(c *Client, raw []byte) bool {
 		return true
 	}
 	switch m.Op {
+	case "more":
+		a.mu.Lock()
+		loaded := a.threads[m.ID] != nil
+		a.mu.Unlock()
+		if !loaded {
+			return false
+		}
 	case "new", "send", "stop", "wake", "settings", "approve", "answer", "compact", "archive", "unarchive", "models", "projects", "project":
 	default:
 		return false
@@ -709,6 +747,17 @@ func (a *HeadlessCodex) handle(c *Client, raw []byte) bool {
 		switch m.Op {
 		case "send":
 			err = a.sendTurn(m.ID, m.Text, m.Images)
+		case "more":
+			if session := a.hub.session(m.ID, true); session != nil {
+				window := make(chan int, 1)
+				session.cmds <- func() { window <- session.window + moreTurns }
+				err = a.loadTurns(m.ID, <-window)
+				if err == nil {
+					session.more()
+				}
+			} else {
+				err = errors.New("Thread Not Found")
+			}
 		case "wake":
 		case "stop":
 			a.mu.Lock()

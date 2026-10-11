@@ -32,7 +32,7 @@ mkdir -p "$folder/speech"
 install -m 755 "$build/bin/whisper-cli" "$folder/speech/whisper-cli"
 cp "$source_dir/LICENSE" "$folder/speech/Whisper-LICENSE.txt"
 cp scripts/setup-speech.sh "$folder/speech/setup.sh"
-CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o "$folder/fastcontrol" .
+CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags '-s -w' -o "$folder/fastcontrol" .
 cp contrib/fastcontrol.service "$folder/"
 cp -R licenses "$folder/"
 # Inspect the packaged binaries, including speech dependencies, before archiving.
