@@ -1509,7 +1509,7 @@ function openSheet(name, opts = {}) {
   for (const animation of sh.getAnimations()) animation.cancel();
   sh.inert = false;
   $("scrim").style.pointerEvents = "";
-  sh.className = "sheet" + (name === "diff" || name === "image" ? " full" : name === "effort" ? " effort" : "");
+  sh.className = "sheet" + (name === "diff" || name === "image" || name === "usage" ? " full" : name === "effort" ? " effort" : "");
   sh.style.bottom = name === "effort" ? `${$("composer").offsetHeight + 24}px` : "";
   sh.onclick = null;
   $("scrim").classList.toggle("dark", name === "effort");
@@ -1832,7 +1832,7 @@ const SHEETS = {
           const link = `fastcontrol://pair?url=${encodeURIComponent(s.url)}&t=${encodeURIComponent(s.token)}&name=${encodeURIComponent(s.name || "")}`;
           return `<div class="mi"><span class="dot ${c && c.state === "on" ? "on" : c && c.state === "nodesk" ? "wait" : "off"}"></span><span class="txt">${esc(s.name || hostOf(s.url))}<span class="d">${esc(s.url)}, ${stateText[c ? c.state : "wait"]}</span></span>` +
             (!Native ? `<a class="btn" style="text-decoration:none;font-size:13px;padding:7px 10px" href="${esc(link)}">Open In App</a>` : "") +
-            `<button class="icon-btn" data-del="${s.id}" aria-label="Remove Mac">${I.trash}</button></div>`;
+            `<button class="chip" data-usage="${esc(s.id)}">Usage</button><button class="icon-btn" data-del="${s.id}" aria-label="Remove Mac">${I.trash}</button></div>`;
         }).join("") +
         (Native ? `<div class="toggle"><div><div style="font-weight:650">Notifications</div><div class="hint" style="margin:0;font-size:13px;color:var(--faint)">Finished Turns And Approvals</div></div><button class="switch${notif ? " on" : ""}" data-x="notif" aria-label="Notifications"></button></div>` : "") +
         `<h3>Add A Mac</h3><div class="field"><input id="sv-url" placeholder="Pairing Link Or http://100.64.0.2:8787" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="url"></div>` +
@@ -1849,6 +1849,8 @@ const SHEETS = {
     };
     draw();
     sh.onclick = async (e) => {
+      const usage = e.target.closest("[data-usage]");
+      if(usage){openUsage(usage.dataset.usage);return;}
       const del = e.target.closest("[data-del]");
       if (del) {
         const x = S.servers.find((s) => s.id === del.dataset.del);

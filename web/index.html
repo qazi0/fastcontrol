@@ -29,6 +29,7 @@
     </header>
     <div id="search-row" class="search-row hidden"><input id="search" type="search" placeholder="Search All Threads" autocomplete="off" enterkeyhint="search"></div>
     <nav id="machines" class="chips"></nav>
+    <div class="usage-launch"><button id="usage-open" class="usage-open"><svg class="ico" viewBox="0 0 24 24"><path d="M4 20V10M12 20V4M20 20v-7"/></svg><span>Usage</span><span class="usage-teaser">Limits and Local Activity</span><svg class="ico" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button></div>
     <main id="home-list" class="scroll list"></main>
     <div class="dock">
       <button id="ask" class="ask"><svg class="ico" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>Ask Codex</span></button>
@@ -94,5 +95,6 @@
 <input id="file" type="file" accept="image/*" multiple hidden>
 <div id="toast" class="toast hidden" role="status"></div>
 <script src="app.js"></script>
+<script src="usage.js"></script>
 </body>
 </html>

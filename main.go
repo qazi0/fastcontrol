@@ -83,6 +83,7 @@ func main() {
 	flag.String("asar", desktopBundlePath(), "desktop app bundle, checked for IPC protocol changes")
 	installSpeech := flag.Bool("install-speech", false, "download and prepare the local speech model")
 	speechStatus := flag.Bool("speech-status", false, "print local speech model availability and exit")
+	usageJSON := flag.Bool("usage-json", false, "print this computer usage and limits as JSON, then exit")
 	noQR := flag.Bool("no-qr", false, "do not print the pairing QR code")
 	flag.Parse()
 	if *installSpeech {
@@ -94,6 +95,10 @@ func main() {
 	}
 	if *speechStatus {
 		fmt.Println(string(mustJSON(newSpeech().capability())))
+		return
+	}
+	if *usageJSON {
+		fmt.Println(string(mustJSON(newUsageManager(home).collect(time.Now()))))
 		return
 	}
 	log.SetFlags(log.Ltime)
@@ -149,6 +154,14 @@ func main() {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	speech := newSpeech()
+	usage := newUsageManager(home)
+	mux.HandleFunc("/usage", cors(func(w http.ResponseWriter, r *http.Request) {
+		if !authed(r) {
+			http.Error(w, "bad token", http.StatusUnauthorized)
+			return
+		}
+		usage.serve(w, r)
+	}))
 	mux.HandleFunc("/image", cors(func(w http.ResponseWriter, r *http.Request) {
 		if !authed(r) {
 			http.Error(w, "bad token", http.StatusUnauthorized)
