@@ -78,3 +78,15 @@ func TestHeadlessConcurrentSnapshotAndDelta(t *testing.T) {
 	}()
 	workers.Wait()
 }
+
+func TestHeadlessTurnResponsePrecedesImmediateStop(t *testing.T) {
+	a := newHeadlessCodex(NewHub(NewIPCClient(""), ""))
+	a.threads["chat"] = map[string]any{"id": "chat", "turns": []any{}}
+	a.pending["start"] = make(chan rpcResult, 1)
+	a.pendingThreads["start"] = "chat"
+	a.receive([]byte(`{"id":"start","result":{"turn":{"id":"turn","status":"inProgress","items":[]}}}`))
+	<-a.pending["start"]
+	if id := lastTurnIDJSON(a.threads["chat"]); id != "turn" {
+		t.Fatalf("immediate Stop cannot find acknowledged turn: %q", id)
+	}
+}

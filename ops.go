@@ -257,8 +257,7 @@ func runCodex(verb, id string) error {
 
 // defaultModel reads the top-level model settings from ~/.codex/config.toml.
 func defaultModel() map[string]string {
-	home, _ := os.UserHomeDir()
-	f, err := os.Open(filepath.Join(home, ".codex", "config.toml"))
+	f, err := os.Open(filepath.Join(codexHome(), "config.toml"))
 	if err != nil {
 		return nil
 	}

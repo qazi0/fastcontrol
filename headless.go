@@ -30,6 +30,7 @@ type HeadlessCodex struct {
 	opMu, startMu, writeMu, mu sync.Mutex
 	write                      func([]byte) error
 	pending                    map[string]chan rpcResult
+	pendingThreads             map[string]string
 	threads                    map[string]map[string]any
 	settings                   map[string]map[string]any
 	requests                   map[string]map[string]any
@@ -41,7 +42,7 @@ type rpcResult struct {
 }
 
 func newHeadlessCodex(h *Hub) *HeadlessCodex {
-	return &HeadlessCodex{hub: h, pending: map[string]chan rpcResult{}, threads: map[string]map[string]any{}, settings: map[string]map[string]any{}, requests: map[string]map[string]any{}}
+	return &HeadlessCodex{hub: h, pending: map[string]chan rpcResult{}, pendingThreads: map[string]string{}, threads: map[string]map[string]any{}, settings: map[string]map[string]any{}, requests: map[string]map[string]any{}}
 }
 func (a *HeadlessCodex) start() error {
 	a.startMu.Lock()
@@ -175,8 +176,11 @@ func (a *HeadlessCodex) call(method string, params any) (map[string]any, error) 
 	id := fmt.Sprintf("fastcontrol-%d", a.sequence)
 	ch := make(chan rpcResult, 1)
 	a.pending[id] = ch
+	if values, ok := params.(map[string]any); ok {
+		a.pendingThreads[id] = str(values, "threadId")
+	}
 	a.mu.Unlock()
-	defer func() { a.mu.Lock(); delete(a.pending, id); a.mu.Unlock() }()
+	defer func() { a.mu.Lock(); delete(a.pending, id); delete(a.pendingThreads, id); a.mu.Unlock() }()
 	if err := a.send(map[string]any{"id": id, "method": method, "params": params}); err != nil {
 		return nil, err
 	}
@@ -211,6 +215,15 @@ func (a *HeadlessCodex) receive(data []byte) {
 		}
 		var id string
 		_ = json.Unmarshal(f.ID, &id)
+		if threadID := a.pendingThreads[id]; threadID != "" {
+			if turn, ok := f.Result["turn"].(map[string]any); ok && a.threads[threadID] != nil {
+				if previous := headlessTurn(a.threads[threadID], str(turn, "id")); previous != nil && lenAny(turn["items"]) == 0 {
+					turn["items"] = previous["items"]
+				}
+				putHeadlessTurn(a.threads[threadID], turn)
+				a.publishLocked(threadID)
+			}
+		}
 		if ch := a.pending[id]; ch != nil {
 			response := rpcResult{value: f.Result}
 			if f.Error != nil {
@@ -466,7 +479,7 @@ func (a *HeadlessCodex) remember(result map[string]any) (string, error) {
 }
 func (a *HeadlessCodex) resume(id string) error {
 	a.mu.Lock()
-	loaded := a.threads[id] != nil
+	loaded := a.threads[id] != nil && a.settings[id] != nil
 	if status, ok := a.threads[id]["status"].(map[string]any); ok && str(status, "type") == "notLoaded" {
 		loaded = false
 	}
