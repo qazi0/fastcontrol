@@ -13,11 +13,9 @@ try {
         Copy-Item (Join-Path $PackageDirectory 'fastcontrol_windows_arm64.zip') $Work
         Copy-Item (Join-Path $PackageDirectory 'SHA256SUMS_windows_arm64') $Work
     } else {
-        if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { throw 'Install GitHub CLI and Run gh auth login First' }
-        $Arguments = @('release', 'download', '--repo', $Repo, '--dir', $Work, '--pattern', 'fastcontrol_windows_arm64.zip', '--pattern', 'SHA256SUMS_windows_arm64')
-        if ($Version -ne 'latest') { $Arguments += $Version }
-        & gh @Arguments
-        if ($LASTEXITCODE -ne 0) { throw 'Release Download Failed. Check Repository Access' }
+        $Base = if ($Version -eq 'latest') { "https://github.com/$Repo/releases/latest/download" } else { "https://github.com/$Repo/releases/download/$Version" }
+        Invoke-WebRequest "$Base/fastcontrol_windows_arm64.zip" -OutFile (Join-Path $Work 'fastcontrol_windows_arm64.zip')
+        Invoke-WebRequest "$Base/SHA256SUMS_windows_arm64" -OutFile (Join-Path $Work 'SHA256SUMS_windows_arm64')
     }
     $Asset = Join-Path $Work 'fastcontrol_windows_arm64.zip'
     $Line = Get-Content (Join-Path $Work 'SHA256SUMS_windows_arm64') | Where-Object { $_ -match '^[0-9a-fA-F]{64}\s+fastcontrol_windows_arm64\.zip$' }

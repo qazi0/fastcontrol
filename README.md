@@ -14,13 +14,11 @@ Choose Codex or Claude Code when you open the app. Each provider shows its own p
 
 ## Install on a Mac
 
-This repository is private. You need repository access and an authenticated GitHub CLI (`gh auth login`). Install the latest release:
+Install Codex desktop or Claude Code and sign in, then run:
 
 ```sh
-curl -fsSL -H "Authorization: Bearer $(gh auth token)" https://raw.githubusercontent.com/qazi0/fastcontrol/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/qazi0/fastcontrol/main/install.sh | bash
 ```
-
-The script lives in this private repository. The authorization header lets curl download it using your GitHub CLI login.
 
 The installer downloads the Mac build, verifies its SHA-256 checksum, sets up local speech transcription and installs a login service. It requires macOS 13.3 or newer. It supports Apple Silicon Macs.
 
@@ -29,15 +27,15 @@ The relay uses port 8787 and stores its token, binary and logs in `~/.fastcontro
 To skip speech setup from the one-line installer:
 
 ```sh
-curl -fsSL -H "Authorization: Bearer $(gh auth token)" https://raw.githubusercontent.com/qazi0/fastcontrol/main/install.sh | bash -s -- --skip-speech
+curl -fsSL https://raw.githubusercontent.com/qazi0/fastcontrol/main/install.sh | bash -s -- --skip-speech
 ```
 
 ## Install on Windows
 
-Native Windows support targets Windows 11 ARM64. Sign in with GitHub CLI and install Codex desktop or native Claude Code first. In PowerShell:
+Native Windows support targets Windows 11 ARM64. Install Codex desktop or native Claude Code and sign in first. In PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/qazi0/fastcontrol/main/install.ps1 -Headers @{Authorization="Bearer $(gh auth token)"} | iex
+irm https://raw.githubusercontent.com/qazi0/fastcontrol/main/install.ps1 | iex
 ```
 
 The installer checks the release checksum, installs the relay and whisper.cpp, and creates a per-user login task. Its speech model prompt allows skipping the download. Set `$env:FASTCONTROL_SKIP_SPEECH = '1'` before installation to skip it directly. Pairing links appear in `%USERPROFILE%\.fastcontrol\relay.log`. Allow the executable through Windows Firewall on your trusted private network when prompted.
@@ -46,7 +44,7 @@ Codex uses the desktop's native named pipe. Claude Code uses its native Windows 
 
 ## Android App
 
-Download `fastcontrol_android.apk` from [Releases](https://github.com/qazi0/fastcontrol/releases). Install it, open a pairing link, or use Add Mac. Private release downloads require GitHub repository access.
+Download `fastcontrol_android.apk` from [Releases](https://github.com/qazi0/fastcontrol/releases). Install it, open a pairing link, or use Add Mac.
 
 Android 8 or newer is required. Voice recording requests microphone permission; notifications request notification permission on newer Android versions.
 

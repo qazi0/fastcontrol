@@ -6,7 +6,6 @@ version="${FASTCONTROL_VERSION:-latest}"
 skip_speech="${FASTCONTROL_SKIP_SPEECH:-0}"
 case "${1:-}" in --skip-speech) skip_speech=1;; "") ;; *) echo "Usage: install.sh [--skip-speech]" >&2; exit 1;; esac
 if [[ "$(uname -s)" != Darwin ]]; then echo "fastcontrol requires macOS." >&2; exit 1; fi
-if ! command -v gh >/dev/null; then echo "Install GitHub CLI and run gh auth login first." >&2; exit 1; fi
 mac_version="$(sw_vers -productVersion)"
 mac_major="${mac_version%%.*}"
 mac_minor="${mac_version#*.}"; mac_minor="${mac_minor%%.*}"
@@ -16,8 +15,9 @@ arch=arm64
 temp="$(mktemp -d)"
 trap 'rm -rf "$temp"' EXIT
 asset="fastcontrol_darwin_${arch}.tar.gz"
-args=(--repo "$repo" --dir "$temp" --pattern "$asset" --pattern SHA256SUMS)
-if [[ "$version" == latest ]]; then gh release download "${args[@]}"; else gh release download "$version" "${args[@]}"; fi
+if [[ "$version" == latest ]]; then base="https://github.com/$repo/releases/latest/download"; else base="https://github.com/$repo/releases/download/$version"; fi
+curl -fL --retry 3 --max-time 300 "$base/$asset" -o "$temp/$asset"
+curl -fL --retry 3 --max-time 60 "$base/SHA256SUMS" -o "$temp/SHA256SUMS"
 cd "$temp"
 awk -v asset="$asset" '$2 == asset { print }' SHA256SUMS > selected-checksum
 if [[ ! -s selected-checksum ]]; then echo "Release checksum is missing." >&2; exit 1; fi
