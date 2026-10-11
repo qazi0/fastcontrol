@@ -48,6 +48,6 @@ android-release:
 	cd android && ANDROID_HOME=$(HOME)/Library/Android/sdk ./gradlew --offline assembleRelease
 
 package: fastcontrol
-	./scripts/package-release.sh
+	@if [ "$$(uname -s)" = Linux ]; then ./scripts/package-linux.sh; else ./scripts/package-release.sh; fi
 
 .PHONY: android-release package
