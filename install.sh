@@ -84,6 +84,7 @@ if [[ "$platform" == Linux ]]; then
     if [[ "$previous_binary" == "$dir/fastcontrol" || "$previous_binary" == "$dir/fastcontrol (deleted)" ]]; then kill "$previous_pid"; fi
    fi
   fi
+  cd "$HOME"
   nohup "$dir/fastcontrol" -no-qr >> "$dir/relay.log" 2>&1 < /dev/null &
   relay_pid=$!
   echo "$relay_pid" > "$pidfile"
