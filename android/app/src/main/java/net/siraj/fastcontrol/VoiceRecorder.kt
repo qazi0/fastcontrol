@@ -18,8 +18,12 @@ import java.nio.ByteOrder
 import java.util.concurrent.TimeUnit
 import kotlin.math.sqrt
 
-/** Captures PCM on one worker; uploads only when the user presses Transcribe. */
-class VoiceRecorder(private val context: Context, private val emit: (JSONObject) -> Unit) {
+/** Captures audio on one worker and uploads after the user stops recording. */
+class VoiceRecorder(
+    private val context: Context,
+    private val recordingChanged: () -> Unit,
+    private val emit: (JSONObject) -> Unit
+) {
     private class Session(val id: String, val compressed: Boolean) {
         @Volatile var stopped = false
         @Volatile var cancelled = false
@@ -29,6 +33,8 @@ class VoiceRecorder(private val context: Context, private val emit: (JSONObject)
     }
     private val lock = Any()
     private var current: Session? = null
+    val isRecording: Boolean
+        get() = synchronized(lock) { current?.let { !it.stopped && !it.cancelled } == true }
     private val client = OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(100, TimeUnit.SECONDS).callTimeout(105, TimeUnit.SECONDS).build()
 
@@ -45,6 +51,7 @@ class VoiceRecorder(private val context: Context, private val emit: (JSONObject)
             if (current != null) return
             Session(id, compressed).also { current = it }
         }
+        recordingChanged()
         Thread({
             var file: File? = null
             var recorder: AudioRecord? = null
@@ -82,6 +89,8 @@ class VoiceRecorder(private val context: Context, private val emit: (JSONObject)
                         out.seek(0); out.write(wavHeader(bytes))
                     }
                 }
+                s.stopped = true
+                recordingChanged()
                 if (s.cancelled) return@Thread
                 val server = s.server
                 if (server == null) {
@@ -109,10 +118,16 @@ class VoiceRecorder(private val context: Context, private val emit: (JSONObject)
             } catch (e: Exception) {
                 event(s, "error", JSONObject().put("message", e.message ?: "Voice Recording Failed"))
             } finally {
-                try { recorder?.stop() } catch (_: Exception) {}
-                recorder?.release()
-                file?.delete()
-                synchronized(lock) { if (current === s) current = null }
+                s.stopped = true
+                recordingChanged()
+                try {
+                    try { recorder?.stop() } catch (_: Exception) {}
+                    recorder?.release()
+                    file?.delete()
+                } finally {
+                    synchronized(lock) { if (current === s) current = null }
+                    recordingChanged()
+                }
             }
         }, "RelayVoice").start()
     }
@@ -143,10 +158,12 @@ class VoiceRecorder(private val context: Context, private val emit: (JSONObject)
 
     fun finish(server: Server, base: String) {
         synchronized(lock) { current?.let { it.server = server; it.base = base; it.stopped = true } }
+        recordingChanged()
     }
 
     fun cancel() {
         synchronized(lock) { current?.let { it.cancelled = true; it.stopped = true; it.call?.cancel() }; current = null }
+        recordingChanged()
     }
 
     private fun wavHeader(bytes: Int): ByteArray = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)

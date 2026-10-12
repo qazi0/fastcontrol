@@ -23,6 +23,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
+import android.view.WindowManager
 import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.ValueCallback
@@ -101,7 +102,7 @@ class MainActivity : Activity() {
         webView.webViewClient = ShellClient()
         webView.webChromeClient = ShellChrome()
         webView.addJavascriptInterface(Bridge(), "CodexAndroid")
-        voice = VoiceRecorder(this) { event ->
+        voice = VoiceRecorder(this, { runOnUiThread { updateVoiceScreenState() } }) { event ->
             runOnUiThread { if (!isDestroyed) webView.evaluateJavascript("window.onVoiceEvent && window.onVoiceEvent($event)", null) }
         }
         downloads = ImageDownloads(this, { event -> runOnUiThread {
@@ -147,11 +148,13 @@ class MainActivity : Activity() {
             startForegroundService(Intent(this, RelayWatchService::class.java))
         }
         webView.onResume()
+        updateVoiceScreenState()
     }
 
     override fun onPause() {
-        if (::voice.isInitialized) voice.cancel()
         UiState.resumed = false
+        if (::voice.isInitialized) voice.cancel()
+        updateVoiceScreenState()
         webView.onPause()
         super.onPause()
     }
@@ -160,6 +163,14 @@ class MainActivity : Activity() {
         if (::voice.isInitialized) voice.cancel()
         webView.destroy()
         super.onDestroy()
+    }
+
+    private fun updateVoiceScreenState() {
+        if (isDestroyed) return
+        // Read the current session on the UI thread so an old worker cannot clear a new recording's flag.
+        val recording = UiState.resumed && ::voice.isInitialized && voice.isRecording
+        if (recording) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
     /** Turns a launch intent into the JSON string handed to the page by consumeLaunchIntent. */
