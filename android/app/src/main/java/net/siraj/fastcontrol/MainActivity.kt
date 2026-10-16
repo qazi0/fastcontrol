@@ -64,6 +64,7 @@ class MainActivity : Activity() {
     private var voiceRequestId = ""
     private var voiceCompressed = false
     private lateinit var downloads: ImageDownloads
+    private lateinit var uploads: ImageUploads
     private var pendingImage: File? = null
 
     @Volatile private var pendingLaunch = ""
@@ -105,6 +106,9 @@ class MainActivity : Activity() {
         voice = VoiceRecorder(this, { runOnUiThread { updateVoiceScreenState() } }) { event ->
             runOnUiThread { if (!isDestroyed) webView.evaluateJavascript("window.onVoiceEvent && window.onVoiceEvent($event)", null) }
         }
+        uploads = ImageUploads { event -> runOnUiThread {
+            if (!isDestroyed) webView.evaluateJavascript("window.onImageUpload && window.onImageUpload($event)", null)
+        } }
         downloads = ImageDownloads(this, { event -> runOnUiThread {
             if (!isDestroyed) webView.evaluateJavascript("window.onImageDownload && window.onImageDownload($event)", null)
         } }, { file, mime -> runOnUiThread {
@@ -471,6 +475,12 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun downloadRemoteImage(url: String) { if (Uri.parse(url).scheme == "https") downloads.download(url) }
+
+        @JavascriptInterface
+        fun uploadImage(requestId: String, serverId: String, base: String, mime: String, encoded: String) {
+            val server = Store.servers(ctx).firstOrNull { it.id == serverId }
+            uploads.upload(requestId, server, base, mime, encoded)
+        }
 
         @JavascriptInterface
         fun startVoice(requestId: String) = startVoiceRequest(requestId, false)

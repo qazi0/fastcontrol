@@ -1018,10 +1018,10 @@ function md(src) {
     if (/^\s*\|.*\|\s*$/.test(line) && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1] || "")) {
       endPara(); endList();
       const cells = (l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => inline(c.trim()));
-      out += "<table><tr>" + cells(line).map((c) => `<th>${c}</th>`).join("") + "</tr>";
+      out += '<div class="md-table" role="region" aria-label="Scrollable Table" tabindex="0"><table><thead><tr>' + cells(line).map((c) => `<th scope="col">${c}</th>`).join("") + "</tr></thead><tbody>";
       i += 2;
       while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) { out += "<tr>" + cells(lines[i]).map((c) => `<td>${c}</td>`).join("") + "</tr>"; i++; }
-      i--; out += "</table>";
+      i--; out += "</tbody></table></div>";
       continue;
     }
     const li = line.match(/^\s*(?:[-*+]|(\d+)[.)])\s+(.*)$/);
@@ -1411,29 +1411,68 @@ async function applySettings(ch, label) {
 
 // Image attachments upload straight to the relay, downscaled on the phone.
 let fileTarget = "thread";
+const imageUploads = new Map();
+window.onImageUpload = (event) => {
+  const pending = imageUploads.get(event.id);
+  if (!pending) return;
+  imageUploads.delete(event.id); clearTimeout(pending.timer);
+  if (event.ok && event.path) pending.resolve(event.path);
+  else pending.reject(new Error(event.message || "Could Not Upload Image. Try Again"));
+};
+function imageDataURL(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("Could Not Read This Image. Choose It Again"));
+    reader.onabort = () => reject(new Error("Image Reading Was Cancelled"));
+    reader.readAsDataURL(blob);
+  });
+}
+async function uploadImage(blob, server, url) {
+  if (blob.size > 25 * 1024 * 1024) throw new Error("Image Must Be Smaller Than 25 MB");
+  const mime = blob.type || "image/jpeg";
+  if (Native?.uploadImage) {
+    const data = await imageDataURL(blob);
+    return new Promise((resolve, reject) => {
+      const id = sid();
+      const timer = setTimeout(() => { imageUploads.delete(id); reject(new Error("Image Upload Timed Out. Try Again")); }, 60000);
+      imageUploads.set(id, { resolve, reject, timer });
+      try { Native.uploadImage(id, server.id, url, mime, data.slice(data.indexOf(",") + 1)); }
+      catch (error) { clearTimeout(timer); imageUploads.delete(id); reject(error); }
+    });
+  }
+  const body = new Blob([await blob.arrayBuffer()], { type: mime });
+  const response = await fetch(url + "/upload", { method: "POST", headers: { Authorization: "Bearer " + server.token, "Content-Type": mime }, body, signal: AbortSignal.timeout(60000) });
+  if (!response.ok) throw new Error(await response.text());
+  const path = (await response.json()).path;
+  if (!path) throw new Error("The Computer Did Not Return An Image Path");
+  return path;
+}
 $("attach").onclick = () => { fileTarget = "thread"; $("file").click(); };
-$("file").addEventListener("change", (e) => {
+let imageSelection = 0;
+$("file").addEventListener("change", async (e) => {
   const files = [...e.target.files];
-  e.target.value = "";
-  for (const f of files) addAttachment(f, fileTarget);
+  const selection = ++imageSelection, target = fileTarget;
+  await Promise.all(files.map((file) => addAttachment(file, target)));
+  if (selection === imageSelection) e.target.value = "";
 });
 async function addAttachment(file, target) {
   const a = { url: URL.createObjectURL(file), uploading: true, path: "" };
   const list = target === "new" ? S.newAttach : S.attach;
   const sidv = target === "new" ? S.newDraft && S.newDraft.sid : S.sid;
   const s = S.servers.find((x) => x.id === sidv);
-  if (!s) return;
+  if (!s) { URL.revokeObjectURL(a.url); return; }
   list.push(a);
   redrawAttachments(target);
   try {
     const blob = await shrink(file);
-    const r = await fetch(conns.get(s.id).base + "/upload", { method: "POST", headers: { Authorization: "Bearer " + s.token, "Content-Type": blob.type || "image/jpeg" }, body: blob });
-    if (!r.ok) throw new Error(await r.text());
-    a.path = (await r.json()).path;
+    a.path = await uploadImage(blob, s, conns.get(s.id)?.base || s.url);
     a.uploading = false;
   } catch (err) {
-    list.splice(list.indexOf(a), 1);
-    toast("Upload Failed: " + String(err.message || err).slice(0, 80));
+    const index = list.indexOf(a);
+    if (index >= 0) list.splice(index, 1);
+    URL.revokeObjectURL(a.url);
+    if ((target === "new" ? S.newAttach : S.attach) === list && index >= 0) toast("Upload Failed: " + String(err.message || err).slice(0, 120));
   }
   redrawAttachments(target);
 }
@@ -1441,15 +1480,17 @@ function shrink(file) {
   return new Promise((res) => {
     if (!/^image\/(jpeg|png|webp)$/.test(file.type) || file.size < 400e3) { res(file); return; }
     const img = new Image();
+    const url = URL.createObjectURL(file);
     img.onload = () => {
       const k = Math.min(1, 2048 / Math.max(img.width, img.height));
       const c = document.createElement("canvas");
       c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
       c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
       c.toBlob((b) => res(b || file), "image/jpeg", 0.86);
     };
-    img.onerror = () => res(file);
-    img.src = URL.createObjectURL(file);
+    img.onerror = () => { URL.revokeObjectURL(url); res(file); };
+    img.src = url;
   });
 }
 const attHTML = (list) => list.map((a, i) => `<div class="att${a.uploading ? " loading" : ""}"><img src="${a.url}" alt=""><button type="button" data-rm="${i}" aria-label="Remove Image">&times;</button></div>`).join("");

@@ -236,8 +236,10 @@ html.page-hidden .thinking, html.page-hidden .step-progress { animation-play-sta
 .md code { font-family: var(--mono); font-size: 0.84em; background: var(--raised); padding: 1px 6px; border-radius: 6px; word-break: break-word; }
 .md b { font-weight: 500; }
 .md blockquote { margin: 8px 0; padding-left: 14px; box-shadow: inset 2px 0 0 var(--high); color: var(--muted); }
-.md table { border-collapse: collapse; font-size: 14px; margin: 8px 0; display: block; overflow-x: auto; font-variant-numeric: tabular-nums; }
-.md th, .md td { padding: 6px 10px; text-align: left; box-shadow: inset 0 -1px 0 var(--line); }
+.md-table { max-width: 100%; min-width: 0; margin: 8px 0; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin; scrollbar-color: var(--faint) var(--bg); }
+.md table { width: auto; min-width: 100%; border-collapse: collapse; font-size: 14px; margin: 0; word-break: normal; overflow-wrap: normal; font-variant-numeric: tabular-nums; }
+.md th, .md td { min-width: 8rem; padding: 6px 10px; text-align: left; vertical-align: top; box-shadow: inset 0 -1px 0 var(--line); }
+.md-table code { word-break: normal; overflow-wrap: normal; }
 .md th { font-weight: 500; }
 pre { margin: 8px 0 12px; padding: 12px 14px; border-radius: 12px; background: var(--code-bg); box-shadow: inset 0 0 0 1px var(--line); overflow: auto; font: 13.5px/1.5 var(--mono); white-space: pre; max-height: 420px; }
 pre code { background: none !important; padding: 0 !important; font-size: inherit !important; }
