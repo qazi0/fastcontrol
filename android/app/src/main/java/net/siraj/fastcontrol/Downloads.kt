@@ -69,7 +69,7 @@ class Downloads(private val context: Context, private val emit: (JSONObject) -> 
                     }
                 }
             } catch (_: Exception) {
-                inserted?.let { context.contentResolver.delete(it, null, null) }
+                inserted?.let { runCatching { context.contentResolver.delete(it, null, null) } }
                 emit(JSONObject().put("ok", false).put("message", "Could Not Download $label. Check The Computer Connection And Try Again"))
             } finally { temporary?.delete() }
         }, "FileDownload").start()

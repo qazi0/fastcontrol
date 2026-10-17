@@ -58,7 +58,7 @@ const S = {
   view: "home", // home | project | thread
   cwd: "", // project view
   sid: "", id: "", // thread view
-  meta: null, turns: [], stick: true,
+  meta: null, turns: [], stick: true, readingOutput: false,
   open: new Set(), // expanded rows, keyed by turn and item
   minCards: new Set(), // collapsed approval and question cards
   attach: [], newAttach: [],
@@ -577,7 +577,7 @@ function openThread(sidv, id, push) {
   clearAudio();
   transcriptScroll.clear();
   clearImageCache();
-  S.sid = sidv; S.id = id; S.meta = null; S.turns = []; S.stick = true;
+  S.sid = sidv; S.id = id; S.meta = null; S.turns = []; S.stick = true; S.readingOutput = false;
   show("thread");
   renderThreadHeader();
   $("t-status").className = "status hidden";
@@ -625,17 +625,22 @@ function transcriptScrollers(root, visit) {
 function rememberTranscriptScroll(root) { transcriptScrollers(root, (node, key) => transcriptScroll.set(key, { left:node.scrollLeft, top:node.scrollTop })); }
 function restoreTranscriptScroll(root) { transcriptScrollers(root, (node, key) => {
   const position = transcriptScroll.get(key);
-  if (position) { if (node.scrollLeft !== position.left) node.scrollLeft = position.left; if (node.scrollTop !== position.top) node.scrollTop = position.top; }
+  if (position) {
+    const pixels = devicePixelRatio || 1;
+    if (node.scrollLeft !== position.left) node.scrollLeft = Math.round(position.left * pixels) / pixels;
+    if (node.scrollTop !== position.top) node.scrollTop = Math.round(position.top * pixels) / pixels;
+  }
 }); }
 for (const event of ["pointerdown", "wheel"]) feed.addEventListener(event, e => {
-  if (!e.target.closest("pre,.md-table")) return;
+  S.readingOutput = !!e.target.closest("pre,.md-table");
+  if (!S.readingOutput) return;
   S.stick = false; $("jump").classList.remove("hidden");
 }, { passive:true });
 feed.addEventListener("scroll", () => {
-  S.stick = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 90;
+  S.stick = !S.readingOutput && feed.scrollHeight - feed.scrollTop - feed.clientHeight < 90;
   $("jump").classList.toggle("hidden", S.stick);
 }, { passive: true });
-$("jump-btn").onclick = () => { S.stick = true; feed.scrollTop = feed.scrollHeight; $("jump").classList.add("hidden"); };
+$("jump-btn").onclick = () => { S.readingOutput = false; S.stick = true; feed.scrollTop = feed.scrollHeight; $("jump").classList.add("hidden"); };
 
 function renderThread(keepPlace) {
   rememberTranscriptScroll(feed);
@@ -777,7 +782,7 @@ function revealResponses(now) {
     }
     if (r.shown !== r.target) pending = true;
   }
-  if (changed) { responsePaintAt = now; if (S.stick) feed.scrollTop = feed.scrollHeight; }
+  if (changed) { responsePaintAt = now; if (S.stick) feed.scrollTop = feed.scrollHeight; window.followAgentResponses?.(); }
   if (pending) responseFrame = requestAnimationFrame(revealResponses);
 }
 // Reuse decoded images so unrelated live updates cannot collapse their height.

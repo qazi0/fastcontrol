@@ -487,6 +487,8 @@ textarea, input { caret-color: var(--ink); }
 .agent-link > .chev { flex: none; }
 .agent-footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; padding: 12px 20px calc(env(safe-area-inset-bottom) + 12px); border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
 .agent-working { padding: 4px 20px 8px; }
+.agent-request { margin: 16px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 14px; }
+.agent-request > b { display: block; margin-bottom: 8px; font-weight: 500; }
 .usage-head { display: flex; flex: none; align-items: center; gap: 8px; min-height: 76px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .usage-head .head-text { flex: 1; }
 .usage-head h1 { margin: 0; font-size: 22px; font-weight: 500; }

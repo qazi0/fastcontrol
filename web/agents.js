@@ -90,7 +90,13 @@ function paintAgentViewer(more = false) {
   }
   for (const turn of view.turns) {
     const el = existing.get(turn.key) || document.createElement("div"); el.className = "turn"; el.dataset.key = turn.key;
-    renderTurn(el,{...turn,key:"agent:"+view.id+":"+turn.key,originalKey:turn.key,agentParent:view.id},false); nodes.push(el);
+    const items = (turn.items || []).map(item=>item?.asks?.length ? {...item,text:[item.text,...item.asks.map(ask=>`**${ask.title}**\n\n${(ask.options || []).map((option,i)=>`- ${option}${ask.descriptions?.[i] ? ": "+ask.descriptions[i] : ""}`).join("\n")}`)].filter(Boolean).join("\n\n")} : item);
+    renderTurn(el,{...turn,items,key:"agent:"+view.id+":"+turn.key,originalKey:turn.key,agentParent:view.id},!!view.loaded && !more); nodes.push(el);
+  }
+  for (const request of view.meta?.requests || []) {
+    const block = document.createElement("aside");block.className="agent-request";block.dataset.entry="agent:"+view.id+":request:"+request.id;
+    block.innerHTML=`<b>${esc(request.title || "Waiting For Input In Parent Chat")}</b>${request.body ? `<pre>${esc(request.body)}</pre>` : ""}${(request.questions || []).map(question=>`<div class="md">${md(question.question || "")}<ul>${(question.options || []).map(option=>`<li>${esc(option.label || option)}</li>`).join("")}</ul></div>`).join("")}`;
+    nodes.push(block);
   }
   if (!nodes.length) { const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "No Messages Yet"; nodes.push(empty); }
   reconcileChildren(root,nodes);
@@ -102,7 +108,9 @@ function paintAgentViewer(more = false) {
   const waiting = !!view.meta?.requests?.length;
   $("agent-status").textContent = [view.meta?.model && shortModel(view.meta.model), view.meta?.effort, connected ? waiting ? "Waiting For Input In Parent Chat" : view.meta?.running ? "Working" : "Done" : "Offline"].filter(Boolean).join(" · ");
   $("agent-working").classList.toggle("hidden", !connected || waiting || !view.meta?.running);
+  view.loaded = true;
 }
+window.followAgentResponses = () => { const root=$("agent-feed");if(root && agentView?.stick)root.scrollTop=root.scrollHeight; };
 function dirtyAgentViewer() {
   if (!agentFrame) agentFrame = requestAnimationFrame(()=>{ agentFrame=0;paintAgentViewer(); });
 }
@@ -135,8 +143,8 @@ SHEETS.agent = async (sh, opts) => {
   sh.innerHTML = `<header class="diff-head agent-head"><button class="icon-btn" data-agent-back aria-label="Back To Subagents">${svg('<path d="M15 5l-7 7 7 7"/>')}</button><div class="head-text"><h2>${esc(agentLabel(opts.agent))}</h2><div class="h-sub" id="agent-status">Read Only</div></div><button class="icon-btn" data-agent-children aria-label="View This Agent's Subagents">${I.agent}</button></header><main id="agent-feed" class="scroll feed agent-feed"><div class="empty">${loadingHTML("Loading Subagent")}</div></main><div id="agent-working" class="agent-working hidden" role="status"><span class="thinking">Thinking</span></div><footer class="agent-footer">Read Only<span>Managed By The Parent Chat</span></footer>`;
   const root = $("agent-feed");
   root.dataset.server = view.server;root.dataset.thread = view.id;
-  root.addEventListener("scroll",()=>{view.stick=root.scrollHeight-root.scrollTop-root.clientHeight<90;},{passive:true});
-  for (const event of ["pointerdown","wheel"]) root.addEventListener(event,e=>{if(e.target.closest("pre,.md-table"))view.stick=false;},{passive:true});
+  root.addEventListener("scroll",()=>{view.stick=!view.readingOutput&&root.scrollHeight-root.scrollTop-root.clientHeight<90;},{passive:true});
+  for (const event of ["pointerdown","wheel"]) root.addEventListener(event,e=>{view.readingOutput=!!e.target.closest("pre,.md-table");if(view.readingOutput)view.stick=false;},{passive:true});
   root.addEventListener("load",()=>{if(view.stick)root.scrollTop=root.scrollHeight;},true);
   root.addEventListener("click",event=>{
     if (event.target.closest("[data-agent-more]")) { event.target.closest("[data-agent-more]").innerHTML=loadingHTML("Loading Earlier Messages");conns.get(view.server)?.send({op:"more",id:view.id});return; }
