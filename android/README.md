@@ -8,6 +8,8 @@ Install Java 17 and Android SDK 36. Populate Gradle dependencies on a new machin
 
 `make android-install SERIAL=DEVICE` installs the debug APK. For distribution, configure the signing key as described in the root README and run `make android-release`.
 
+`make package` copies the signed APK to `dist/fastcontrol_android_v<VERSION>.apk` for publication.
+
 ## Data and Permissions
 
 Pairing data stays in app-private storage. Tap the microphone to record and tap it again to transcribe on the selected computer. Audio uses 16 kHz mono AAC at 32 kbps when the host supports it. Temporary recordings are deleted after completion or cancellation. The returned text goes into the composer for review.

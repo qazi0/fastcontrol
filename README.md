@@ -59,7 +59,7 @@ Windows installation and speech setup are tested on ARM64. Live control of signe
 
 ## Install the Android App
 
-Download [fastcontrol_android.apk from the latest release](https://github.com/qazi0/fastcontrol/releases/latest). Android 8 or newer is required.
+Download the [versioned Android APK from the latest release](https://github.com/qazi0/fastcontrol/releases/latest), named `fastcontrol_android_v<VERSION>.apk`. Android 8 or newer is required.
 
 Open the pairing link from `~/.fastcontrol/relay.log` on Mac or Linux, or `%USERPROFILE%\.fastcontrol\relay.log` on Windows. You can also choose Add Computer in Android and enter the computer's address and token. The relay uses port 8787. Allow the relay through your firewall when prompted. Use Tailscale to connect outside your LAN.
 
