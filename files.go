@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"mime"
 	"net/http"
 	"os"
@@ -38,7 +39,16 @@ func serveFile(w http.ResponseWriter, r *http.Request) {
 	name := filepath.Base(path)
 	contentType := mime.TypeByExtension(filepath.Ext(name))
 	if contentType == "" {
-		contentType = "application/octet-stream"
+		head := make([]byte, 512)
+		n, _ := f.Read(head)
+		contentType = audioMIME(head[:n])
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		if _, err = f.Seek(0, io.SeekStart); err != nil {
+			http.Error(w, "File Is Unavailable", 500)
+			return
+		}
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("X-Content-Type-Options", "nosniff")

@@ -79,11 +79,16 @@ func (h *Hub) isSubagent(id string) bool {
 	if s != nil && s.info.Subagent {
 		return true
 	}
-	if cached {
+	if cached && info.Kind != "" {
 		return false
 	}
 	rows, err := queryThreads(h.db, threadSelect+` where id=`+sqlQuote(id)+` limit 1`)
-	return err == nil && len(rows) == 1 && rows[0].Subagent
+	if err == nil && len(rows) == 1 && rows[0].Subagent {
+		return true
+	}
+	data, err := sqliteJSON(h.db, `select child_thread_id from thread_spawn_edges where child_thread_id=`+sqlQuote(id)+` limit 1`)
+	var edges []map[string]any
+	return err == nil && json.Unmarshal(data, &edges) == nil && len(edges) == 1
 }
 
 func agentControl(op string) bool {
@@ -110,7 +115,8 @@ func (h *Hub) handleAgents(c *Client, raw []byte) bool {
 		c.subs[request.ID] = false
 		h.mu.Unlock()
 	}
-	go func() {
+	// Keep index reads ordered on this client's reader: Close must not overtake Open.
+	func() {
 		parent := request.ID
 		if request.Op == "agentOpen" {
 			parent = request.Parent
@@ -124,6 +130,10 @@ func (h *Hub) handleAgents(c *Client, raw []byte) bool {
 					continue
 				}
 				found = true
+				if st, statErr := os.Stat(info.Rollout); statErr != nil || !st.Mode().IsRegular() {
+					err = errors.New("Subagent Transcript Is Unavailable")
+					break
+				}
 				h.mu.Lock()
 				_, pending := c.subs[info.ID]
 				if !h.clients[c] || !pending {

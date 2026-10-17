@@ -11,9 +11,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 const maxAudioBytes = 128 << 20
+
+var audioCacheMu sync.Mutex
 
 func audioMIME(head []byte) string {
 	switch mime := http.DetectContentType(head); mime {
@@ -65,6 +68,8 @@ func cacheAudio(encoded string) string {
 	}
 	hash := sha256.Sum256(data)
 	path := filepath.Join(dir, hex.EncodeToString(hash[:]))
+	audioCacheMu.Lock()
+	defer audioCacheMu.Unlock()
 	if st, err := os.Stat(path); err == nil && st.Mode().IsRegular() && st.Size() == int64(len(data)) {
 		return path
 	}
@@ -77,6 +82,13 @@ func cacheAudio(encoded string) string {
 	closeErr := f.Close()
 	if err != nil || closeErr != nil {
 		return ""
+	}
+	// Prefer publishing without replacing an existing file, including across processes.
+	if os.Link(f.Name(), path) == nil {
+		return path
+	}
+	if st, err := os.Stat(path); err == nil && st.Mode().IsRegular() && st.Size() == int64(len(data)) {
+		return path
 	}
 	if os.Rename(f.Name(), path) != nil {
 		// Another transcript reader may have published the same content first.

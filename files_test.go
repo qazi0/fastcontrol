@@ -59,3 +59,15 @@ func TestFileDownloadsPreserveAnyTypeAndRange(t *testing.T) {
 		}
 	}
 }
+
+func TestExtensionlessToolAudioKeepsAudioMIMEWhenDownloaded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tool-audio-hash")
+	if err := os.WriteFile(path, testVoiceWAV(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	serveFile(w, httptest.NewRequest("GET", "/file?path="+url.QueryEscape(path), nil))
+	if w.Code != 200 || w.Header().Get("Content-Type") != "audio/wav" || !bytes.Equal(w.Body.Bytes(), testVoiceWAV()) {
+		t.Fatal("downloaded tool audio lost its media type or bytes")
+	}
+}

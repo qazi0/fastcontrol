@@ -24,7 +24,7 @@ func agentDatabase(t *testing.T) string {
 	schema := `CREATE TABLE threads (id TEXT PRIMARY KEY,name TEXT,title TEXT,first_user_message TEXT,preview TEXT,cwd TEXT,source TEXT,thread_source TEXT,recency_at_ms INTEGER,rollout_path TEXT,is_pinned INTEGER,git_branch TEXT,model TEXT,reasoning_effort TEXT,approval_mode TEXT,sandbox_policy TEXT,archived INTEGER);
 CREATE TABLE thread_spawn_edges(parent_thread_id TEXT,child_thread_id TEXT PRIMARY KEY,status TEXT);
 INSERT INTO threads VALUES('child','','Review','Prompt','','/same',` + sqlQuote(source) + `,'subagent',20,` + sqlQuote(rollout) + `,0,'','gpt-6.1-sol','low','never','{}',1);
-INSERT INTO threads VALUES('edge-child','','Edge Child','Prompt','Preview','/same','exec','subagent',10,` + sqlQuote(rollout) + `,0,'','gpt-6.1-sol','low','never','{}',0);
+INSERT INTO threads VALUES('edge-child','','Edge Child','Prompt','Preview','/same','exec','',10,` + sqlQuote(rollout) + `,0,'','gpt-6.1-sol','low','never','{}',0);
 INSERT INTO threads VALUES('unrelated','','Other','Prompt','Preview','/same','exec','',30,` + sqlQuote(rollout) + `,0,'','gpt-6.1-sol','low','never','{}',0);
 INSERT INTO thread_spawn_edges VALUES('parent','child','open'),('parent','edge-child','open');`
 	if runtime.GOOS == "darwin" {
@@ -69,6 +69,10 @@ func TestSubagentControlsAreRejectedBeforeDispatch(t *testing.T) {
 	}
 	h := NewHub(NewIPCClient(""), db)
 	h.threads = agents
+	h.threads[1].Subagent = false
+	if !h.isSubagent("edge-child") {
+		t.Fatal("edge-only child is writable")
+	}
 	c := &Client{out: make(chan []byte, 32), done: make(chan struct{})}
 	for _, op := range []string{"send", "stop", "wake", "settings", "approve", "answer", "compact", "archive", "unarchive"} {
 		h.handle(c, mustJSON(map[string]any{"op": op, "id": "child", "nonce": op}))
