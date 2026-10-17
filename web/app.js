@@ -10,6 +10,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const loadingHTML = (label = "Loading") => `<span class="loading-state" role="status"><span class="voice-spinner loading-spinner" aria-hidden="true"></span><span>${esc(label)}</span></span>`;
 const base = (p) => (p || "").split(/[\\/]/).filter(Boolean).pop() || p || "";
 const svg = (d, cls = "") => `<svg class="ico ${cls}" viewBox="0 0 24 24">${d}</svg>`;
 const I = {
@@ -197,6 +198,7 @@ class Conn {
       if (provider !== S.provider) return;
     }
     const here = provider === S.provider && S.view === "thread" && S.sid === this.s.id && m.id === S.id;
+    if (window.onAgentMessage?.(this, m, provider)) return;
     switch (m.t) {
       case "hello":
         this.desktop = m.desktop;
@@ -205,6 +207,7 @@ class Conn {
         // Show the name the Mac reports, unless the user named it.
         if (m.host && !this.s.custom && this.s.name !== m.host) { this.s.name = m.host; saveServers(); scheduleRender(); }
         this.setState(m.desktop ? "on" : "nodesk");
+        window.reconnectAgentViewer?.(this);
         break;
       case "threads":
         mark("threads:" + this.s.id);
@@ -236,7 +239,7 @@ class Conn {
       case "models": this.models = m; if (S.redraw) S.redraw(); break;
       case "projects": this.projects = m.projects; this.home = m.home; if (S.redraw) S.redraw(); scheduleRender(); break;
       case "project": if(provider===S.provider){this.byCwd[m.cwd] = m.threads || []; if (S.view === "project" && S.cwd === m.cwd) renderProject();} break;
-      case "diff": if (here) showDiff(m); break;
+      case "diff": if (here || (S.diffSource?.server === this.s.id && S.diffSource?.id === m.id)) showDiff(m); break;
     }
   }
 }
@@ -571,13 +574,15 @@ function openThread(sidv, id, push) {
   if (S.view === "thread" && (S.sid !== sidv || S.id !== id)) leaveThread();
   if (S.id !== id) { S.open = new Set(); S.minCards = new Set(); S.attach = []; renderAttachments(); }
   resetResponses();
+  clearAudio();
+  transcriptScroll.clear();
   clearImageCache();
   S.sid = sidv; S.id = id; S.meta = null; S.turns = []; S.stick = true;
   show("thread");
   renderThreadHeader();
   $("t-status").className = "status hidden";
   $("t-ring").innerHTML = "";
-  $("feed").innerHTML = '<div class="empty">Loading</div>';
+  $("feed").innerHTML = `<div class="empty">${loadingHTML("Loading Chat")}</div>`;
   $("dockcards").innerHTML = "";
   $("banner").classList.add("hidden");
   renderComposer();
@@ -586,6 +591,8 @@ function openThread(sidv, id, push) {
 }
 function leaveThread() {
   cancelVoice();
+  clearAudio();
+  transcriptScroll.clear();
   clearImageCache();
   resetResponses();
   if (S.id && conn()) conn().send({ op: "close", id: S.id });
@@ -604,6 +611,26 @@ function renderThreadHeader() {
 $("menu-btn").onclick = () => openSheet("menu");
 
 const feed = $("feed");
+const transcriptScroll = new Map();
+function transcriptScrollers(root, visit) {
+  const counts = new Map();
+  for (const node of root.querySelectorAll("pre,.md-table")) {
+    const owner = node.closest("[data-entry],[data-response]");
+    if (!owner || !node.getClientRects().length) continue;
+    const ownerKey = owner.dataset.entry || owner.dataset.response;
+    const index = counts.get(ownerKey) || 0; counts.set(ownerKey, index + 1);
+    visit(node, ownerKey + ":scroll:" + index);
+  }
+}
+function rememberTranscriptScroll(root) { transcriptScrollers(root, (node, key) => transcriptScroll.set(key, { left:node.scrollLeft, top:node.scrollTop })); }
+function restoreTranscriptScroll(root) { transcriptScrollers(root, (node, key) => {
+  const position = transcriptScroll.get(key);
+  if (position) { if (node.scrollLeft !== position.left) node.scrollLeft = position.left; if (node.scrollTop !== position.top) node.scrollTop = position.top; }
+}); }
+for (const event of ["pointerdown", "wheel"]) feed.addEventListener(event, e => {
+  if (!e.target.closest("pre,.md-table")) return;
+  S.stick = false; $("jump").classList.remove("hidden");
+}, { passive:true });
 feed.addEventListener("scroll", () => {
   S.stick = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 90;
   $("jump").classList.toggle("hidden", S.stick);
@@ -611,6 +638,8 @@ feed.addEventListener("scroll", () => {
 $("jump-btn").onclick = () => { S.stick = true; feed.scrollTop = feed.scrollHeight; $("jump").classList.add("hidden"); };
 
 function renderThread(keepPlace) {
+  rememberTranscriptScroll(feed);
+  const top = feed.scrollTop;
   const fromBottom = feed.scrollHeight - feed.scrollTop;
   let h = S.meta && S.meta.hasOlder ? '<button class="load-earlier" id="earlier">Load Earlier</button>' : "";
   if (!S.turns.length) h += '<div class="empty">No Messages Yet</div>';
@@ -625,6 +654,8 @@ function renderThread(keepPlace) {
   renderMeta();
   if (keepPlace) feed.scrollTop = feed.scrollHeight - fromBottom;
   else if (S.stick) feed.scrollTop = feed.scrollHeight;
+  else feed.scrollTop = top;
+  restoreTranscriptScroll(feed);
 }
 
 // Turn updates arrive every 60 ms while streaming; render each turn once per frame.
@@ -696,6 +727,7 @@ function paintResponse(r) {
   el.classList.toggle("live", r.live || r.shown !== r.target);
   if (el.dataset.shown === r.shown) return;
   el.dataset.shown = r.shown;
+  rememberTranscriptScroll(el);
   const content = document.createElement("template");
   content.innerHTML = md(r.shown);
   preserveImages(el, content.content);
@@ -704,6 +736,7 @@ function paintResponse(r) {
   reconcileChildren(el,[...content.content.childNodes].map((node,i)=>patchTranscriptNode(oldChildren[i],node,r.animate)));
   if (fresh && el.childNodes.length) enterTranscript(el,8);
   queueImages(el);
+  restoreTranscriptScroll(el);
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
   const nodes = [];
   while (walker.nextNode()) if (!walker.currentNode.parentElement.closest("button")) nodes.push(walker.currentNode);
@@ -753,12 +786,16 @@ function preserveImages(previous, next) {
  const images=new Map();
  for(const button of previous.querySelectorAll('.image-preview')) {const id=key(button);if(!id)continue;if(!images.has(id))images.set(id,[]);images.get(id).push(button);}
  for(const button of next.querySelectorAll('.image-preview')) {const existing=images.get(key(button))?.shift();if(existing && existing!==button)button.replaceWith(existing);}
+ const players=new Map();
+ for(const player of previous.querySelectorAll('.chat-audio')) {const id=player.dataset.audioKey;if(!players.has(id))players.set(id,[]);players.get(id).push(player);}
+ for(const player of next.querySelectorAll('.chat-audio')) player.liveAudio=players.get(player.dataset.audioKey)?.shift();
 }
 function enterTranscript(node, distance = 8) {
  if (reducedMotion.matches || document.hidden) return;
  node.animate([{opacity:0.2,transform:`translateY(${distance}px)`},{offset:0.78,opacity:1,transform:'translateY(-1px)'},{opacity:1,transform:'translateY(0)'}],{duration:180,easing:'cubic-bezier(0.22,1,0.36,1)'});
 }
 function patchTranscriptNode(old, next, animate = false) {
+ if (next.liveAudio) return next.liveAudio;
  if (old === next) return old;
  if (!old || old.nodeType !== next.nodeType || (old.nodeType === 1 && old.tagName !== next.tagName)) {
   if (animate && next.nodeType === 1 && next.matches('.prose-line,li,.dl,.output-line')) next.dataset.enter="5";
@@ -779,14 +816,16 @@ function reconcileChildren(parent,nodes) {
  for(const node of parent.querySelectorAll('[data-enter]')) {const distance=Number(node.dataset.enter);delete node.dataset.enter;enterTranscript(node,distance);}
 }
 function renderTurn(el, t, animate) {
+ rememberTranscriptScroll(el);
  const old = new Map([...el.querySelectorAll('[data-response],[data-entry]')].map(node=>[node.dataset.response||node.dataset.entry,node]));
  const template=document.createElement('template');template.innerHTML=turnHTML(t,animate);
  preserveImages(el,template.content);
  const resolve = next => {
   if(next.nodeType!==1)return next;
+  if(next.liveAudio)return next.liveAudio;
   const key=next.dataset.response||next.dataset.entry;
   let existing=key&&old.get(key);
-  if(!existing&&next.classList.contains('u')) {
+  if(!existing&&next.classList.contains('u')&&feed.contains(el)) {
    existing=[...feed.querySelectorAll(':scope > .u.pending')].find(node=>node.dataset.text && next.textContent.startsWith(node.dataset.text));
    if(existing)delete existing.dataset.text;
   }
@@ -799,37 +838,45 @@ function renderTurn(el, t, animate) {
   return next;
  };
  reconcileChildren(el,[...template.content.childNodes].map(resolve));queueImages(el);
+ restoreTranscriptScroll(el);
 }
 
 document.addEventListener("visibilitychange", () => {
   document.documentElement.classList.toggle("page-hidden", document.hidden);
   if (document.hidden) revealResponses(performance.now());
+  if (document.hidden) pauseChatAudio();
 });
 reducedMotion.addEventListener("change", () => { if (reducedMotion.matches) { show(S.view); revealResponses(performance.now()); } });
 const waitingHTML = () => '<div class="reply-wait" role="status"><span class="thinking">Thinking</span></div>';
 
-feed.addEventListener("click", (e) => {
+function transcriptClick(e) {
   const t = e.target;
   const image = t.closest("[data-image]");
   if (image) { const img = image.querySelector("img"); openSheet("image", { src: image.dataset.image, path: img?.dataset.relayImage, server: img?.dataset.server }); return; }
-  if (t.id === "earlier") { t.textContent = "Loading"; t.disabled = true; conn().send({ op: "more", id: S.id }); return; }
+  if (t.id === "earlier") { t.innerHTML = loadingHTML("Loading Earlier Messages"); t.disabled = true; conn().send({ op: "more", id: S.id }); return; }
   if (t.classList.contains("copy")) { copyText(t.parentElement.querySelector("code").textContent); return; }
   const tog = t.closest("[data-tog]");
   if (tog) {
     const box = tog.parentElement, k = tog.dataset.tog;
+    rememberTranscriptScroll(box);
     box.classList.toggle("open");
     if (box.classList.contains("open")) S.open.add(k); else S.open.delete(k);
+    if (box.classList.contains("steps")) {
+      if (box.classList.contains("open")) S.open.delete(k + ":collapsed"); else S.open.add(k + ":collapsed");
+    }
+    restoreTranscriptScroll(box);
     return;
   }
   const d = t.closest("[data-diff]");
-  if (d) requestDiff(d.dataset.diff);
-});
+  if (d) { const root = d.closest(".agent-feed"); requestDiff(d.dataset.diff, root ? {server:root.dataset.server,id:root.dataset.thread,cwd:root.dataset.cwd} : null); }
+}
+feed.addEventListener("click", transcriptClick);
 
 const firstLine = (s) => String(s || "").split("\n")[0];
 
 // Step rows: one per command, edit, search, tool call or thought. Tap to expand.
 function stepHTML(s, t, key, active = false) {
-  if (hiddenTool(s)) return imagesHTML(s.images);
+  if (hiddenTool(s)) return imagesHTML(s.images) + audioHTMLs(s.audio);
   const done = t.status && t.status !== "inProgress";
   const running = s.status === "inProgress" && !done;
   const open = S.open.has(key) ? " open" : "";
@@ -848,7 +895,7 @@ function stepHTML(s, t, key, active = false) {
       const add = lines.filter((l) => l.startsWith("+") && !l.startsWith("+++")).length, del = lines.filter((l) => l.startsWith("-") && !l.startsWith("---")).length;
       icon = I.edit; label = `Edited <code>${esc(files.map((f) => base(f.slice(2))).join(", "))}</code>`;
       x = `<span class="x ok">+${add}</span><span class="x bad">-${del}</span>`;
-      body = `<pre>${diffLines(s.body || "")}</pre><button class="link-btn" data-diff="${esc(t.key)}">Open Full Diff</button>`;
+      body = `<pre>${diffLines(s.body || "")}</pre><button class="link-btn" data-diff="${esc(t.originalKey || t.key)}">Open Full Diff</button>`;
       break;
     }
     case "reasoning": {
@@ -863,18 +910,18 @@ function stepHTML(s, t, key, active = false) {
     case "tool": icon = I.plug; label = `<code>${esc(s.title)}</code>`; body = s.body ? `<pre>${outputLines(s.body)}</pre>` : ""; if (running) x = '<span class="x run">Running</span>'; break;
     case "image": return `<div class="image-item"><div class="step-h"><span class="lbl">${esc(s.title || "Image")}</span></div>${imagesHTML(s.images)}</div>`;
     case "search": icon = I.globe; label = "Searched " + esc(s.title); break;
-    case "agent": icon = I.agent; label = "Subagent " + esc(s.title); break;
+    case "agent": if (window.agentStepHTML) return window.agentStepHTML(s,t,key); icon = I.agent; label = "Subagent " + esc(s.title); break;
     case "error": return `<div class="step err"><div class="step-h">${I.warn}<span class="lbl">${esc(s.text)}</span></div></div>`;
-    case "info": return s.text ? `<div class="step info"><div class="step-h"><span class="lbl">${esc(s.text)}</span></div></div>` : "";
-    default: return "";
+    case "info": return (s.text ? `<div class="step info"><div class="step-h"><span class="lbl">${esc(s.text)}</span></div></div>` : "") + audioHTMLs(s.audio);
+    default: return audioHTMLs(s.audio);
   }
   const tog = body ? ` data-tog="${esc(key)}"` : "";
-  return `<div class="step${open}"><button class="step-h"${tog}>${icon}<span class="lbl${running || active ? " step-progress" : ""}">${label}</span>${x}</button>${body ? `<div class="step-b">${body}</div>` : ""}${imagesHTML(s.images)}</div>`;
+  return `<div class="step${open}"><button class="step-h"${tog}>${icon}<span class="lbl${running || active ? " step-progress" : ""}">${label}</span>${x}</button>${body ? `<div class="step-b">${body}</div>` : ""}${imagesHTML(s.images)}${audioHTMLs(s.audio)}</div>`;
 }
 
 function hiddenTool(it) { return it?.k === "tool" && (it.title || "").replace(/__/g, ".").endsWith("cua_repl.js"); }
 function turnHTML(t, animate = false) {
-  const items = (t.items || []).filter((it) => it && (!hiddenTool(it) || it.images?.length));
+  const items = (t.items || []).filter((it) => it && (!hiddenTool(it) || it.images?.length || it.audio?.length));
   const running = t.status === "inProgress";
   const activeIndex = running ? items.findLastIndex((it) => it.k !== "user" && it.k !== "assistant" && !hiddenTool(it)) : -1;
   let out = t.startedAt ? `<div class="stamp">${new Date(t.startedAt).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</div>` : "";
@@ -882,27 +929,29 @@ function turnHTML(t, animate = false) {
   let run = [], ri = 0, userSeen = false;
   const flush = () => {
     if (!run.length) return;
-    const rows = run.map(([s, i]) => entryHTML(stepHTML(s, t, t.key + ":" + i, running && i === activeIndex && items.at(-1)?.k !== "assistant"),t.key+":"+(s.id||i))).join("");
+    const rows = run.map(([s, i]) => entryHTML(stepHTML(s, t, t.key + ":" + (s.id || i), running && i === activeIndex && items.at(-1)?.k !== "assistant"),t.key+":"+(s.id||i))).join("");
     const n = run.filter(([s]) => s.k !== "reasoning" || s.text).length;
     if (!running && n > 3) {
-      const k = t.key + ":g" + ri;
+      const k = t.key + ":group:" + (run[0][0].id || ri);
       const cmds = run.filter(([s]) => s.k === "cmd").length, edits = run.filter(([s]) => s.k === "file").length;
       const parts = [cmds && `${cmds} ${cmds === 1 ? "Command" : "Commands"}`, edits && `${edits} ${edits === 1 ? "Edit" : "Edits"}`].filter(Boolean);
-      out += `<div class="steps${S.open.has(k) ? " open" : ""}"><button class="steps-sum" data-tog="${esc(k)}">${I.chev}${n} Steps${parts.length ? ", " + parts.join(", ") : ""}</button><div class="steps-body">${rows}</div></div>`;
+      const expanded = S.open.has(k) || (!S.open.has(k + ":collapsed") && run.some(([s,i]) => S.open.has(t.key + ":" + (s.id || i))));
+      out += `<div class="steps${expanded ? " open" : ""}"><button class="steps-sum" data-tog="${esc(k)}">${I.chev}${n} Steps${parts.length ? ", " + parts.join(", ") : ""}</button><div class="steps-body">${rows}</div></div>`;
     } else out += rows;
     run = []; ri++;
   };
   items.forEach((it, i) => {
     if (it.k === "user") {
       flush();
-      out += `<div class="u${userSeen ? " steer" : ""}" data-entry="${esc(t.key+":"+(it.id||i))}">${esc((it.text || "").replace(/\[Image\]/g, it.images?.length ? "" : "[Image]").trim())}${imagesHTML(it.images)}</div>`;
+      out += `<div class="u${userSeen ? " steer" : ""}" data-entry="${esc(t.key+":"+(it.id||i))}">${esc((it.text || "").replace(/\[Image\]/g, it.images?.length ? "" : "[Image]").trim())}${imagesHTML(it.images)}${audioHTMLs(it.audio)}</div>`;
       userSeen = true;
     } else if (it.k === "assistant") {
       flush();
       const r = responseState(t, it, i, animate);
       out += `<div class="prose md" data-response="${esc(r.key)}"></div>`;
       out += imagesHTML(it.images);
-    } else if (it.k === "image" || it.images?.length) { flush(); out += entryHTML(stepHTML(it, t, t.key + ":" + i),t.key+":"+(it.id||i)); }
+      out += audioHTMLs(it.audio);
+    } else if (it.k === "image" || it.images?.length || it.audio?.length) { flush(); out += entryHTML(stepHTML(it, t, t.key + ":" + (it.id || i)),t.key+":"+(it.id||i)); }
     else run.push([it, i]);
   });
   flush();
@@ -910,7 +959,7 @@ function turnHTML(t, animate = false) {
   if (!running && t.durationMs) foot.push(`<span>Worked For ${dur(t.durationMs)}</span>`);
   if (t.status === "interrupted") foot.push('<span class="err">Stopped</span>');
   if (t.status === "failed" || t.error) foot.push(`<span class="err">${esc(t.error || "Failed")}</span>`);
-  if (t.hasDiff) foot.push(`<button class="link-btn" data-diff="${esc(t.key)}">View Changes</button>`);
+  if (t.hasDiff) foot.push(`<button class="link-btn" data-diff="${esc(t.originalKey || t.key)}">View Changes</button>`);
   if (foot.length) out += `<div class="foot">${foot.join("")}</div>`;
   return out;
 }
@@ -938,6 +987,85 @@ function imageHTML(path, alt = "Image") {
   return `<button type="button" class="image-preview" data-image="${esc(src)}" aria-label="Open Image"><img src="${esc(src)}" alt="${esc(alt)}" loading="lazy" decoding="async" referrerpolicy="no-referrer"></button>`;
 }
 function imagesHTML(paths) { return paths?.length ? `<div class="chat-images">${paths.map((p) => imageHTML(p)).join("")}</div>` : ""; }
+
+function audioPath(path) {
+  path = path.trim().replace(/^<|>$/g, "");
+  if (/^file:\/\//i.test(path)) {
+    try { path = decodeURIComponent(new URL(path).pathname).replace(/^\/([a-z]:[\\/])/i, "$1"); } catch {}
+  }
+  return path;
+}
+function isAudioPath(path) { return /\.(mp3|wav|m4a|aac|ogg|opus|flac|aiff?)(?:[?#].*)?$/i.test(audioPath(path)); }
+function fileHTML(path, label, iconOnly = false) {
+  path = audioPath(path);
+  const name = base(path.split(/[?#]/)[0]) || "File";
+  return `<button type="button" class="file-download${iconOnly ? " icon-btn" : ""}" data-file-path="${esc(path)}" data-file-server="${esc(S.sid)}" aria-label="Download ${esc(name)}">${I.download}${iconOnly ? "" : `<span>${esc(label || name)}</span>`}</button>`;
+}
+document.addEventListener("click", async event => {
+  const button = event.target.closest("[data-file-path]");
+  if (!button) return;
+  const path = button.dataset.filePath, local = /^(\/|[a-z]:[\\/])/i.test(path);
+  const c = conns.get(button.dataset.fileServer);
+  if (local && !c) { toast("Reconnect To This Computer And Try Again"); return; }
+  if (local && Native?.downloadFile) { toast("Downloading File"); Native.downloadFile(c.s.id, c.base, path); return; }
+  if (!local && Native?.downloadRemoteFile) { toast("Downloading File"); Native.downloadRemoteFile(path, base(path.split(/[?#]/)[0])); return; }
+  button.disabled = true;
+  try {
+    const response = await fetch(local ? c.base + "/file?path=" + encodeURIComponent(path) : path, { headers:local ? { Authorization:"Bearer " + c.s.token } : {}, signal:AbortSignal.timeout(60000) });
+    if (!response.ok) throw Error("File Unavailable");
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a"); link.href = url; link.download = base(path.split(/[?#]/)[0]) || "Download";
+    link.click(); setTimeout(() => URL.revokeObjectURL(url), 30000);
+  } catch { toast("Could Not Download File. Check The Computer Connection And Try Again"); }
+  finally { button.disabled = false; }
+});
+function audioHTML(path, label = "") {
+  path = audioPath(path);
+  const local = /^(\/|[a-z]:[\\/])/i.test(path), c = conn();
+  if ((!local && !/^https?:\/\//i.test(path)) || (local && !c)) return esc(label || "Audio");
+  const name = label && label.toLowerCase() !== "audio" ? label : isAudioPath(path) ? base(path.split(/[?#]/)[0]) : "Audio";
+  const key = (local ? S.sid : "remote") + ":" + path;
+  const native = local && Native && typeof Native.audioStreamVersion === "function";
+  const source = native ? "https://appassets.androidplatform.net/relay-audio?" + new URLSearchParams({ server:S.sid, base:c.base, path }) : local ? "" : path;
+  return `<span class="chat-audio" data-audio-key="${esc(key)}"${local ? ` data-server="${esc(S.sid)}" data-path="${esc(path)}"` : ""} role="group" aria-label="${esc(name)}"><span class="audio-heading"><span class="audio-name">${esc(name)}</span>${fileHTML(path,name,true)}</span><audio controls preload="none" aria-label="${esc(name)}"${source ? ` src="${esc(source)}"` : ' class="hidden"'}></audio><button type="button" class="audio-load"${source ? ' hidden' : ''}>Play Audio</button><span class="audio-error" role="status" hidden>Could Not Play Audio. Check The Computer Connection And Try Again. <button type="button" data-audio-retry>Retry</button></span></span>`;
+}
+function audioHTMLs(paths) { return (paths || []).map(path => audioHTML(path)).join(""); }
+const audioLoads = new Map();
+function pauseChatAudio(except) { for (const audio of document.querySelectorAll(".feed audio")) if (audio !== except) audio.pause(); }
+window.pauseChatAudio = pauseChatAudio;
+function clearAudio(root = feed) {
+  for (const audio of root.querySelectorAll("audio")) { audio.pause(); audio.removeAttribute("src"); audio.load(); }
+  for (const [player,entry] of audioLoads) if (root.contains(player)) { entry.controller.abort(); if (entry.url) URL.revokeObjectURL(entry.url); audioLoads.delete(player); }
+}
+document.addEventListener("play", event => { if (event.target.tagName === "AUDIO" && event.target.closest(".feed")) pauseChatAudio(event.target); }, true);
+document.addEventListener("error", event => {
+  if (event.target.tagName === "AUDIO") event.target.closest(".chat-audio").querySelector(".audio-error").hidden = false;
+}, true);
+document.addEventListener("click", async event => {
+  const button = event.target.closest(".audio-load,[data-audio-retry]");
+  if (!button) return;
+  const player = button.closest(".chat-audio"), audio = player.querySelector("audio");
+  player.querySelector(".audio-error").hidden = true;
+  if (audio.getAttribute("src")) { audio.load(); try { await audio.play(); } catch {} return; }
+  const c = conns.get(player.dataset.server);
+  if (!c) { player.querySelector(".audio-error").hidden = false; return; }
+  if (audioLoads.get(player)?.loading) return;
+  button.disabled = true; button.textContent = "Loading Audio";
+  const entry = { controller:new AbortController(), url:"", loading:true };
+  audioLoads.set(player,entry);
+  try {
+    const response = await fetch(c.base + "/audio?path=" + encodeURIComponent(player.dataset.path), { headers:{ Authorization:"Bearer " + c.s.token }, signal:AbortSignal.any([entry.controller.signal, AbortSignal.timeout(60000)]) });
+    if (!response.ok || !response.headers.get("Content-Type")?.startsWith("audio/")) throw Error("Audio Unavailable");
+    const blob = await response.blob();
+    if (entry.controller.signal.aborted || !player.isConnected) return;
+    entry.url = URL.createObjectURL(blob); audio.src = entry.url; audio.classList.remove("hidden");
+    player.querySelector(".audio-load").hidden = true;
+    try { await audio.play(); } catch {}
+  } catch {
+    if (!entry.controller.signal.aborted && player.isConnected) player.querySelector(".audio-error").hidden = false;
+    audioLoads.delete(player);
+  } finally { entry.loading = false; button.disabled = false; button.textContent = "Play Audio"; }
+});
 // Chromium blocks plain-HTTP image elements in the HTTPS Android shell.
 // Fetch authenticated bytes first, then display a local blob URL.
 const imageCache = new Map(), observedImages = new Set();
@@ -957,7 +1085,9 @@ function clearImageCache() {
 function queueImages(root) {
   for (const img of observedImages) if (!img.isConnected) { imageObserver.unobserve(img); observedImages.delete(img); }
   for (const img of root.querySelectorAll("img[data-relay-image]:not([data-queued])")) {
-    img.dataset.queued = "1"; observedImages.add(img); imageObserver.observe(img);
+    img.dataset.queued = "1";
+    if (!feed.contains(img)) loadRelayImage(img);
+    else { observedImages.add(img); imageObserver.observe(img); }
   }
 }
 async function loadRelayImage(img) {
@@ -998,7 +1128,14 @@ function md(src) {
   src = src.replace(/```[^\n]*\n([\s\S]*?)(```|$)/g, (_, code) => { blocks.push(code.replace(/\n$/, "")); return `\u0000${blocks.length - 1}\u0000`; });
   const inline = (s) => {
     const images = [];
-    s = s.replace(/!\[([^\]]*)\]\(([^)\n]+)\)/g, (_, alt, path) => { images.push(imageHTML(path.trim(), alt || "Image")); return `\u0001${images.length - 1}\u0001`; });
+    s = s.replace(/`[^`\n]+`|(!?)\[([^\]]*)\]\(([^)\n]+)\)/g, (match, image, alt, path) => {
+      if (match.startsWith("`")) return match;
+      if (isAudioPath(path)) images.push(audioHTML(path, alt));
+      else if (image) images.push(imageHTML(path.trim(), alt || "Image"));
+      else if (/^(\/|[a-z]:[\\/])/i.test(audioPath(path))) images.push(fileHTML(path,alt));
+      else return match;
+      return `\u0001${images.length - 1}\u0001`;
+    });
     return esc(s)
     .replace(/`([^`\n]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
@@ -1065,6 +1202,7 @@ function renderMeta() {
   const m = S.meta;
   if (!m) return;
   renderThreadHeader();
+  window.refreshThreadAgents?.();
   renderStatus();
   const ring = $("t-ring");
   const known = m.ctxMax > 0 && m.ctxUsed != null;
@@ -1308,6 +1446,7 @@ async function speechCapability(c) {
 $("voice").onclick = async () => {
   if (voiceState.phase === "recording") { transcribeVoice(); return; }
   if (!Native?.startVoice || voiceState.phase !== "idle") return;
+  pauseChatAudio();
   voiceState.id = sid(); const request = voiceState.id;
   voiceState.phase = "preparing"; renderVoice();
   const c = conn();
@@ -1506,14 +1645,15 @@ $("attachments").addEventListener("click", (e) => {
 
 // ------------------------------------------------------------------- diff --
 
-function requestDiff(key) {
+function requestDiff(key, source = null) {
+  S.diffSource = source || {server:S.sid,id:S.id,cwd:S.meta?.cwd || ""};
   openSheet("diff", {});
-  conn().send({ op: "diff", id: S.id, key: key || "" });
+  conns.get(S.diffSource.server)?.send({ op: "diff", id: S.diffSource.id, key: key || "" });
 }
 function showDiff(m) {
   if (S.sheet !== "diff") return;
   const text = m.diff || "";
-  const cwd = (S.meta && S.meta.cwd) || "";
+  const cwd = S.diffSource?.cwd || (S.meta && S.meta.cwd) || "";
   const files = [];
   let h = "";
   for (const l of text.split("\n")) {
@@ -1542,6 +1682,7 @@ function showDiff(m) {
 
 let sheetGeneration = 0;
 function openSheet(name, opts = {}) {
+  if (S.sheet === "agent" && name !== "agent") window.disposeAgentViewer?.();
   sheetGeneration++;
   if (!S.sheet) history.pushState({ ...(history.state || {}), sheet: name }, "");
   else history.replaceState({ ...(history.state || {}), sheet: name }, "");
@@ -1550,7 +1691,7 @@ function openSheet(name, opts = {}) {
   for (const animation of sh.getAnimations()) animation.cancel();
   sh.inert = false;
   $("scrim").style.pointerEvents = "";
-  sh.className = "sheet" + (name === "diff" || name === "image" || name === "usage" ? " full" : name === "effort" ? " effort" : "");
+  sh.className = "sheet" + (["diff","image","usage","agents","agent"].includes(name) ? " full" : name === "effort" ? " effort" : "");
   sh.style.bottom = name === "effort" ? `${$("composer").offsetHeight + 24}px` : "";
   sh.onclick = null;
   $("scrim").classList.toggle("dark", name === "effort");
@@ -1560,6 +1701,7 @@ function openSheet(name, opts = {}) {
 }
 function closeSheet(fromPop) {
   if (!S.sheet) return;
+  if (S.sheet === "agent") window.disposeAgentViewer?.();
   S.sheet = null; S.redraw = null;
   const generation = ++sheetGeneration, sh = $("sheet"), scrim = $("scrim");
   sh.inert = true; scrim.style.pointerEvents = "none";
@@ -1712,7 +1854,7 @@ const SHEETS = {
       const m = S.meta || {};
       const models = (conn().models && conn().models.models) || [];
       sh.innerHTML = `<div class="grip"></div><h2>Model</h2>` +
-        (models.length ? models.map((x) => mi("m:" + x.slug, "", esc(x.name), esc(x.description || ""), (m.model === x.slug || m.model === x.resolved) ? I.check : "")).join("") : '<p class="hint">Loading Models</p>');
+        (models.length ? models.map((x) => mi("m:" + x.slug, "", esc(x.name), esc(x.description || ""), (m.model === x.slug || m.model === x.resolved) ? I.check : "")).join("") : `<p class="hint">${loadingHTML("Loading Models")}</p>`);
     };
     S.redraw = draw;
     if (!conn().models) conn().send({ op: "models" });
@@ -1783,7 +1925,7 @@ const SHEETS = {
   },
 
   diff(sh) {
-    sh.innerHTML = `<div class="diff-head"><button class="icon-btn" data-x="close" aria-label="Close">${I.close}</button><h2>Loading Changes</h2></div><div class="diff-files hidden"></div><div class="diff-body"></div>`;
+    sh.innerHTML = `<div class="diff-head"><button class="icon-btn" data-x="close" aria-label="Close">${I.close}</button><h2>Changes</h2></div><div class="diff-files hidden"></div><div class="diff-body">${loadingHTML("Loading Changes")}</div>`;
     sh.onclick = (e) => {
       if (e.target.closest("[data-x=close]")) closeSheet();
       const f = e.target.closest("[data-f]");

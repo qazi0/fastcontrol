@@ -177,6 +177,20 @@ func main() {
 		}
 		serveImage(w, r)
 	}))
+	mux.HandleFunc("/audio", cors(func(w http.ResponseWriter, r *http.Request) {
+		if !authed(r) {
+			http.Error(w, "bad token", http.StatusUnauthorized)
+			return
+		}
+		serveAudio(w, r)
+	}))
+	mux.HandleFunc("/file", cors(func(w http.ResponseWriter, r *http.Request) {
+		if !authed(r) {
+			http.Error(w, "bad token", http.StatusUnauthorized)
+			return
+		}
+		serveFile(w, r)
+	}))
 	mux.HandleFunc("/speech/install", cors(func(w http.ResponseWriter, r *http.Request) {
 		if !authed(r) {
 			http.Error(w, "bad token", http.StatusUnauthorized)

@@ -63,8 +63,9 @@ class MainActivity : Activity() {
     private var awaitingMic = false
     private var voiceRequestId = ""
     private var voiceCompressed = false
-    private lateinit var downloads: ImageDownloads
+    private lateinit var downloads: Downloads
     private lateinit var uploads: ImageUploads
+    private lateinit var audioStreams: AudioStreams
     private var pendingImage: File? = null
 
     @Volatile private var pendingLaunch = ""
@@ -100,6 +101,7 @@ class MainActivity : Activity() {
             setSupportMultipleWindows(true)
             javaScriptCanOpenWindowsAutomatically = false
         }
+        audioStreams = AudioStreams(this)
         webView.webViewClient = ShellClient()
         webView.webChromeClient = ShellChrome()
         webView.addJavascriptInterface(Bridge(), "CodexAndroid")
@@ -109,14 +111,23 @@ class MainActivity : Activity() {
         uploads = ImageUploads { event -> runOnUiThread {
             if (!isDestroyed) webView.evaluateJavascript("window.onImageUpload && window.onImageUpload($event)", null)
         } }
-        downloads = ImageDownloads(this, { event -> runOnUiThread {
+        downloads = Downloads(this, { event -> runOnUiThread {
             if (!isDestroyed) webView.evaluateJavascript("window.onImageDownload && window.onImageDownload($event)", null)
-        } }, { file, mime -> runOnUiThread {
+        } }, { file, mime, name -> runOnUiThread {
             if (isDestroyed) { file.delete(); return@runOnUiThread }
-            pendingImage?.delete(); pendingImage = file
+            if (pendingImage != null) {
+                file.delete()
+                webView.evaluateJavascript("window.onImageDownload && window.onImageDownload({ok:false,message:'Finish Saving The Previous File First'})", null)
+                return@runOnUiThread
+            }
+            pendingImage = file
             val save = Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
-                .setType(mime).putExtra(Intent.EXTRA_TITLE, "Image." + file.extension)
-            startActivityForResult(save, REQ_SAVE_IMAGE)
+                .setType(mime).putExtra(Intent.EXTRA_TITLE, name)
+            try { startActivityForResult(save, REQ_SAVE_IMAGE) }
+            catch (_: ActivityNotFoundException) {
+                pendingImage = null; file.delete()
+                webView.evaluateJavascript("window.onImageDownload && window.onImageDownload({ok:false,message:'No File Picker Is Available'})", null)
+            }
         } })
 
         if (savedInstanceState == null) {
@@ -157,6 +168,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         UiState.resumed = false
+        webView.evaluateJavascript("window.pauseChatAudio && window.pauseChatAudio()", null)
         if (::voice.isInitialized) voice.cancel()
         updateVoiceScreenState()
         webView.onPause()
@@ -165,6 +177,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         if (::voice.isInitialized) voice.cancel()
+        pendingImage?.delete(); pendingImage = null
         webView.destroy()
         super.onDestroy()
     }
@@ -294,6 +307,7 @@ class MainActivity : Activity() {
         ): WebResourceResponse? {
             val url = request.url
             if (url.host != ASSET_HOST) return null
+            if (url.scheme == "https" && url.path == "/relay-audio") return audioStreams.serve(request)
             return serveAsset(url.path ?: "/")
         }
 
@@ -409,9 +423,11 @@ class MainActivity : Activity() {
                 Thread({
                     try {
                         if (resultCode == RESULT_OK && data?.data != null) {
-                            (contentResolver.openOutputStream(data.data!!) ?: error("Could Not Save Image")).use { out -> file.inputStream().use { it.copyTo(out) } }
-                            runOnUiThread { if (!isDestroyed) webView.evaluateJavascript("window.onImageDownload && window.onImageDownload({ok:true,message:'Image Saved'})", null) }
+                            (contentResolver.openOutputStream(data.data!!) ?: error("Could Not Save File")).use { out -> file.inputStream().use { it.copyTo(out) } }
+                            runOnUiThread { if (!isDestroyed) webView.evaluateJavascript("window.onImageDownload && window.onImageDownload({ok:true,message:'File Saved'})", null) }
                         }
+                    } catch (_: Exception) {
+                        runOnUiThread { if (!isDestroyed) webView.evaluateJavascript("window.onImageDownload && window.onImageDownload({ok:false,message:'Could Not Save File'})", null) }
                     } finally { file.delete() }
                 }, "SaveImage").start()
             }
@@ -461,7 +477,20 @@ class MainActivity : Activity() {
 
     /** Exposed to the page as window.CodexAndroid. Calls arrive on a WebView binder thread. */
     inner class Bridge {
+        @JavascriptInterface fun audioStreamVersion(): Int = 1
         private val ctx: Context get() = this@MainActivity
+
+        @JavascriptInterface
+        fun downloadFile(serverId: String, base: String, path: String) {
+            val server = Store.servers(ctx).firstOrNull { it.id == serverId && base.trimEnd('/') in it.urls.map { u -> u.trimEnd('/') } } ?: return
+            val url = base.trimEnd('/') + "/file?path=" + java.net.URLEncoder.encode(path, "UTF-8")
+            downloads.download(url, server.token, path.replace('\\', '/').substringAfterLast('/'))
+        }
+
+        @JavascriptInterface
+        fun downloadRemoteFile(url: String, name: String) {
+            if (Uri.parse(url).scheme in setOf("https", "http")) downloads.download(url, fileName = name)
+        }
 
         @JavascriptInterface
         fun getServers(): String = Store.serversJson(ctx)

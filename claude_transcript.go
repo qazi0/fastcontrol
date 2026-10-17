@@ -161,6 +161,7 @@ func (v *claudeTranscript) apply(r map[string]any) {
 				item.Body = clipTail(claudeText(b["content"]), maxOutput)
 			}
 			item.Images = collectClaudeImages(b["content"])
+			item.Audio = collectAudio(b["content"])
 			if bad, _ := b["is_error"].(bool); bad {
 				item.Status = "failed"
 				exit := 1

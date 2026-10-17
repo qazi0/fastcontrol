@@ -1,11 +1,11 @@
 <resources>
-    <style name="Theme.fastcontrol" parent="android:Theme.Material.Light.NoActionBar">
+    <style name="Theme.fastcontrol.Base" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/bg</item>
         <item name="android:colorBackground">@color/bg</item>
         <item name="android:colorAccent">@color/accent</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@color/bg</item>
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:windowLightNavigationBar">true</item>
     </style>
+    <style name="Theme.fastcontrol" parent="Theme.fastcontrol.Base" />
 </resources>

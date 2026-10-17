@@ -33,6 +33,10 @@ type ThreadInfo struct {
 	Running   bool   `json:"running"`
 	Attention bool   `json:"attention,omitempty"` // waiting on an approval or a question
 	Subagent  bool   `json:"subagent,omitempty"`
+	ParentID  string `json:"parentId,omitempty"`
+	AgentPath string `json:"agentPath,omitempty"`
+	AgentName string `json:"agentName,omitempty"`
+	Activity  string `json:"activity,omitempty"`
 	Pinned    bool   `json:"pinned,omitempty"`
 	Exec      bool   `json:"exec,omitempty"` // first turn running headless via codex exec
 	LastMsg   string `json:"lastMsg,omitempty"`
@@ -58,12 +62,14 @@ func stateDBPath() string {
 	return best
 }
 
-const threadCols = `select id, coalesce(nullif(name,''), nullif(title,''), substr(first_user_message,1,80)) as title,
+const threadSelect = `select id, coalesce(nullif(name,''), nullif(title,''), substr(first_user_message,1,80)) as title,
  substr(preview,1,160) as preview, cwd, source, coalesce(thread_source,'') as kind,
  recency_at_ms as recency, rollout_path as rollout, is_pinned as pinned,
  coalesce(git_branch,'') as branch, coalesce(model,'') as model, coalesce(reasoning_effort,'') as effort,
  approval_mode as approval, sandbox_policy as sandbox
- from threads where archived=0 and preview<>''`
+ from threads`
+
+const threadCols = threadSelect + ` where archived=0 and preview<>''`
 
 const threadQuery = threadCols + ` order by is_pinned desc, recency_at_ms desc limit 400`
 
@@ -131,10 +137,26 @@ func queryThreads(db, query string) ([]ThreadInfo, error) {
 			Branch: r.Branch, Model: r.Model, Effort: r.Effort, Approval: r.Approval}
 		t.Sandbox = dbSandbox(r.Sandbox)
 		t.Subagent = r.Kind == "subagent" || r.Kind == "guardian_review"
+		var source struct {
+			Subagent struct {
+				Spawn struct {
+					Parent string `json:"parent_thread_id"`
+					Path   string `json:"agent_path"`
+					Name   string `json:"agent_nickname"`
+				} `json:"thread_spawn"`
+			} `json:"subagent"`
+		}
+		if json.Unmarshal([]byte(r.Source), &source) == nil {
+			t.ParentID, t.AgentPath, t.AgentName = source.Subagent.Spawn.Parent, source.Subagent.Spawn.Path, source.Subagent.Spawn.Name
+			t.Subagent = t.Subagent || t.ParentID != ""
+		}
 		if st, err := os.Stat(r.Rollout); err == nil && now.Sub(st.ModTime()) < 15*time.Minute {
 			t.Active = true
 			rs := tailStatus(r.Rollout, st)
 			t.Running, t.LastMsg, t.LastErr, t.TurnAt = rs.running, rs.lastMsg, rs.lastErr, rs.turnAt
+			if t.Subagent {
+				t.Activity = rs.activity
+			}
 		}
 		res = append(res, t)
 	}
@@ -144,12 +166,13 @@ func queryThreads(db, query string) ([]ThreadInfo, error) {
 // ---- running state from rollout tails ----
 
 type rolloutStatus struct {
-	size    int64
-	mod     time.Time
-	running bool
-	lastMsg string
-	lastErr string
-	turnAt  int64
+	size     int64
+	mod      time.Time
+	running  bool
+	lastMsg  string
+	lastErr  string
+	turnAt   int64
+	activity string
 }
 
 var (
@@ -184,6 +207,9 @@ func tailStatus(path string, st os.FileInfo) rolloutStatus {
 	lines := bytes.Split(buf, []byte("\n"))
 	for i := len(lines) - 1; i >= 0; i-- {
 		l := lines[i]
+		if rs.activity == "" {
+			rs.activity = rolloutActivity(l)
+		}
 		if !bytes.Contains(l, []byte(`"event_msg"`)) {
 			continue
 		}

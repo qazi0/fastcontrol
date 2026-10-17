@@ -14,15 +14,18 @@ import (
 )
 
 type Item struct {
-	ID     string   `json:"id"`
-	K      string   `json:"k"` // user, assistant, reasoning, cmd, file, tool, search, agent, error, info
-	Text   string   `json:"text,omitempty"`
-	Title  string   `json:"title,omitempty"`
-	Body   string   `json:"body,omitempty"`
-	Status string   `json:"status,omitempty"`
-	Exit   *int     `json:"exit,omitempty"`
-	Phase  string   `json:"phase,omitempty"`
-	Images []string `json:"images,omitempty"`
+	ID        string   `json:"id"`
+	K         string   `json:"k"` // user, assistant, reasoning, cmd, file, tool, search, agent, error, info
+	Text      string   `json:"text,omitempty"`
+	Title     string   `json:"title,omitempty"`
+	Body      string   `json:"body,omitempty"`
+	Status    string   `json:"status,omitempty"`
+	Exit      *int     `json:"exit,omitempty"`
+	Phase     string   `json:"phase,omitempty"`
+	Images    []string `json:"images,omitempty"`
+	Audio     []string `json:"audio,omitempty"`
+	AgentPath string   `json:"agentPath,omitempty"`
+	AgentID   string   `json:"agentId,omitempty"`
 	// Questions the assistant asked without blocking the turn; the answer is the next message.
 	Asks []Ask `json:"asks,omitempty"`
 }
@@ -110,6 +113,7 @@ type Meta struct {
 	Mode           string    `json:"mode"` // live (desktop owns it, full control) or tail (read-only rollout tail)
 	Running        bool      `json:"running"`
 	Runtime        string    `json:"runtime,omitempty"`
+	ReadOnly       bool      `json:"readOnly,omitempty"`
 	Requests       []Request `json:"requests,omitempty"`
 }
 
@@ -225,7 +229,7 @@ func desktopItem(raw any) Item {
 		return Item{K: "info", Text: "?"}
 	}
 	t := str(m, "type")
-	it := Item{ID: str(m, "id"), Status: str(m, "status"), Images: collectImages(m)}
+	it := Item{ID: str(m, "id"), Status: str(m, "status"), Images: collectImages(m), Audio: collectAudio(m)}
 	switch t {
 	case "userMessage":
 		it.K = "user"
@@ -295,6 +299,8 @@ func desktopItem(raw any) Item {
 	case "subAgentActivity":
 		it.K = "agent"
 		it.Title = str(m, "kind") + " " + str(m, "agentPath")
+		it.AgentPath = str(m, "agentPath")
+		it.AgentID = str(m, "agentThreadId")
 	case "error":
 		it.K = "error"
 		it.Text = str(m, "message")
@@ -531,7 +537,7 @@ func lastTurnID(state map[string]any) string {
 // rolloutItem converts the `item` of an `item_completed` event (PascalCase, snake_case fields).
 func rolloutItem(m map[string]any) (Item, bool) {
 	t := str(m, "type")
-	it := Item{ID: str(m, "id"), Status: str(m, "status"), Images: collectImages(m)}
+	it := Item{ID: str(m, "id"), Status: str(m, "status"), Images: collectImages(m), Audio: collectAudio(m)}
 	switch t {
 	case "UserMessage":
 		it.K = "user"
@@ -587,10 +593,17 @@ func rolloutItem(m map[string]any) (Item, bool) {
 	case "SubAgentActivity":
 		it.K = "agent"
 		it.Title = str(m, "kind") + " " + str(m, "agent_path")
+		it.AgentPath = str(m, "agent_path")
+		it.AgentID = str(m, "agent_thread_id")
 	case "ImageView", "ImageGeneration":
 		it.K = "image"
 		it.Title = map[string]string{"ImageView": "Viewed Image", "ImageGeneration": "Generated Image"}[t]
 	case "FunctionCallOutput", "Extension":
+		if len(it.Audio) > 0 {
+			it.K = "tool"
+			it.Title = "Audio"
+			return it, true
+		}
 		if len(it.Images) > 0 {
 			it.K = "image"
 			it.Title = "Tool Image"

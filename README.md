@@ -9,6 +9,8 @@ Instant access to your existing Codex and Claude Code sessions from Android. fas
 - Check subscription usage limits and reset times. View each computer's local token counts and estimated API costs for today and the last 30 days.
 - Record voice messages and have your computer transcribe them into an editable draft.
 - View chat images full-screen, zoom and download them.
+- Play generated audio in chat and download linked files to Android.
+- Open subagent transcripts and follow their progress in a read-only view.
 - Receive notifications when tasks finish or need your attention.
 
 ## Install on a Mac

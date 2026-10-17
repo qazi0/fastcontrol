@@ -309,6 +309,7 @@ func (h *Hub) handle(c *Client, raw []byte) {
 		Provider string `json:"provider"`
 		Op       string `json:"op"`
 		Nonce    string `json:"nonce"`
+		ID       string `json:"id"`
 	}
 	if json.Unmarshal(raw, &route) != nil {
 		return
@@ -319,6 +320,13 @@ func (h *Hub) handle(c *Client, raw []byte) {
 	}
 	if route.Provider != "" && route.Provider != "codex" && route.Provider != "claude" {
 		c.push(mustJSON(map[string]any{"t": "ack", "op": route.Op, "nonce": route.Nonce, "ok": false, "msg": "Unknown Provider"}))
+		return
+	}
+	if agentControl(route.Op) && h.isSubagent(route.ID) {
+		c.push(mustJSON(map[string]any{"t": "ack", "op": route.Op, "id": route.ID, "nonce": route.Nonce, "ok": false, "msg": "Subagent Chats Are Read Only. Use The Parent Chat To Direct The Agent"}))
+		return
+	}
+	if h.handleAgents(c, raw) {
 		return
 	}
 	if h.headless != nil && h.headless.handle(c, raw) {
@@ -609,6 +617,12 @@ func (s *Session) requestResync() {
 
 func (s *Session) subscribe(c *Client) {
 	s.cmds <- func() {
+		s.hub.mu.Lock()
+		wanted := s.hub.clients[c] && c.subs[s.id]
+		s.hub.mu.Unlock()
+		if !wanted {
+			return
+		}
 		s.mu.Lock()
 		s.subs[c] = true
 		s.mu.Unlock()
@@ -686,6 +700,7 @@ func (s *Session) meta() Meta {
 			m.Running = true
 		}
 	}
+	m.ReadOnly = s.info.Subagent
 	return m
 }
 

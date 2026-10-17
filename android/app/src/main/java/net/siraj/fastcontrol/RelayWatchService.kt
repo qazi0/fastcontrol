@@ -187,7 +187,7 @@ class RelayWatchService : Service() {
         val threadId = msg.optString("id")
         if (threadId.isEmpty()) return
         val provider = msg.optString("provider", "codex")
- if (UiState.isShowing(server.id, threadId, provider)) return
+        if (UiState.isShowing(server.id, threadId, provider)) return
         if (!canNotify()) return
 
         val title = msg.optString("title").ifEmpty { "Codex" }
