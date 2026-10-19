@@ -1650,7 +1650,8 @@ $("file").addEventListener("change", async (e) => {
   if (selection === imageSelection) e.target.value = "";
 });
 async function addAttachment(file, target) {
-  const a = { url: file.type.startsWith("image/") ? URL.createObjectURL(file) : "", kind:file.type.startsWith("image/") ? "image" : "file", name:file.name || "attachment", uploading: true, path: "" };
+  const image = /^image\/(jpeg|png|webp|gif|heic)$/.test(file.type);
+  const a = { url: image ? URL.createObjectURL(file) : "", kind:image ? "image" : "file", name:file.name || "attachment", uploading: true, path: "" };
   const list = target === "new" ? S.newAttach : S.attach;
   const sidv = target === "new" ? S.newDraft && S.newDraft.sid : S.sid;
   const s = S.servers.find((x) => x.id === sidv);

@@ -20,6 +20,7 @@ func TestUploadDocumentsAndImageValidation(t *testing.T) {
 		{"report.pdf", "application/pdf", "%PDF-1.7\nreport", true},
 		{"notes.txt", "text/plain", "notes", true},
 		{"empty.bin", "application/octet-stream", "", true},
+		{"drawing.svg", "image/svg+xml", "<svg/>", true},
 		{"bad.png", "image/png", "not an image", false},
 	}
 	for _, tc := range cases {

@@ -384,7 +384,7 @@ func saveUpload(r *http.Request) (string, error) {
 	if n > limit {
 		return "", fmt.Errorf("File Must Be Smaller Than 25 MB")
 	}
-	if strings.HasPrefix(ct, "image/") {
+	if imageExts[ct] != "" {
 		head := make([]byte, 512)
 		read, openErr := os.Open(f.Name())
 		if openErr != nil {
