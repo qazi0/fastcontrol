@@ -7,6 +7,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <!-- Relays live on LAN or Tailscale IPs over plain ws:// and http://. -->
@@ -36,6 +38,9 @@
                 <data android:scheme="fastcontrol" android:host="pair" />
             </intent-filter>
         </activity>
+
+        <service android:name=".VoiceCaptureService" android:exported="false"
+            android:stopWithTask="false" android:foregroundServiceType="microphone" />
 
         <service
             android:name=".RelayWatchService"

@@ -60,10 +60,21 @@ class MainActivity : Activity() {
     private lateinit var container: FrameLayout
     private lateinit var webView: WebView
     private var fileCallback: ValueCallback<Array<Uri>>? = null
-    private lateinit var voice: VoiceRecorder
     private var awaitingMic = false
-    private var voiceRequestId = ""
+    @Volatile private var pendingVoice: String? = null
+    @Volatile private var launchingVoice: String? = null
     private var voiceCompressed = false
+    private val voiceObserver: (String) -> Unit = { json ->
+        if (!isDestroyed && UiState.resumed) {
+            val type = JSONObject(json).optString("type")
+            if (type != "level") {
+                launchingVoice = null
+                updateVoiceScreenState()
+            }
+            if (type in setOf("captureState", "transcript", "error", "cancelled")) restoreVoiceSession()
+            else webView.evaluateJavascript("window.onVoiceEvent && window.onVoiceEvent($json)", null)
+        }
+    }
     private lateinit var downloads: Downloads
     private lateinit var uploads: ImageUploads
     private lateinit var audioStreams: AudioStreams
@@ -80,6 +91,9 @@ class MainActivity : Activity() {
         }
 
         pendingAttachments = savedInstanceState?.getString("pendingAttachments")
+        pendingVoice = savedInstanceState?.getString("pendingVoice")
+        awaitingMic = savedInstanceState?.getBoolean("awaitingMic") ?: false
+        voiceCompressed = savedInstanceState?.getBoolean("voiceCompressed") ?: false
         val bg = getColor(R.color.bg)
         container = FrameLayout(this).apply { setBackgroundColor(bg) }
         webView = WebView(this).apply {
@@ -108,9 +122,6 @@ class MainActivity : Activity() {
         webView.webViewClient = ShellClient()
         webView.webChromeClient = ShellChrome()
         webView.addJavascriptInterface(Bridge(), "CodexAndroid")
-        voice = VoiceRecorder(this, { runOnUiThread { updateVoiceScreenState() } }) { event ->
-            runOnUiThread { if (!isDestroyed) webView.evaluateJavascript("window.onVoiceEvent && window.onVoiceEvent($event)", null) }
-        }
         uploads = ImageUploads { event -> runOnUiThread {
             if (!isDestroyed) webView.evaluateJavascript("window.onImageUpload && window.onImageUpload($event)", null)
         } }
@@ -147,6 +158,9 @@ class MainActivity : Activity() {
         webView.saveState(outState)
         outState.putString("pendingLaunch", pendingLaunch)
         outState.putString("pendingAttachments", pendingAttachments)
+        outState.putString("pendingVoice", pendingVoice)
+        outState.putBoolean("awaitingMic", awaitingMic)
+        outState.putBoolean("voiceCompressed", voiceCompressed)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -167,20 +181,23 @@ class MainActivity : Activity() {
             startForegroundService(Intent(this, RelayWatchService::class.java))
         }
         webView.onResume()
+        VoiceCaptureService.observer = voiceObserver
+        launchPendingVoice()
         updateVoiceScreenState()
+        restoreVoiceSession()
     }
 
     override fun onPause() {
         UiState.resumed = false
         webView.evaluateJavascript("window.pauseChatAudio && window.pauseChatAudio()", null)
-        if (::voice.isInitialized) voice.cancel()
+        if (VoiceCaptureService.observer === voiceObserver) VoiceCaptureService.observer = null
         updateVoiceScreenState()
         webView.onPause()
         super.onPause()
     }
 
     override fun onDestroy() {
-        if (::voice.isInitialized) voice.cancel()
+        if (VoiceCaptureService.observer === voiceObserver) VoiceCaptureService.observer = null
         pendingImage?.delete(); pendingImage = null
         webView.destroy()
         super.onDestroy()
@@ -189,9 +206,31 @@ class MainActivity : Activity() {
     private fun updateVoiceScreenState() {
         if (isDestroyed) return
         // Read the current session on the UI thread so an old worker cannot clear a new recording's flag.
-        val recording = UiState.resumed && ::voice.isInitialized && voice.isRecording
+        val recording = UiState.resumed && VoiceCaptureService.isRecording
         if (recording) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    private fun restoreVoiceSession() {
+        if (!isDestroyed && UiState.resumed) webView.evaluateJavascript("window.restoreVoiceSession && window.restoreVoiceSession()", null)
+    }
+
+    private fun voiceSnapshot(): String {
+        val snapshot = VoiceCaptureService.snapshot(this)
+        return if (snapshot != "{}") snapshot else pendingVoice ?: launchingVoice ?: "{}"
+    }
+
+    private fun launchPendingVoice() {
+        if (!UiState.resumed || awaitingMic || checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
+        val json = pendingVoice ?: return
+        pendingVoice = null; launchingVoice = json
+        try {
+            startForegroundService(Intent(this, VoiceCaptureService::class.java).setAction(VoiceCaptureService.START)
+                .putExtra("session", json).putExtra("compressed", voiceCompressed))
+        } catch (_: Exception) {
+            launchingVoice = null
+            VoiceCaptureService.failStart(this, JSONObject(json), "Return To fastcontrol To Start Recording")
+        }
     }
 
     /** Turns a launch intent into the JSON string handed to the page by consumeLaunchIntent. */
@@ -306,6 +345,7 @@ class MainActivity : Activity() {
     }
 
     private inner class ShellClient : WebViewClient() {
+        override fun onPageFinished(view: WebView, url: String) { restoreVoiceSession() }
         override fun shouldInterceptRequest(
             view: WebView, request: WebResourceRequest
         ): WebResourceResponse? {
@@ -474,8 +514,11 @@ class MainActivity : Activity() {
         if (requestCode == REQ_MIC) {
             val wanted = awaitingMic; awaitingMic = false
             if (!wanted) return
-            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) voice.start(voiceRequestId, voiceCompressed)
-            else webView.evaluateJavascript("window.onVoiceEvent && window.onVoiceEvent(${JSONObject().put("type", "error").put("id", voiceRequestId).put("message", "Microphone Permission Is Required")})", null)
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) launchPendingVoice()
+            else {
+                pendingVoice?.let { VoiceCaptureService.failStart(this, JSONObject(it), "Microphone Permission Is Required") }
+                pendingVoice = null
+            }
         }
     }
 
@@ -545,25 +588,63 @@ class MainActivity : Activity() {
         }
 
         @JavascriptInterface
-        fun startVoice(requestId: String) = startVoiceRequest(requestId, false)
+        fun getVoiceSession(): String = voiceSnapshot()
 
         @JavascriptInterface
-        fun startVoiceCompressed(requestId: String) = startVoiceRequest(requestId, true)
+        fun acknowledgeVoice(id: String) = runOnUiThread { VoiceCaptureService.acknowledge(ctx, id) }
 
-        private fun startVoiceRequest(requestId: String, compressed: Boolean) = runOnUiThread {
-            voiceRequestId = requestId; voiceCompressed = compressed
-            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) voice.start(requestId, compressed)
-            else { awaitingMic = true; requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_MIC) }
+        @JavascriptInterface
+        fun updateVoiceDraft(id: String, text: String) = runOnUiThread { VoiceCaptureService.updateDraft(id, text) }
+
+        @JavascriptInterface
+        fun startVoice(requestId: String) = startVoiceRequest(requestId, UiState.activeServer, "", UiState.activeThread, UiState.activeProvider, false, "")
+
+        @JavascriptInterface
+        fun startVoiceCompressed(requestId: String) = startVoiceRequest(requestId, UiState.activeServer, "", UiState.activeThread, UiState.activeProvider, true, "")
+
+        @JavascriptInterface
+        fun startVoiceSession(id: String, server: String, base: String, thread: String, provider: String, compressed: Boolean, draft: String) =
+            startVoiceRequest(id, server, base, thread, provider, compressed, draft)
+
+        private fun startVoiceRequest(id: String, serverId: String, base: String, thread: String, provider: String, compressed: Boolean, draft: String) = runOnUiThread {
+            val existing = try { JSONObject(voiceSnapshot()) } catch (_: Exception) { JSONObject() }
+            if (existing.optString("id").isNotEmpty()) { restoreVoiceSession(); return@runOnUiThread }
+            val server = Store.servers(ctx).find { it.id == serverId }
+            val address = base.ifEmpty { server?.url ?: "" }.trimEnd('/')
+            val state = JSONObject().put("id", id).put("server", serverId).put("base", address)
+                .put("thread", thread).put("provider", if (provider == "claude") "claude" else "codex")
+                .put("phase", "preparing").put("draft", draft.take(65536))
+            if (server == null || address !in server.urls.map { it.trimEnd('/') }) {
+                VoiceCaptureService.failStart(ctx, state, "Reconnect To This Computer And Try Again"); return@runOnUiThread
+            }
+            if (!UiState.resumed) {
+                VoiceCaptureService.failStart(ctx, state, "Return To fastcontrol To Start Recording"); return@runOnUiThread
+            }
+            pendingVoice = state.toString(); voiceCompressed = compressed
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) launchPendingVoice()
+            else {
+                awaitingMic = true
+                val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO)
+                if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+                requestPermissions(permissions.toTypedArray(), REQ_MIC)
+            }
         }
 
         @JavascriptInterface
-        fun stopVoice(serverId: String, base: String) {
-            val server = Store.servers(ctx).firstOrNull { it.id == serverId && base.trimEnd('/') in it.urls.map { u -> u.trimEnd('/') } } ?: return
-            voice.finish(server, base)
+        fun stopVoice(serverId: String, base: String) = stopVoiceSession(JSONObject(voiceSnapshot()).optString("id"), serverId, base)
+
+        @JavascriptInterface
+        fun stopVoiceSession(id: String, serverId: String, base: String) {
+            val server = Store.servers(ctx).find { it.id == serverId && base.trimEnd('/') in it.urls.map { u -> u.trimEnd('/') } } ?: return
+            runOnUiThread { VoiceCaptureService.finish(id, server, base) }
         }
 
         @JavascriptInterface
-        fun cancelVoice() = runOnUiThread { awaitingMic = false; voice.cancel() }
+        fun cancelVoice() = runOnUiThread {
+            val id = JSONObject(voiceSnapshot()).optString("id")
+            awaitingMic = false; pendingVoice = null; launchingVoice = null
+            VoiceCaptureService.cancel(id)
+        }
 
         @JavascriptInterface
         fun setServers(json: String) {

@@ -33,6 +33,7 @@ class VoiceRecorder(
     }
     private val lock = Any()
     private var current: Session? = null
+    val isBusy: Boolean get() = synchronized(lock) { current != null }
     val isRecording: Boolean
         get() = synchronized(lock) { current?.let { !it.stopped && !it.cancelled } == true }
     private val client = OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS)
@@ -162,7 +163,7 @@ class VoiceRecorder(
     }
 
     fun cancel() {
-        synchronized(lock) { current?.let { it.cancelled = true; it.stopped = true; it.call?.cancel() }; current = null }
+        synchronized(lock) { current?.let { it.cancelled = true; it.stopped = true; it.call?.cancel() } }
         recordingChanged()
     }
 

@@ -87,7 +87,7 @@ function addServer({ url, token, name, custom }) {
 }
 const serverName = (id) => { const s = S.servers.find((x) => x.id === id); return s ? s.name || hostOf(s.url) : "Mac"; };
 
-(function adoptPairingLink() {
+function adoptPairingLink() {
   // Pairing link printed by a relay: http://mac:8787/#t=TOKEN
   const m = location.hash.match(/[#&]t=([0-9a-f]{32,})/);
   const fromRelay = /^https?:$/.test(location.protocol) && location.hostname !== "appassets.androidplatform.net";
@@ -97,7 +97,7 @@ const serverName = (id) => { const s = S.servers.find((x) => x.id === id); retur
     addServer({ url: location.origin, token: m ? m[1] : legacy, name: "" });
     if (m) history.replaceState(null, "", location.pathname);
   }
-})();
+}
 
 // ------------------------------------------------------------- connection --
 
@@ -577,6 +577,7 @@ function openThread(sidv, id, push) {
   clearAudio();
   transcriptScroll.clear();
   clearImageCache();
+  const previousVoiceDraft = S.sid === sidv && S.id === id;
   S.sid = sidv; S.id = id; S.meta = null; S.turns = []; S.stick = true; S.readingOutput = false;
   show("thread");
   renderThreadHeader();
@@ -586,6 +587,8 @@ function openThread(sidv, id, push) {
   $("dockcards").innerHTML = "";
   $("banner").classList.add("hidden");
   renderComposer();
+  const voiceDraft = store.get(voiceDraftKey(), null);
+  if (!previousVoiceDraft && voiceDraft && !input.value) {input.value=voiceDraft.text || "";autosize();}
   conn().send({ op: "open", id });
   if (Native) try { Native.setActiveThread(sidv, id, S.provider); } catch {}
 }
@@ -1419,7 +1422,55 @@ $("t-ring").onclick = () => openSheet("context");
 
 // Audio stays on the phone until Transcribe is pressed. The transcript is a
 // draft in the composer, never a message sent automatically to Codex.
-const voiceState = { phase: "idle", id: "", server: null, base: "", levels: Array(24).fill(0.08) };
+const voiceState = { phase: "idle", id: "", server: null, base: "", native:false, levels: Array(24).fill(0.08) };
+let voicePageReady = false;
+const cancelledVoices = new Set();
+function voiceDraftKey(server = S.sid, thread = S.id, provider = S.provider) { return "voice-draft:" + provider + ":" + server + ":" + thread; }
+function keepVoiceDraft() {
+  if (!S.id) return;
+  const key = voiceDraftKey(), previous = store.get(key, null);
+  if (voiceState.phase !== "idle" || previous) store.set(key, { id:previous?.id || "", text:input.value });
+  if (voiceState.id && Native?.updateVoiceDraft) Native.updateVoiceDraft(voiceState.id, input.value);
+}
+input.addEventListener("input", keepVoiceDraft);
+window.restoreVoiceSession = () => {
+  if (!voicePageReady || !Native?.getVoiceSession || document.hidden) return;
+  let state;
+  try { state = JSON.parse(Native.getVoiceSession()); } catch { return; }
+  if (!state.id) {
+    if (voiceState.native && voiceState.phase !== "idle") { voiceState.phase="idle";voiceState.id="";renderVoice(); }
+    return;
+  }
+  const terminal = ["transcript","error","cancelled"].includes(state.phase);
+  if (state.phase === "cancelled" || cancelledVoices.has(state.id)) {
+    if (voiceState.id === state.id) {voiceState.phase="idle";voiceState.id="";renderVoice();}
+    if (terminal) Native.acknowledgeVoice(state.id);
+    return;
+  }
+  const server = S.servers.find(s => s.id === state.server);
+  if (!server) return;
+  if (state.thread && (S.view !== "thread" || S.sid !== state.server || S.id !== state.thread || S.provider !== state.provider)) {
+    voiceState.phase="idle";voiceState.id="";
+    if (S.provider !== state.provider) selectProvider(state.provider, false);
+    openThread(state.server, state.thread, false);
+    history.replaceState({view:"thread",sid:state.server,id:state.thread,provider:state.provider}, "");
+  }
+  const changed = voiceState.id !== state.id;
+  voiceState.id=state.id;voiceState.server=server;voiceState.base=state.base;voiceState.native=true;
+  voiceState.phase=terminal ? "transcribing" : state.phase;
+  if (changed) {
+    const cached = store.get(voiceDraftKey(), null);
+    if (!input.value) input.value = cached?.text ?? state.draft ?? "";
+    voiceState.levels=Array(24).fill(0.08);
+  }
+  if (Array.isArray(state.levels) && state.levels.length) {
+    voiceState.levels=Array(24).fill(0.08).concat(state.levels.map(v=>Math.max(0.08,Math.min(1,Math.sqrt(v)*2.4)))).slice(-24);
+  }
+  $("voice-wave").innerHTML=voiceState.levels.map(v=>`<span style="transform:scaleY(${v})"></span>`).join("");
+  const seconds=Math.floor(state.seconds || 0);$("voice-time").textContent=`${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,"0")}`;
+  renderVoice();autosize();
+  if (terminal) window.onVoiceEvent({...state,type:state.phase});
+};
 function renderVoice() {
   const active = voiceState.phase !== "idle";
   $("voice-panel").classList.toggle("hidden", !active);
@@ -1436,6 +1487,9 @@ function renderVoice() {
 }
 function cancelVoice() {
   if (voiceState.phase === "idle") return;
+  cancelledVoices.add(voiceState.id);
+  while (cancelledVoices.size > 32) cancelledVoices.delete(cancelledVoices.values().next().value);
+  keepVoiceDraft();
   voiceState.phase = "idle"; voiceState.id = "";
   if (Native?.cancelVoice) Native.cancelVoice();
   renderVoice();
@@ -1452,7 +1506,7 @@ $("voice").onclick = async () => {
   if (voiceState.phase === "recording") { transcribeVoice(); return; }
   if (!Native?.startVoice || voiceState.phase !== "idle") return;
   pauseChatAudio();
-  voiceState.id = sid(); const request = voiceState.id;
+  voiceState.id = sid(); voiceState.native=false; const request = voiceState.id;
   voiceState.phase = "preparing"; renderVoice();
   const c = conn();
   if (!c?.ok) {cancelVoice();toast("Connect To This Computer First");return;}
@@ -1464,18 +1518,27 @@ $("voice").onclick = async () => {
   $("voice-time").textContent = "0:00";
   $("voice-wave").innerHTML = voiceState.levels.map(() => '<span style="transform:scaleY(0.08)"></span>').join("");
   buzz();
-  if (capability.formats?.includes("aac") && Native.startVoiceCompressed) Native.startVoiceCompressed(request);
+  keepVoiceDraft();
+  if (Native.startVoiceSession) {
+    voiceState.native=true;
+    Native.startVoiceSession(request,c.s.id,c.base,S.id,S.provider,!!capability.formats?.includes("aac"),input.value);
+  }
+  else if (capability.formats?.includes("aac") && Native.startVoiceCompressed) Native.startVoiceCompressed(request);
   else Native.startVoice(request);
 };
 $("voice-cancel").onclick = cancelVoice;
 function transcribeVoice() {
   if (voiceState.phase !== "recording") return;
   voiceState.phase = "transcribing"; renderVoice();
-  Native.stopVoice(voiceState.server.id, voiceState.base);
+  const current=conns.get(voiceState.server.id);
+  const address=current?.ok ? current.base : voiceState.base;
+  if (Native.stopVoiceSession) Native.stopVoiceSession(voiceState.id,voiceState.server.id,address);
+  else Native.stopVoice(voiceState.server.id,address);
 }
 window.onVoiceEvent = (e) => {
   if (e.id !== voiceState.id || voiceState.phase === "idle") return;
-  if (e.type === "recording") { voiceState.phase = "recording"; renderVoice(); }
+  if (e.type === "recording" && voiceState.phase !== "transcribing") { voiceState.phase = "recording"; renderVoice(); }
+  else if (e.type === "transcribing") { voiceState.phase="transcribing";renderVoice(); }
   else if (e.type === "level") {
     if (voiceState.phase !== "recording") return;
     voiceState.levels.shift(); voiceState.levels.push(Math.max(0.08, Math.min(1, Math.sqrt(e.level) * 2.4)));
@@ -1483,19 +1546,29 @@ window.onVoiceEvent = (e) => {
     const sec = Math.floor(e.seconds); $("voice-time").textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
   } else if (e.type === "transcript") {
     const text = (e.text || "").trim();
-    input.value = [input.value.trimEnd(), text].filter(Boolean).join(" ");
-    voiceState.phase = "idle"; voiceState.id = ""; renderVoice(); autosize(); input.focus();
+    const key=voiceDraftKey(), cached=store.get(key,null);
+    if (cached?.id !== e.id) {
+      input.value = [input.value.trimEnd(), text].filter(Boolean).join(" ");
+      store.set(key,{id:e.id,text:input.value});
+    } else input.value=cached.text;
+    voiceState.phase = "idle"; voiceState.id = ""; renderVoice(); autosize(); if (!document.hidden) input.focus();
+    Native?.acknowledgeVoice?.(e.id);
     mark("voiceTranscript");
     window.lastVoiceTiming = { serverMs: e.durationMs, totalMs: e.totalMs, audioBytes:e.audioBytes, uploadBytes:e.uploadBytes };
-  } else if (e.type === "error") { cancelVoice(); toast(nice(e.message)); }
+  } else if (e.type === "error") {
+    voiceState.phase="idle";voiceState.id="";renderVoice();
+    Native?.acknowledgeVoice?.(e.id);toast(nice(e.message));
+  }
 };
 window.onImageDownload = (e) => {
   if (S.sheet === "image") $("sheet").querySelector('[data-x="download"]').disabled = false;
   toast(e.message || (e.ok ? "Image Saved" : "Could Not Download Image"));
 };
 document.addEventListener("visibilitychange", () => {
-  // The microphone permission dialog can briefly pause the WebView.
-  if (document.hidden && voiceState.phase !== "preparing") cancelVoice();
+  if (Native?.getVoiceSession) {
+    if (document.hidden) keepVoiceDraft();
+    else window.restoreVoiceSession();
+  } else if (document.hidden && voiceState.phase !== "preparing") cancelVoice();
 });
 
 // gauge draws a speedometer whose arc and needle show the intelligence level (0..1).
@@ -1537,6 +1610,7 @@ async function sendText(text) {
   $("send").disabled = false;
   if (!a.ok) { pending.remove(); waiting?.remove(); if (fromInput) { input.value = keep; autosize(); } toast(nice(a.msg)); renderActivity(); return; }
   S.attach = []; renderAttachments();
+  store.set(voiceDraftKey(), null);
   renderActivity();
   if (a.queued) toast("Queued");
 }
@@ -2138,6 +2212,15 @@ window.onAndroidIntent = function () {
     toast("Paired With " + (s.name || s.url));
     if (S.view === "home") renderHome();
   } else if (it.type === "thread" && it.thread) {
+    if (S.view === "thread" && S.sid === it.server && S.id === it.thread && S.provider === (it.provider || "codex")) {
+      window.restoreVoiceSession(); return;
+    }
+    if (Native.getVoiceSession) {
+      try {
+        const capture=JSON.parse(Native.getVoiceSession());
+        if (capture.id && capture.thread===it.thread && capture.server===it.server && capture.provider===(it.provider || "codex")) { window.restoreVoiceSession();return; }
+      } catch {}
+    }
     selectProvider(it.provider || "codex",false);
     // Reuse an open sheet's history entry; going back first would race the push.
     const reuse = !!S.sheet;
@@ -2149,10 +2232,12 @@ window.onAndroidIntent = function () {
 
 // ------------------------------------------------------------------- boot --
 
+adoptPairingLink();
 history.replaceState({view:"home",provider:S.provider}, "");
 syncConns();
 if (Native) saveServers();
 selectProvider(S.provider,false);
 mark("firstRender");
-if (Native) window.onAndroidIntent();
+voicePageReady = true;
+if (Native) {window.onAndroidIntent();window.restoreVoiceSession();}
 if (!Native && "serviceWorker" in navigator && window.isSecureContext && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});

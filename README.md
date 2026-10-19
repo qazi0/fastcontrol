@@ -65,11 +65,23 @@ Open the pairing link from `~/.fastcontrol/relay.log` on Mac or Linux, or `%USER
 
 Repeat the computer installation to add another host. Each computer keeps its own coding sessions and credentials.
 
+## Use From Another Computer
+
+Open the target computer's relay address in a browser and pair with its token. The same interface controls its Codex and Claude Code sessions. Add other hosts through Computers.
+
+If your browser blocks LAN addresses, forward the relay through SSH:
+
+```sh
+ssh -N -L 127.0.0.1:8789:127.0.0.1:8787 you@other-mac
+```
+
+Open `http://127.0.0.1:8789/` and pair with the target computer's token. Commands and sessions run on that computer.
+
 ## Usage and Speech
 
 Subscription limits come from the account signed in on the selected computer. Computers sharing an account share its quota. Token and cost totals come from that computer's local logs. Dollar amounts estimate the API value of those tokens, including cached usage; they are separate from subscription charges. Unpriced models are identified rather than assigned a guessed cost.
 
-Audio is sent to the computer selected for the chat, transcribed locally and returned as a draft. No speech model runs on the phone. Mac uploads use 16 kHz mono AAC at 32 kbps. Linux and Windows support AAC when FFmpeg is installed and use WAV otherwise. Recordings are limited to two minutes and temporary audio is removed after transcription.
+Audio is sent to the computer selected for the chat, transcribed locally and returned as a draft. No speech model runs on the phone. Mac uploads use 16 kHz mono AAC at 32 kbps. Linux and Windows support AAC when FFmpeg is installed and use WAV otherwise. Android recording continues while you switch apps. Return to stop recording, or use the recording notification to transcribe or cancel. Recordings are limited to two minutes and temporary audio is removed after transcription.
 
 ## Build From Source
 

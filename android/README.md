@@ -16,6 +16,6 @@ Pairing data stays in app-private storage. Tap the microphone to record and tap 
 
 Generated audio streams from the paired relay with authenticated byte-range requests. Linked files of any type save to Downloads/fastcontrol on Android 10 and newer; Android 8 and 9 use the system save picker. Downloads stream to storage without a file-size cap. Subagent transcripts open in a read-only view without changing the parent draft.
 
-The app requests microphone and notification permissions when the associated feature is used. Recording stops when the app leaves the foreground. Debug builds enable WebView debugging; release builds do not.
+The app requests microphone and notification permissions when the associated feature is used. Recording continues while you use other apps, with notification actions to stop and transcribe or cancel. Returning restores the recording and draft. Debug builds enable WebView debugging; release builds do not.
 
 Attachments use Android's file picker. Photos are prepared on the phone; PDFs, text and other documents upload unchanged to the selected computer. Each attachment can be up to 25 MB. Images are passed as image inputs, while other files are referenced by their local path so the agent can read them with its available tools.
