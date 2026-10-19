@@ -1510,15 +1510,16 @@ function gauge(f) {
 async function sendText(text) {
   if (voiceState.phase !== "idle") return;
   if (!S.id) return;
-  if (S.attach.some((a) => a.uploading)) { toast("Waiting For Images To Upload"); return; }
-  const images = S.attach.map((a) => a.path);
-  if (!text && !images.length) return;
+  if (S.attach.some((a) => a.uploading)) { toast("Waiting For Files To Upload"); return; }
+  const images = S.attach.filter(a => a.kind !== "file").map(a => a.path);
+  const files = S.attach.filter(a => a.kind === "file").map(a => a.path);
+  if (!text && !images.length && !files.length) return;
   const steering = S.meta && S.meta.running;
   buzz();
   // Show the message right away; the real one replaces it when the Mac echoes it.
   const pending = document.createElement("div");
   pending.className = "u pending" + (steering ? " steer" : "");
-  pending.textContent = text + (images.length ? "\n[Image]" : "");
+  pending.textContent = text + S.attach.map(a => "\n[" + (a.kind === "file" ? a.name : "Image") + "]").join("");
   pending.dataset.text = text;
   const empty = feed.querySelector(":scope > .empty");
   if (empty) empty.remove();
@@ -1532,7 +1533,7 @@ async function sendText(text) {
   const keep = input.value;
   if (fromInput) { input.value = ""; autosize(); }
   S.stick = true;
-  const a = await conn().call({ op: "send", id: S.id, text, images }, 40000);
+  const a = await conn().call({ op: "send", id: S.id, text, images, files }, 40000);
   $("send").disabled = false;
   if (!a.ok) { pending.remove(); waiting?.remove(); if (fromInput) { input.value = keep; autosize(); } toast(nice(a.msg)); renderActivity(); return; }
   S.attach = []; renderAttachments();
@@ -1553,10 +1554,39 @@ async function applySettings(ch, label) {
   toast(a.ok ? label : nice(a.msg));
 }
 
-// Image attachments upload straight to the relay, downscaled on the phone.
+// Attachments stay on the selected computer. Android reads provider URIs directly.
 let fileTarget = "thread";
 const imageUploads = new Map();
+const attachmentBatches = new Map();
 window.onImageUpload = (event) => {
+  const batch = attachmentBatches.get(event.batch);
+  if (batch && event.type === "selected") {
+    const a = { url:"", kind:"file", name:"Uploading File", uploading:true, path:"" };
+    batch.list.push(a); batch.items.set(event.id, a); redrawAttachments(batch.target); return;
+  }
+  if (batch && event.type === "selectionComplete") {
+    batch.selected = true;
+    if (!batch.items.size) attachmentBatches.delete(event.batch);
+    return;
+  }
+  if (batch && batch.items.has(event.id)) {
+    const a = batch.items.get(event.id); batch.items.delete(event.id);
+    if (event.ok) {
+      Object.assign(a, { uploading:false, path:event.path, name:event.name || base(event.path), kind:event.kind || "file" });
+      if (a.kind === "image") {
+        const c = conns.get(batch.server.id);
+        fetch((event.base || c?.base || batch.server.url) + "/image?path=" + encodeURIComponent(a.path), {headers:{Authorization:"Bearer " + batch.server.token}})
+          .then(r => { if (!r.ok) throw Error(); return r.blob(); })
+          .then(blob => { a.url = URL.createObjectURL(blob); redrawAttachments(batch.target); }).catch(() => {});
+      }
+    } else {
+      const index = batch.list.indexOf(a); if (index >= 0) batch.list.splice(index, 1);
+      toast("Upload Failed: " + (event.message || "Choose The File Again"));
+    }
+    redrawAttachments(batch.target);
+    if (batch.selected && !batch.items.size) attachmentBatches.delete(event.batch);
+    return;
+  }
   const pending = imageUploads.get(event.id);
   if (!pending) return;
   imageUploads.delete(event.id); clearTimeout(pending.timer);
@@ -1572,10 +1602,10 @@ function imageDataURL(blob) {
     reader.readAsDataURL(blob);
   });
 }
-async function uploadImage(blob, server, url) {
+async function uploadImage(blob, server, url, name) {
   if (blob.size > 25 * 1024 * 1024) throw new Error("Image Must Be Smaller Than 25 MB");
-  const mime = blob.type || "image/jpeg";
-  if (Native?.uploadImage) {
+  const mime = blob.type || "application/octet-stream";
+  if (Native?.uploadImage && mime.startsWith("image/")) {
     const data = await imageDataURL(blob);
     return new Promise((resolve, reject) => {
       const id = sid();
@@ -1586,13 +1616,32 @@ async function uploadImage(blob, server, url) {
     });
   }
   const body = new Blob([await blob.arrayBuffer()], { type: mime });
-  const response = await fetch(url + "/upload", { method: "POST", headers: { Authorization: "Bearer " + server.token, "Content-Type": mime }, body, signal: AbortSignal.timeout(60000) });
-  if (!response.ok) throw new Error(await response.text());
-  const path = (await response.json()).path;
-  if (!path) throw new Error("The Computer Did Not Return An Image Path");
-  return path;
+  const urls = [...new Set([url, server.url, ...(server.alts || [])])];
+  for (const address of urls) {
+    let response;
+    try {
+      response = await fetch(address + "/upload", { method:"POST", headers:{Authorization:"Bearer " + server.token, "Content-Type":mime, "X-File-Name":encodeURIComponent(name || "attachment")}, body, signal:AbortSignal.timeout(60000) });
+    } catch { continue; }
+    if (response.status >= 500) continue;
+    if (!response.ok) throw new Error((await response.text()).trim() || "Could Not Upload File");
+    const path = (await response.json()).path;
+    if (!path) throw new Error("The Computer Did Not Return A File Path");
+    return path;
+  }
+  throw new Error("Could Not Reach This Computer. Check Its Connection And Try Again");
 }
-$("attach").onclick = () => { fileTarget = "thread"; $("file").click(); };
+function pickAttachments(target) {
+  fileTarget = target;
+  if (!Native?.pickAttachments) { $("file").click(); return; }
+  const serverId = target === "new" ? S.newDraft?.sid : S.sid;
+  const server = S.servers.find(s => s.id === serverId);
+  if (!server) return;
+  const id = sid(), list = target === "new" ? S.newAttach : S.attach;
+  attachmentBatches.set(id, {list, target, server, items:new Map(), selected:false});
+  try { Native.pickAttachments(id, server.id, conns.get(server.id)?.base || server.url); }
+  catch { attachmentBatches.delete(id); toast("Could Not Open File Picker"); }
+}
+$("attach").onclick = () => pickAttachments("thread");
 let imageSelection = 0;
 $("file").addEventListener("change", async (e) => {
   const files = [...e.target.files];
@@ -1601,7 +1650,7 @@ $("file").addEventListener("change", async (e) => {
   if (selection === imageSelection) e.target.value = "";
 });
 async function addAttachment(file, target) {
-  const a = { url: URL.createObjectURL(file), uploading: true, path: "" };
+  const a = { url: file.type.startsWith("image/") ? URL.createObjectURL(file) : "", kind:file.type.startsWith("image/") ? "image" : "file", name:file.name || "attachment", uploading: true, path: "" };
   const list = target === "new" ? S.newAttach : S.attach;
   const sidv = target === "new" ? S.newDraft && S.newDraft.sid : S.sid;
   const s = S.servers.find((x) => x.id === sidv);
@@ -1610,7 +1659,7 @@ async function addAttachment(file, target) {
   redrawAttachments(target);
   try {
     const blob = await shrink(file);
-    a.path = await uploadImage(blob, s, conns.get(s.id)?.base || s.url);
+    a.path = await uploadImage(blob, s, conns.get(s.id)?.base || s.url, a.name);
     a.uploading = false;
   } catch (err) {
     const index = list.indexOf(a);
@@ -1637,7 +1686,7 @@ function shrink(file) {
     img.src = url;
   });
 }
-const attHTML = (list) => list.map((a, i) => `<div class="att${a.uploading ? " loading" : ""}"><img src="${a.url}" alt=""><button type="button" data-rm="${i}" aria-label="Remove Image">&times;</button></div>`).join("");
+const attHTML = (list) => list.map((a, i) => `<div class="att${a.uploading ? " loading" : ""}${a.kind === "file" ? " document" : ""}" title="${esc(a.name || "Image")}">${a.url ? `<img src="${esc(a.url)}" alt="${esc(a.name || "Image")}">` : `<span>${a.uploading ? loadingHTML("Uploading") : esc(a.name || "Image")}</span>`}<button type="button" data-rm="${i}" aria-label="Remove Attachment">&times;</button></div>`).join("");
 function renderAttachments() { $("attachments").innerHTML = attHTML(S.attach); }
 function redrawAttachments(target) {
   if (target === "new") { const el = document.getElementById("nt-att"); if (el) el.innerHTML = attHTML(S.newAttach); }
@@ -1992,13 +2041,13 @@ const SHEETS = {
       const rm = e.target.closest("[data-rm]");
       if (rm) { S.newAttach.splice(+rm.dataset.rm, 1); redrawAttachments("new"); return; }
       const x = e.target.dataset.x;
-      if (x === "img") { fileTarget = "new"; $("file").click(); }
+      if (x === "img") { pickAttachments("new"); }
       if (x === "start") {
         if (!d.text.trim()) { toast("Write A Prompt First"); return; }
-        if (S.newAttach.some((a) => a.uploading)) { toast("Waiting For Images To Upload"); return; }
+        if (S.newAttach.some((a) => a.uploading)) { toast("Waiting For Files To Upload"); return; }
         e.target.disabled = true; e.target.textContent = "Starting";
         buzz();
-        const a = await conns.get(d.sid).call({ op: "new", cwd: d.cwd, text: d.text.trim(), model: d.model || undefined, effort: d.effort || undefined, images: S.newAttach.map((x) => x.path) }, 60000);
+        const a = await conns.get(d.sid).call({ op: "new", cwd: d.cwd, text: d.text.trim(), model: d.model || undefined, effort: d.effort || undefined, images: S.newAttach.filter(x => x.kind !== "file").map(x => x.path), files:S.newAttach.filter(x => x.kind === "file").map(x => x.path) }, 60000);
         if (!a.ok) { toast(nice(a.msg)); e.target.disabled = false; e.target.textContent = "Start Chat"; return; }
         const target = d.sid;
         S.newDraft = null; S.newAttach = [];

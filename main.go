@@ -211,7 +211,7 @@ func main() {
 			return
 		}
 		if r.Method != http.MethodPost {
-			http.Error(w, "POST an image", http.StatusMethodNotAllowed)
+			http.Error(w, "POST a file", http.StatusMethodNotAllowed)
 			return
 		}
 		path, err := saveUpload(r)
@@ -220,7 +220,11 @@ func main() {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(mustJSON(map[string]string{"path": path}))
+		kind := "file"
+		if imageExts[strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0]))] != "" {
+			kind = "image"
+		}
+		_, _ = w.Write(mustJSON(map[string]string{"path": path, "kind": kind}))
 	}))
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		if !authed(r) {
@@ -328,7 +332,7 @@ func cors(h http.HandlerFunc) http.HandlerFunc {
 		}
 		if r.Method == http.MethodOptions {
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-File-Name")
 			w.Header().Set("Access-Control-Allow-Private-Network", "true")
 			w.Header().Set("Access-Control-Max-Age", "600")
 			w.WriteHeader(http.StatusNoContent)
@@ -340,30 +344,69 @@ func cors(h http.HandlerFunc) http.HandlerFunc {
 
 var imageExts = map[string]string{"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp", "image/heic": ".heic"}
 
-// saveUpload stores a raw image body in ~/.fastcontrol/uploads and returns its path.
+// saveUpload publishes a complete private upload, retaining its display filename.
 func saveUpload(r *http.Request) (string, error) {
 	const limit = 25 << 20
-	body := http.MaxBytesReader(nil, r.Body, limit)
-	data, err := io.ReadAll(body)
-	if err != nil {
-		return "", fmt.Errorf("image too large or unreadable: %v", err)
-	}
-	ct := strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0])
-	if imageExts[ct] == "" {
-		ct = http.DetectContentType(data)
-	}
-	ext := imageExts[ct]
-	if ext == "" {
-		return "", fmt.Errorf("not an image (%s)", ct)
+	ct := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0]))
+	name, _ := neturl.QueryUnescape(r.Header.Get("X-File-Name"))
+	name = filepath.Base(strings.ReplaceAll(name, "\\", "/"))
+	name = strings.Map(func(c rune) rune {
+		if c < 32 || strings.ContainsRune("<>:\"|?*", c) {
+			return '_'
+		}
+		return c
+	}, name)
+	name = strings.Trim(name, " .")
+	if len(name) > 160 {
+		ext := filepath.Ext(name)
+		if len(ext) > 16 {
+			ext = ""
+		}
+		name = "attachment" + ext
 	}
 	dir := uploadDir()
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}
-	p := filepath.Join(dir, uuid()+ext)
-	if err := os.WriteFile(p, data, 0o600); err != nil {
+	f, err := os.CreateTemp(dir, ".upload-")
+	if err != nil {
 		return "", err
 	}
-	log.Printf("upload: %s (%d KB)", filepath.Base(p), len(data)/1024)
-	return p, nil
+	defer os.Remove(f.Name())
+	n, err := io.Copy(f, io.LimitReader(r.Body, limit+1))
+	closeErr := f.Close()
+	if err != nil {
+		return "", fmt.Errorf("Could Not Read File: %w", err)
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	if n > limit {
+		return "", fmt.Errorf("File Must Be Smaller Than 25 MB")
+	}
+	if strings.HasPrefix(ct, "image/") {
+		head := make([]byte, 512)
+		read, openErr := os.Open(f.Name())
+		if openErr != nil {
+			return "", openErr
+		}
+		count, _ := read.Read(head)
+		read.Close()
+		actual := imageMIME(head[:count])
+		if actual == "" {
+			return "", fmt.Errorf("Unsupported Image. Choose a JPEG, PNG, WebP or GIF")
+		}
+		if name == "" {
+			name = "image" + imageExts[actual]
+		}
+	}
+	if name == "" {
+		name = "attachment"
+	}
+	path := filepath.Join(dir, uuid()+"-"+name)
+	if err := os.Rename(f.Name(), path); err != nil {
+		return "", err
+	}
+	log.Printf("upload: %s (%d KB)", filepath.Base(path), n/1024)
+	return path, nil
 }

@@ -314,6 +314,15 @@ func (h *Hub) handle(c *Client, raw []byte) {
 	if json.Unmarshal(raw, &route) != nil {
 		return
 	}
+	// File references are normalized once before routing to desktop, CLI or Claude.
+	if route.Op == "send" || route.Op == "new" {
+		var err error
+		raw, err = withUploadedFiles(raw)
+		if err != nil {
+			c.push(mustJSON(map[string]any{"t": "ack", "op": route.Op, "id": route.ID, "nonce": route.Nonce, "provider": route.Provider, "ok": false, "msg": err.Error()}))
+			return
+		}
+	}
 	if route.Provider == "claude" && h.claude != nil && route.Op != "events" {
 		h.claude.handle(c, raw)
 		return

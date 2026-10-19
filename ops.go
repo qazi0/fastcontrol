@@ -295,17 +295,18 @@ func uploadDir() string {
 	return filepath.Join(home, ".fastcontrol", "uploads")
 }
 
-// checkUploads makes sure image paths point into the upload folder, so a
+// checkUploads makes sure attachment paths point into the upload folder, so a
 // client cannot attach arbitrary files from the Mac.
 func checkUploads(paths []string) error {
 	dir := uploadDir()
 	for _, p := range paths {
 		c := filepath.Clean(p)
 		if filepath.Dir(c) != dir {
-			return fmt.Errorf("image %q is not an upload", p)
+			return fmt.Errorf("File Is Not An Upload")
 		}
-		if _, err := os.Stat(c); err != nil {
-			return fmt.Errorf("image %q: %v", filepath.Base(p), err)
+		st, err := os.Lstat(c)
+		if err != nil || !st.Mode().IsRegular() || st.Size() > 25<<20 || strings.HasPrefix(filepath.Base(c), ".") {
+			return fmt.Errorf("Uploaded File Is Unavailable: %s", filepath.Base(p))
 		}
 	}
 	return nil

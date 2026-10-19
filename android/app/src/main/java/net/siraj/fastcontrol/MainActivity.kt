@@ -54,6 +54,7 @@ class MainActivity : Activity() {
         private const val REQ_NOTIFY = 2
         private const val REQ_MIC = 3
         private const val REQ_SAVE_IMAGE = 4
+        private const val REQ_ATTACHMENTS = 5
     }
 
     private lateinit var container: FrameLayout
@@ -67,6 +68,7 @@ class MainActivity : Activity() {
     private lateinit var uploads: ImageUploads
     private lateinit var audioStreams: AudioStreams
     private var pendingImage: File? = null
+    private var pendingAttachments: String? = null
 
     @Volatile private var pendingLaunch = ""
 
@@ -77,6 +79,7 @@ class MainActivity : Activity() {
             WebView.setWebContentsDebuggingEnabled(true)
         }
 
+        pendingAttachments = savedInstanceState?.getString("pendingAttachments")
         val bg = getColor(R.color.bg)
         container = FrameLayout(this).apply { setBackgroundColor(bg) }
         webView = WebView(this).apply {
@@ -143,6 +146,7 @@ class MainActivity : Activity() {
         super.onSaveInstanceState(outState)
         webView.saveState(outState)
         outState.putString("pendingLaunch", pendingLaunch)
+        outState.putString("pendingAttachments", pendingAttachments)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -417,6 +421,20 @@ class MainActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == REQ_ATTACHMENTS) {
+            val saved = pendingAttachments; pendingAttachments = null
+            if (saved != null) {
+                val request = JSONObject(saved)
+                val uris = ArrayList<Uri>()
+                if (resultCode == RESULT_OK && data != null) {
+                    data.clipData?.let { clip -> for (i in 0 until minOf(clip.itemCount, 12)) uris += clip.getItemAt(i).uri }
+                    if (uris.isEmpty()) data.data?.let { uris += it }
+                }
+                val server = Store.servers(this).find { it.id == request.optString("server") }
+                uploads.selected(applicationContext, request.getString("id"), uris, server, request.getString("base"))
+            }
+            return
+        }
         if (requestCode == REQ_SAVE_IMAGE) {
             val file = pendingImage; pendingImage = null
             if (file != null) {
@@ -506,9 +524,24 @@ class MainActivity : Activity() {
         fun downloadRemoteImage(url: String) { if (Uri.parse(url).scheme == "https") downloads.download(url) }
 
         @JavascriptInterface
+        fun pickAttachments(requestId: String, serverId: String, base: String) = runOnUiThread {
+            if (pendingAttachments != null) return@runOnUiThread
+            pendingAttachments = JSONObject().put("id", requestId).put("server", serverId).put("base", base).toString()
+            try {
+                startActivityForResult(Intent.createChooser(Intent(Intent.ACTION_GET_CONTENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE); type = "*/*"
+                    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                }, null), REQ_ATTACHMENTS)
+            } catch (_: ActivityNotFoundException) {
+                pendingAttachments = null
+                webView.evaluateJavascript("window.onImageUpload && window.onImageUpload(${JSONObject().put("batch", requestId).put("type", "selectionComplete")})", null)
+            }
+        }
+
+        @JavascriptInterface
         fun uploadImage(requestId: String, serverId: String, base: String, mime: String, encoded: String) {
             val server = Store.servers(ctx).firstOrNull { it.id == serverId }
-            uploads.upload(requestId, server, base, mime, encoded)
+            uploads.upload(applicationContext, requestId, server, base, mime, encoded)
         }
 
         @JavascriptInterface

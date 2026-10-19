@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-const maxImageBytes = 10 << 20
+const maxImageBytes = 25 << 20
 
 func imageMIME(b []byte) string {
 	m := http.DetectContentType(b)

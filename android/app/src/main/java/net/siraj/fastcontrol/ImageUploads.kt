@@ -1,46 +1,127 @@
 package net.siraj.fastcontrol
 
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.util.Base64
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.RequestBody.Companion.asRequestBody
 import org.json.JSONObject
+import java.io.File
+import java.io.IOException
+import java.net.URLEncoder
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
+/** Snapshot provider content before uploading, without passing file bytes through WebView. */
 class ImageUploads(private val emit: (JSONObject) -> Unit) {
-    private val client = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(45, TimeUnit.SECONDS).callTimeout(55, TimeUnit.SECONDS).build()
+    companion object { private val worker = Executors.newFixedThreadPool(2) }
+    private val client = OkHttpClient.Builder().connectTimeout(4, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS).callTimeout(55, TimeUnit.SECONDS)
+        .followRedirects(false).followSslRedirects(false).build()
 
-    fun upload(id: String, server: Server?, base: String, mime: String, encoded: String) {
-        Thread({
-            val result = JSONObject().put("id", id)
+    fun selected(ctx: Context, batch: String, uris: List<Uri>, server: Server?, base: String) {
+        uris.take(12).forEachIndexed { index, uri ->
+            val id = "$batch:$index"
+            emit(JSONObject().put("id", id).put("batch", batch).put("type", "selected"))
+            worker.execute {
+                var file: File? = null
+                val event = JSONObject().put("id", id).put("batch", batch)
+                try {
+                    var name = "attachment"
+                    ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                        if (cursor.moveToFirst()) name = cursor.getString(0) ?: name
+                    }
+                    var mime = ctx.contentResolver.getType(uri) ?: android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase()) ?: "application/octet-stream"
+                    file = File.createTempFile("attachment-", ".upload", ctx.cacheDir)
+                    (ctx.contentResolver.openInputStream(uri) ?: error("Could Not Read File. Choose It Again")).use { input ->
+                        file.outputStream().use { output ->
+                            val buffer = ByteArray(32768); var total = 0L
+                            while (true) {
+                                val count = input.read(buffer); if (count < 0) break
+                                total += count; check(total <= 25L * 1024 * 1024) { "File Must Be Smaller Than 25 MB" }
+                                output.write(buffer, 0, count)
+                            }
+                        }
+                    }
+                    if (mime.startsWith("image/") && mime != "image/gif") {
+                        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        BitmapFactory.decodeFile(file.absolutePath, bounds)
+                        if (bounds.outWidth > 0 && bounds.outHeight > 0 &&
+                            (file.length() > 400000 || mime !in setOf("image/jpeg", "image/png", "image/webp"))) {
+                            var sample = 1
+                            while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 2048) sample *= 2
+                            val bitmap = BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample })
+                                ?: error("Could Not Read This Image")
+                            var scaled: Bitmap? = null
+                            val converted = File.createTempFile("attachment-", ".jpg", ctx.cacheDir)
+                            try {
+                                val ratio = minOf(1.0, 2048.0 / maxOf(bitmap.width, bitmap.height))
+                                scaled = Bitmap.createScaledBitmap(bitmap, maxOf(1, (bitmap.width * ratio).toInt()), maxOf(1, (bitmap.height * ratio).toInt()), true)
+                                converted.outputStream().use { check(scaled.compress(Bitmap.CompressFormat.JPEG, 86, it)) { "Could Not Prepare Image" } }
+                                file.delete(); file = converted; mime = "image/jpeg"
+                                name = name.substringBeforeLast('.', name) + ".jpg"
+                            } finally {
+                                if (scaled !== bitmap) scaled?.recycle()
+                                bitmap.recycle()
+                                if (file !== converted) converted.delete()
+                            }
+                        }
+                    }
+                    uploadFile(file, server, base, mime, name, event)
+                } catch (e: Exception) {
+                    event.put("ok", false).put("message", e.message ?: "Could Not Upload File. Try Again")
+                } finally { file?.delete() }
+                emit(event)
+            }
+        }
+        emit(JSONObject().put("batch", batch).put("type", "selectionComplete"))
+    }
+
+    // Retained for a page already loaded when the Android shell is updated.
+    fun upload(ctx: Context, id: String, server: Server?, base: String, mime: String, encoded: String) {
+        worker.execute {
+            val event = JSONObject().put("id", id)
+            var file: File? = null
             try {
-                check(server != null && base.trimEnd('/') in server.urls.map { it.trimEnd('/') }) {
-                    "Reconnect To This Computer And Try Again"
-                }
-                check(mime in setOf("image/jpeg", "image/png", "image/webp", "image/gif", "image/heic")) {
-                    "Choose a JPEG, PNG, WebP, GIF or HEIC Image"
-                }
-                check(encoded.length <= 34952536) { "Image Must Be Smaller Than 25 MB" }
+                check(encoded.length <= 34952536) { "File Must Be Smaller Than 25 MB" }
                 val bytes = Base64.decode(encoded, Base64.NO_WRAP)
-                check(bytes.isNotEmpty() && bytes.size <= 25 * 1024 * 1024) { "Image Must Be Smaller Than 25 MB" }
-                val request = Request.Builder().url(base.trimEnd('/') + "/upload")
-                    .header("Authorization", "Bearer " + server.token)
-                    .post(bytes.toRequestBody(mime.toMediaType())).build()
+                check(bytes.size <= 25 * 1024 * 1024) { "File Must Be Smaller Than 25 MB" }
+                file = File.createTempFile("attachment-", ".upload", ctx.cacheDir).apply { writeBytes(bytes) }
+                uploadFile(file, server, base, mime, "", event)
+            } catch (e: Exception) { event.put("ok", false).put("message", e.message ?: "Could Not Upload File") }
+            finally { file?.delete() }
+            emit(event)
+        }
+    }
+
+    private fun uploadFile(file: File, server: Server?, base: String, mime: String, name: String, result: JSONObject) {
+        check(server != null && base.trimEnd('/') in server.urls.map { it.trimEnd('/') }) { "Reconnect To This Computer And Try Again" }
+        val urls = (listOf(base) + server.urls).map { it.trimEnd('/') }.distinct()
+        var failure: IOException? = null
+        for (url in urls) {
+            val request = Request.Builder().url("$url/upload").header("Authorization", "Bearer " + server.token)
+                .header("X-File-Name", URLEncoder.encode(name, "UTF-8"))
+                .post(file.asRequestBody(mime.toMediaType())).build()
+            try {
                 client.newCall(request).execute().use { response ->
+                    if (response.code >= 500) throw IOException("The Computer Could Not Receive The File (HTTP ${response.code})")
                     check(response.isSuccessful) {
                         if (response.code == 401) "Reconnect To This Computer And Try Again"
-                        else "Could Not Upload Image (HTTP ${response.code})"
+                        else response.body?.string()?.take(160)?.trim().orEmpty().ifEmpty { "Could Not Upload File (HTTP ${response.code})" }
                     }
-                    val path = JSONObject(response.body?.string() ?: "{}").optString("path")
-                    check(path.isNotEmpty()) { "The Computer Did Not Return An Image Path" }
-                    result.put("ok", true).put("path", path)
+                    val data = JSONObject(response.body?.string() ?: "{}")
+                    check(data.optString("path").isNotEmpty()) { "The Computer Did Not Return A File Path" }
+                    result.put("ok", true).put("path", data.getString("path")).put("base", url)
+                        .put("name", name).put("kind", data.optString("kind", if (mime.startsWith("image/")) "image" else "file"))
+                    return
                 }
-            } catch (e: Exception) {
-                result.put("ok", false).put("message", e.message ?: "Could Not Upload Image. Try Again")
-            }
-            emit(result)
-        }, "ImageUpload").start()
+            } catch (e: IOException) { failure = e }
+        }
+        throw IOException("Could Not Reach This Computer. Check Its Connection And Try Again", failure)
     }
 }
