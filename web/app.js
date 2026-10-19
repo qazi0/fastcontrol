@@ -1426,10 +1426,10 @@ const voiceState = { phase: "idle", id: "", server: null, base: "", native:false
 let voicePageReady = false;
 const cancelledVoices = new Set();
 function voiceDraftKey(server = S.sid, thread = S.id, provider = S.provider) { return "voice-draft:" + provider + ":" + server + ":" + thread; }
-function keepVoiceDraft() {
+function keepVoiceDraft(event) {
   if (!S.id) return;
   const key = voiceDraftKey(), previous = store.get(key, null);
-  if (voiceState.phase !== "idle" || previous) store.set(key, { id:previous?.id || "", text:input.value });
+  if (voiceState.phase !== "idle" || (previous && event?.type === "input")) store.set(key, { id:previous?.id || "", text:input.value });
   if (voiceState.id && Native?.updateVoiceDraft) Native.updateVoiceDraft(voiceState.id, input.value);
 }
 input.addEventListener("input", keepVoiceDraft);
@@ -1605,12 +1605,12 @@ async function sendText(text) {
   feed.scrollTop = feed.scrollHeight;
   $("send").disabled = true;
   const fromInput = input.value.trim() === text;
-  const keep = input.value;
-  if (fromInput) { input.value = ""; autosize(); }
+  const keep = input.value, savedVoiceDraft = store.get(voiceDraftKey(), null);
+  if (fromInput) { input.value = ""; store.set(voiceDraftKey(), null); autosize(); }
   S.stick = true;
   const a = await conn().call({ op: "send", id: S.id, text, images, files }, 40000);
   $("send").disabled = false;
-  if (!a.ok) { pending.remove(); waiting?.remove(); if (fromInput) { input.value = keep; autosize(); } toast(nice(a.msg)); renderActivity(); return; }
+  if (!a.ok) { pending.remove(); waiting?.remove(); if (fromInput) { input.value = keep; if (savedVoiceDraft) store.set(voiceDraftKey(),savedVoiceDraft); autosize(); } toast(nice(a.msg)); renderActivity(); return; }
   S.attach = []; renderAttachments();
   store.set(voiceDraftKey(), null);
   renderActivity();
@@ -2221,6 +2221,11 @@ window.onAndroidIntent = function () {
       try {
         const capture=JSON.parse(Native.getVoiceSession());
         if (capture.id && capture.thread===it.thread && capture.server===it.server && capture.provider===(it.provider || "codex")) { window.restoreVoiceSession();return; }
+        if (capture.id && Native.cancelVoiceSession) {
+          cancelledVoices.add(capture.id);
+          while (cancelledVoices.size>32) cancelledVoices.delete(cancelledVoices.values().next().value);
+          Native.cancelVoiceSession(capture.id);
+        }
       } catch {}
     }
     selectProvider(it.provider || "codex",false);
@@ -2240,6 +2245,13 @@ syncConns();
 if (Native) saveServers();
 selectProvider(S.provider,false);
 mark("firstRender");
-voicePageReady = true;
-if (Native) {window.onAndroidIntent();window.restoreVoiceSession();}
+if (Native) window.onAndroidIntent();
+window.finishVoiceRestore = () => {
+  voicePageReady = true;
+  window.restoreVoiceSession();
+  const cached = S.id && store.get(voiceDraftKey(), null);
+  if (Native && !document.hidden && voiceState.phase === "idle" && cached?.id) { input.value=cached.text;autosize(); }
+};
+window.addEventListener("load", () => { voicePageReady=true;window.restoreVoiceSession(); }, {once:true});
+if (document.readyState === "complete") window.finishVoiceRestore();
 if (!Native && "serviceWorker" in navigator && window.isSecureContext && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
