@@ -611,7 +611,10 @@ class MainActivity : Activity() {
         private fun startVoiceRequest(id: String, serverId: String, base: String, thread: String, provider: String, compressed: Boolean, draft: String) = runOnUiThread {
             val existing = try { JSONObject(voiceSnapshot()) } catch (_: Exception) { JSONObject() }
             if (existing.optString("id").isNotEmpty()) {
-                if (existing.optString("phase") == "cancelled") VoiceCaptureService.acknowledge(ctx, existing.getString("id"))
+                if (Store.servers(ctx).none { it.id == existing.optString("server") }) {
+                    VoiceCaptureService.cancel(existing.getString("id"))
+                    VoiceCaptureService.acknowledge(ctx, existing.getString("id"))
+                } else if (existing.optString("phase") == "cancelled") VoiceCaptureService.acknowledge(ctx, existing.getString("id"))
                 else { restoreVoiceSession(); return@runOnUiThread }
             }
             val server = Store.servers(ctx).find { it.id == serverId }

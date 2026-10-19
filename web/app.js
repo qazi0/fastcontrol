@@ -1448,7 +1448,10 @@ window.restoreVoiceSession = () => {
     return;
   }
   const server = S.servers.find(s => s.id === state.server);
-  if (!server) return;
+  if (!server) {
+    Native.cancelVoiceSession?.(state.id); Native.acknowledgeVoice(state.id);
+    voiceState.phase="idle";voiceState.id="";renderVoice();return;
+  }
   if (state.thread && (S.view !== "thread" || S.sid !== state.server || S.id !== state.thread || S.provider !== state.provider)) {
     voiceState.phase="idle";voiceState.id="";
     if (S.provider !== state.provider) selectProvider(state.provider, false);
@@ -2224,7 +2227,12 @@ window.onAndroidIntent = function () {
         if (capture.id && Native.cancelVoiceSession) {
           cancelledVoices.add(capture.id);
           while (cancelledVoices.size>32) cancelledVoices.delete(cancelledVoices.values().next().value);
-          Native.cancelVoiceSession(capture.id);
+          if (["transcript","error","cancelled"].includes(capture.phase)) {
+            const key=voiceDraftKey(capture.server,capture.thread,capture.provider), previous=store.get(key,null);
+            if (previous?.id !== capture.id) store.set(key,{id:capture.id,text:[previous?.text ?? capture.draft ?? "",capture.phase === "transcript" ? (capture.text || "").trim() : ""].filter(Boolean).join(" ")});
+            if (S.sid===capture.server && S.id===capture.thread && S.provider===capture.provider) {input.value="";voiceState.phase="idle";voiceState.id="";renderVoice();autosize();}
+            Native.acknowledgeVoice(capture.id);
+          } else Native.cancelVoiceSession(capture.id);
         }
       } catch {}
     }
