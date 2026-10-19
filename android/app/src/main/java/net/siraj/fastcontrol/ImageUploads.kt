@@ -36,7 +36,7 @@ class ImageUploads(private val emit: (JSONObject) -> Unit) {
                     ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
                         if (cursor.moveToFirst()) name = cursor.getString(0) ?: name
                     }
-                    var mime = ctx.contentResolver.getType(uri) ?: android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase()) ?: "application/octet-stream"
+                    var mime = ctx.contentResolver.getType(uri)?.takeIf { it.isNotBlank() } ?: android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase()) ?: "application/octet-stream"
                     file = File.createTempFile("attachment-", ".upload", ctx.cacheDir)
                     (ctx.contentResolver.openInputStream(uri) ?: error("Could Not Read File. Choose It Again")).use { input ->
                         file.outputStream().use { output ->

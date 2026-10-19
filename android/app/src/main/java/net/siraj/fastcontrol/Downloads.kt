@@ -32,7 +32,7 @@ class Downloads(private val context: Context, private val emit: (JSONObject) -> 
                     val ext = mapOf("image/png" to "png", "image/jpeg" to "jpg", "image/webp" to "webp", "image/gif" to "gif")[mime]
                     if (fileName == null) {
                         check(ext != null) { "Unsupported Image Format" }
-                        check(body.contentLength() <= 10 * 1024 * 1024) { "Image Is Too Large" }
+                        check(body.contentLength() <= 25 * 1024 * 1024) { "Image Is Too Large" }
                     }
                     val name = fileName?.replace('\\', '/')?.substringAfterLast('/')
                         ?.filter { it >= ' ' && it != '\u007f' }?.take(200)?.ifBlank { "Download" }
@@ -42,7 +42,7 @@ class Downloads(private val context: Context, private val emit: (JSONObject) -> 
                             val buffer = ByteArray(32768); var total = 0L
                             while (true) {
                                 val n = input.read(buffer); if (n < 0) break; total += n
-                                if (fileName == null) check(total <= 10L * 1024 * 1024) { "Image Is Too Large" }
+                                if (fileName == null) check(total <= 25L * 1024 * 1024) { "Image Is Too Large" }
                                 out.write(buffer, 0, n)
                             }
                             check(body.contentLength() < 0 || total == body.contentLength()) { "Incomplete Download" }
