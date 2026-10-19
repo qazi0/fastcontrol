@@ -1487,11 +1487,13 @@ function renderVoice() {
 }
 function cancelVoice() {
   if (voiceState.phase === "idle") return;
-  cancelledVoices.add(voiceState.id);
+  const cancelledId = voiceState.id;
+  cancelledVoices.add(cancelledId);
   while (cancelledVoices.size > 32) cancelledVoices.delete(cancelledVoices.values().next().value);
   keepVoiceDraft();
   voiceState.phase = "idle"; voiceState.id = "";
-  if (Native?.cancelVoice) Native.cancelVoice();
+  if (Native?.cancelVoiceSession) Native.cancelVoiceSession(cancelledId);
+  else if (Native?.cancelVoice) Native.cancelVoice();
   renderVoice();
 }
 async function speechCapability(c) {

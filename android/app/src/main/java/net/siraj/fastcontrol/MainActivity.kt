@@ -640,9 +640,12 @@ class MainActivity : Activity() {
         }
 
         @JavascriptInterface
-        fun cancelVoice() = runOnUiThread {
-            val id = JSONObject(voiceSnapshot()).optString("id")
-            awaitingMic = false; pendingVoice = null; launchingVoice = null
+        fun cancelVoice() = cancelVoiceSession(JSONObject(voiceSnapshot()).optString("id"))
+
+        @JavascriptInterface
+        fun cancelVoiceSession(id: String) = runOnUiThread {
+            if (JSONObject(pendingVoice ?: "{}").optString("id") == id) { awaitingMic = false; pendingVoice = null }
+            if (JSONObject(launchingVoice ?: "{}").optString("id") == id) launchingVoice = null
             VoiceCaptureService.cancel(id)
         }
 
