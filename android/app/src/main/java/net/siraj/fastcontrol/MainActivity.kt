@@ -19,6 +19,7 @@ import android.os.Message
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.provider.MediaStore
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
@@ -473,7 +474,7 @@ class MainActivity : Activity() {
                     if (uris.isEmpty()) data.data?.let { uris += it }
                 }
                 val server = Store.servers(this).find { it.id == request.optString("server") }
-                uploads.selected(applicationContext, request.getString("id"), uris, server, request.getString("base"))
+                uploads.selected(applicationContext, request.getString("id"), uris, server, request.getString("base"), data?.flags ?: 0)
             }
             return
         }
@@ -569,24 +570,29 @@ class MainActivity : Activity() {
         fun downloadRemoteImage(url: String) { if (Uri.parse(url).scheme == "https") downloads.download(url) }
 
         @JavascriptInterface
-        fun pickAttachments(requestId: String, serverId: String, base: String) = runOnUiThread {
+        fun pickAttachments(requestId: String, serverId: String, base: String) = openAttachments(requestId, serverId, base, false)
+
+        @JavascriptInterface
+        fun pickPhotos(requestId: String, serverId: String, base: String) = openAttachments(requestId, serverId, base, true)
+
+        private fun openAttachments(requestId: String, serverId: String, base: String, photos: Boolean) = runOnUiThread {
             if (pendingAttachments != null) return@runOnUiThread
             pendingAttachments = JSONObject().put("id", requestId).put("server", serverId).put("base", base).toString()
             try {
-                startActivityForResult(Intent.createChooser(Intent(Intent.ACTION_GET_CONTENT).apply {
-                    addCategory(Intent.CATEGORY_OPENABLE); type = "*/*"
+                val picker = if (photos && Build.VERSION.SDK_INT >= 33) Intent(MediaStore.ACTION_PICK_IMAGES).apply {
+                    type = "image/*"
+                    putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX, 12)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                } else Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE); type = if (photos) "image/*" else "*/*"
                     putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-                }, null), REQ_ATTACHMENTS)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                }
+                startActivityForResult(picker, REQ_ATTACHMENTS)
             } catch (_: ActivityNotFoundException) {
                 pendingAttachments = null
                 webView.evaluateJavascript("window.onImageUpload && window.onImageUpload(${JSONObject().put("batch", requestId).put("type", "selectionComplete")})", null)
             }
-        }
-
-        @JavascriptInterface
-        fun uploadImage(requestId: String, serverId: String, base: String, mime: String, encoded: String) {
-            val server = Store.servers(ctx).firstOrNull { it.id == serverId }
-            uploads.upload(applicationContext, requestId, server, base, mime, encoded)
         }
 
         @JavascriptInterface

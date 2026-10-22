@@ -1,11 +1,11 @@
 package net.siraj.fastcontrol
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
-import android.util.Base64
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -19,24 +19,51 @@ import java.util.concurrent.TimeUnit
 
 /** Snapshot provider content before uploading, without passing file bytes through WebView. */
 class ImageUploads(private val emit: (JSONObject) -> Unit) {
-    companion object { private val worker = Executors.newFixedThreadPool(2) }
+    companion object {
+        private val worker = Executors.newFixedThreadPool(2)
+        // Picker callbacks acquire on the main thread; both upload workers release.
+        // A repeated URI keeps its grant until every consumer has a private copy.
+        private val grants = HashMap<Uri, Int>()
+        private fun retain(ctx: Context, uri: Uri, flags: Int): Boolean = synchronized(grants) {
+            if (grants.containsKey(uri)) { grants[uri] = grants.getValue(uri) + 1; return@synchronized true }
+            if (flags and Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION == 0) return@synchronized false
+            try {
+                ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                grants[uri] = 1; true
+            } catch (_: SecurityException) { false }
+        }
+        private fun release(ctx: Context, uri: Uri) = synchronized(grants) {
+            val remaining = (grants[uri] ?: return@synchronized) - 1
+            if (remaining > 0) grants[uri] = remaining
+            else {
+                grants.remove(uri)
+                try { ctx.contentResolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+                catch (_: SecurityException) { }
+            }
+        }
+    }
     private val client = OkHttpClient.Builder().connectTimeout(4, TimeUnit.SECONDS)
         .readTimeout(45, TimeUnit.SECONDS).callTimeout(55, TimeUnit.SECONDS)
         .followRedirects(false).followSslRedirects(false).build()
 
-    fun selected(ctx: Context, batch: String, uris: List<Uri>, server: Server?, base: String) {
-        uris.take(12).forEachIndexed { index, uri ->
+    fun selected(ctx: Context, batch: String, uris: List<Uri>, server: Server?, base: String, flags: Int = 0) {
+        uris.distinct().take(12).forEachIndexed { index, uri ->
             val id = "$batch:$index"
+            val retained = retain(ctx, uri, flags)
             emit(JSONObject().put("id", id).put("batch", batch).put("type", "selected"))
             worker.execute {
                 var file: File? = null
                 val event = JSONObject().put("id", id).put("batch", batch)
                 try {
                     var name = "attachment"
-                    ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-                        if (cursor.moveToFirst()) name = cursor.getString(0) ?: name
-                    }
-                    var mime = ctx.contentResolver.getType(uri)?.takeIf { it.isNotBlank() } ?: android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase()) ?: "application/octet-stream"
+                    // Metadata is optional. Some gallery/cloud providers only support
+                    // opening their URI, or report a generic MIME type for a photo.
+                    try { ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                        val column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (column >= 0 && cursor.moveToFirst()) name = cursor.getString(column) ?: name
+                    } } catch (_: Exception) { }
+                    var mime = try { ctx.contentResolver.getType(uri)?.takeIf { it.isNotBlank() } } catch (_: Exception) { null }
+                        ?: android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase()) ?: "application/octet-stream"
                     file = File.createTempFile("attachment-", ".upload", ctx.cacheDir)
                     (ctx.contentResolver.openInputStream(uri) ?: error("Could Not Read File. Choose It Again")).use { input ->
                         file.outputStream().use { output ->
@@ -48,9 +75,12 @@ class ImageUploads(private val emit: (JSONObject) -> Unit) {
                             }
                         }
                     }
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFile(file.absolutePath, bounds)
+                    if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+                        mime = bounds.outMimeType ?: mime
+                    }
                     if (mime.startsWith("image/") && mime != "image/gif") {
-                        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                        BitmapFactory.decodeFile(file.absolutePath, bounds)
                         if (bounds.outWidth > 0 && bounds.outHeight > 0 &&
                             (file.length() > 400000 || mime !in setOf("image/jpeg", "image/png", "image/webp"))) {
                             var sample = 1
@@ -75,28 +105,14 @@ class ImageUploads(private val emit: (JSONObject) -> Unit) {
                     uploadFile(file, server, base, mime, name, event)
                 } catch (e: Exception) {
                     event.put("ok", false).put("message", e.message ?: "Could Not Upload File. Try Again")
-                } finally { file?.delete() }
+                } finally {
+                    file?.delete()
+                    if (retained) release(ctx, uri)
+                }
                 emit(event)
             }
         }
         emit(JSONObject().put("batch", batch).put("type", "selectionComplete"))
-    }
-
-    // Retained for a page already loaded when the Android shell is updated.
-    fun upload(ctx: Context, id: String, server: Server?, base: String, mime: String, encoded: String) {
-        worker.execute {
-            val event = JSONObject().put("id", id)
-            var file: File? = null
-            try {
-                check(encoded.length <= 34952536) { "File Must Be Smaller Than 25 MB" }
-                val bytes = Base64.decode(encoded, Base64.NO_WRAP)
-                check(bytes.size <= 25 * 1024 * 1024) { "File Must Be Smaller Than 25 MB" }
-                file = File.createTempFile("attachment-", ".upload", ctx.cacheDir).apply { writeBytes(bytes) }
-                uploadFile(file, server, base, mime, "", event)
-            } catch (e: Exception) { event.put("ok", false).put("message", e.message ?: "Could Not Upload File") }
-            finally { file?.delete() }
-            emit(event)
-        }
     }
 
     private fun uploadFile(file: File, server: Server?, base: String, mime: String, name: String, result: JSONObject) {
