@@ -5,12 +5,15 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.provider.OpenableColumns
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
 import org.json.JSONObject
+import org.json.JSONArray
 import java.io.File
 import java.io.IOException
 import java.net.URLEncoder
@@ -18,9 +21,27 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /** Snapshot provider content before uploading, without passing file bytes through WebView. */
-class ImageUploads(private val emit: (JSONObject) -> Unit) {
+class ImageUploads {
     companion object {
         private val worker = Executors.newFixedThreadPool(2)
+        private val main = Handler(Looper.getMainLooper())
+        private val pending = LinkedHashMap<String, MutableList<String>>()
+        // Observer ownership is confined to the main thread. Workers publish
+        // immutable events before delivery; a new Activity can replay them.
+        var observer: ((String) -> Unit)? = null
+        fun events(): String = synchronized(pending) {
+            JSONArray(pending.values.flatten().map { JSONObject(it) }).toString()
+        }
+        fun acknowledge(batch: String) { synchronized(pending) { pending.remove(batch) } }
+        private fun emit(event: JSONObject) {
+            val json = event.toString()
+            val batch = event.getString("batch")
+            synchronized(pending) {
+                pending.getOrPut(batch) { ArrayList() }.add(json)
+                while (pending.size > 16) pending.remove(pending.keys.first())
+            }
+            main.post { observer?.invoke(json) }
+        }
         // Picker callbacks acquire on the main thread; both upload workers release.
         // A repeated URI keeps its grant until every consumer has a private copy.
         private val grants = HashMap<Uri, Int>()

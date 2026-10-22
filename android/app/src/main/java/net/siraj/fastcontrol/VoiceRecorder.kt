@@ -37,7 +37,19 @@ class VoiceRecorder(
     val isRecording: Boolean
         get() = synchronized(lock) { current?.let { !it.stopped && !it.cancelled } == true }
     private val client = OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(100, TimeUnit.SECONDS).callTimeout(105, TimeUnit.SECONDS).build()
+        .readTimeout(0, TimeUnit.SECONDS).callTimeout(0, TimeUnit.SECONDS)
+        .followRedirects(false).followSslRedirects(false).build()
+
+    companion object {
+        fun savedFile(ctx: Context, path: String): File? = try {
+            val dir = File(ctx.filesDir, "voice").canonicalFile
+            File(path).canonicalFile.takeIf { it.parentFile == dir && it.name.startsWith("recording-") && it.isFile }
+        } catch (_: Exception) { null }
+    }
+    private fun newRecording(suffix: String): File {
+        val dir = File(context.filesDir, "voice").apply { mkdirs() }
+        return File.createTempFile("recording-", suffix, dir)
+    }
 
     private fun event(s: Session, type: String, extra: JSONObject = JSONObject()) {
         synchronized(lock) {
@@ -56,9 +68,10 @@ class VoiceRecorder(
         Thread({
             var file: File? = null
             var recorder: AudioRecord? = null
+            var complete = false
             try {
                 if (s.compressed) {
-                    file = File.createTempFile("voice-", ".m4a", context.cacheDir)
+                    file = newRecording(".m4a")
                     captureAac(s, file)
                 } else {
                     val min = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
@@ -67,8 +80,8 @@ class VoiceRecorder(
                         AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(min, 8192))
                     recorder = audio
                     check(audio.state == AudioRecord.STATE_INITIALIZED) { "Microphone Is Unavailable" }
-                    file = File.createTempFile("voice-", ".wav", context.cacheDir)
-                    var bytes = 0
+                    file = newRecording(".wav")
+                    var bytes = 0L
                     RandomAccessFile(file, "rw").use { out ->
                         out.write(ByteArray(44))
                         audio.startRecording()
@@ -76,7 +89,7 @@ class VoiceRecorder(
                         event(s, "recording")
                         val samples = ShortArray(800)
                         val buffer = ByteBuffer.allocate(1600).order(ByteOrder.LITTLE_ENDIAN)
-                        while (!s.stopped && bytes < 16000 * 2 * 120) {
+                        while (!s.stopped) {
                             val count = audio.read(samples, 0, samples.size)
                             check(count > 0) { "Microphone Recording Failed" }
                             buffer.clear()
@@ -93,38 +106,19 @@ class VoiceRecorder(
                 s.stopped = true
                 recordingChanged()
                 if (s.cancelled) return@Thread
-                val server = s.server
-                if (server == null) {
-                    event(s, "error", JSONObject().put("message", "Recording Limit Reached. Try a Shorter Message"))
-                    return@Thread
-                }
+                check(s.server != null) { "Recording Ended. Your Audio Is Saved" }
                 check(if (s.compressed) file.length() >= 100 else file.length() >= 3244) { "Record a Little Longer" }
-                event(s, "transcribing")
-                val started = System.nanoTime()
-                val request = Request.Builder().url(s.base.trimEnd('/') + "/transcribe")
-                    .header("Authorization", "Bearer " + server.token)
-                    .post(file.asRequestBody((if (s.compressed) "audio/mp4" else "audio/wav").toMediaType())).build()
-                val call = client.newCall(request); s.call = call
-                if (s.cancelled) { call.cancel(); return@Thread }
-                call.execute().use { response ->
-                    val body = response.body?.string() ?: ""
-                    val data = try { JSONObject(body) } catch (_: Exception) { JSONObject() }
-                    check(response.isSuccessful) { data.optString("error").ifEmpty { "Could Not Transcribe On The Mac" } }
-                    val text = data.optString("text").trim()
-                    check(text.isNotEmpty()) { "No Speech Detected" }
-                    event(s, "transcript", JSONObject().put("text", text).put("durationMs", data.optLong("durationMs"))
-                        .put("totalMs", (System.nanoTime() - started) / 1000000)
-                        .put("audioBytes", data.optLong("audioBytes", file.length())).put("uploadBytes", file.length()))
-                }
+                transcribe(s, file)
+                complete = true
             } catch (e: Exception) {
-                event(s, "error", JSONObject().put("message", e.message ?: "Voice Recording Failed"))
+                failure(s, file, e.message ?: "Voice Recording Failed")
             } finally {
                 s.stopped = true
                 recordingChanged()
                 try {
                     try { recorder?.stop() } catch (_: Exception) {}
                     recorder?.release()
-                    file?.delete()
+                    if (complete || s.cancelled || file?.length() == 0L) file?.delete()
                 } finally {
                     synchronized(lock) { if (current === s) current = null }
                     recordingChanged()
@@ -148,13 +142,59 @@ class VoiceRecorder(
             audio.prepare(); audio.start()
             event(s, "recording")
             val started = System.nanoTime()
-            while (!s.stopped && (System.nanoTime() - started) < 119500000000L) {
+            while (!s.stopped) {
                 event(s, "level", JSONObject().put("level", audio.maxAmplitude / 32768.0)
                     .put("seconds", (System.nanoTime() - started) / 1000000000.0))
                 Thread.sleep(50)
             }
             audio.stop()
         } finally { audio.release() }
+    }
+
+    private fun failure(s: Session, file: File?, message: String) {
+        val saved = file?.takeIf { it.isFile && it.length() > 0 }
+        event(s, "error", JSONObject().put("message", message).put("retryable", saved != null)
+            .put("audioPath", saved?.absolutePath ?: "").put("compressed", s.compressed))
+    }
+
+    private fun transcribe(s: Session, file: File) {
+        val server = s.server ?: error("Reconnect To The Computer And Retry")
+        event(s, "transcribing")
+        val started = System.nanoTime()
+        val request = Request.Builder().url(s.base.trimEnd('/') + "/transcribe")
+            .header("Authorization", "Bearer " + server.token)
+            .post(file.asRequestBody((if (s.compressed) "audio/mp4" else "audio/wav").toMediaType())).build()
+        val call = client.newCall(request); s.call = call
+        if (s.cancelled) {call.cancel();return}
+        call.execute().use { response ->
+            val body = response.body?.string() ?: ""
+            val data = try { JSONObject(body) } catch (_: Exception) { JSONObject() }
+            check(response.isSuccessful) { data.optString("error").ifEmpty { "Could Not Transcribe On The Computer" } }
+            val text = data.optString("text").trim()
+            check(text.isNotEmpty()) { "No Speech Detected" }
+            event(s, "transcript", JSONObject().put("text", text).put("durationMs", data.optLong("durationMs"))
+                .put("totalMs", (System.nanoTime() - started) / 1000000)
+                .put("audioBytes", data.optLong("audioBytes", file.length())).put("uploadBytes", file.length()))
+        }
+    }
+
+    fun retry(id: String, path: String, compressed: Boolean, server: Server, base: String): Boolean {
+        val file = savedFile(context, path) ?: return false
+        val s = synchronized(lock) {
+            if (current != null) return false
+            Session(id, compressed).also { it.stopped = true; it.server = server; it.base = base; current = it }
+        }
+        Thread({
+            var complete = false
+            try {transcribe(s, file);complete=true}
+            catch (e: Exception) {failure(s,file,e.message ?: "Could Not Transcribe. Your Recording Is Saved")}
+            finally {
+                if (complete || s.cancelled) file.delete()
+                synchronized(lock) {if(current === s)current=null}
+                recordingChanged()
+            }
+        }, "RelayVoiceRetry").start()
+        return true
     }
 
     fun finish(server: Server, base: String) {
@@ -167,8 +207,8 @@ class VoiceRecorder(
         recordingChanged()
     }
 
-    private fun wavHeader(bytes: Int): ByteArray = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
-        .put("RIFF".toByteArray()).putInt(bytes + 36).put("WAVEfmt ".toByteArray()).putInt(16)
+    private fun wavHeader(bytes: Long): ByteArray = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
+        .put("RIFF".toByteArray()).putInt((bytes + 36).toInt()).put("WAVEfmt ".toByteArray()).putInt(16)
         .putShort(1).putShort(1).putInt(16000).putInt(32000).putShort(2).putShort(16)
-        .put("data".toByteArray()).putInt(bytes).array()
+        .put("data".toByteArray()).putInt(bytes.toInt()).array()
 }

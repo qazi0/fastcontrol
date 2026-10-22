@@ -70,13 +70,17 @@ func TestLinuxCompressedVoiceDecode(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "voice.m4a")
 	output := filepath.Join(dir, "voice.wav")
-	cmd := exec.Command("ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.2", "-ar", "16000", "-ac", "1", "-c:a", "aac", "-b:a", "32k", input)
+	cmd := exec.Command("ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=310", "-ar", "16000", "-ac", "1", "-c:a", "aac", "-b:a", "32k", input)
 	if data, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("AAC fixture: %v %s", err, data)
 	}
-	data, err := decodeVoice(context.Background(), input, output)
+	decodedBytes, err := decodeVoice(context.Background(), input, output)
 	if err != nil {
 		t.Fatal(err)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil || int64(len(data)) != decodedBytes {
+		t.Fatal("decoded byte count", err)
 	}
 	if err = validateVoice(data); err != nil {
 		t.Fatal(err)

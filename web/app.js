@@ -580,6 +580,7 @@ function openThread(sidv, id, push) {
   clearImageCache();
   const previousVoiceDraft = S.sid === sidv && S.id === id;
   S.sid = sidv; S.id = id; S.meta = null; S.turns = []; S.stick = true; S.readingOutput = false;
+  restoreThreadAttachments();
   show("thread");
   renderThreadHeader();
   $("t-status").className = "status hidden";
@@ -594,7 +595,9 @@ function openThread(sidv, id, push) {
   if (Native) try { Native.setActiveThread(sidv, id, S.provider); } catch {}
 }
 function leaveThread() {
-  cancelVoice();
+  if(voiceState.phase==='retry') {voiceState.phase='idle';voiceState.id='';voiceState.target='';renderVoice();}
+  else cancelVoice();
+  store.set('attachment-return',null);
   clearAudio();
   transcriptScroll.clear();
   clearImageCache();
@@ -1458,7 +1461,7 @@ $("t-ring").onclick = () => openSheet("context");
 
 // Audio stays on the phone until Transcribe is pressed. The transcript is a
 // draft in the composer, never a message sent automatically to Codex.
-const voiceState = { phase: "idle", id: "", target:"", server: null, base: "", native:false, levels: Array(24).fill(0.08) };
+const voiceState = { phase: "idle", id: "", target:"", server: null, base: "", native:false, error:"", levels: Array(24).fill(0.08) };
 let voicePageReady = false;
 const cancelledVoices = new Set();
 function voiceDraftKey(server = S.sid, thread = S.id, provider = S.provider, target = "") { return "voice-draft:" + provider + ":" + server + ":" + thread + (target ? ":answer:" + target : ""); }
@@ -1510,7 +1513,7 @@ window.restoreVoiceSession = () => {
   }
   const changed = voiceState.id !== state.id;
   voiceState.id=state.id;voiceState.target=store.get('voice-target:'+state.id,'');voiceState.server=server;voiceState.base=state.base;voiceState.native=true;
-  voiceState.phase=terminal ? "transcribing" : state.phase;
+  voiceState.phase=terminal ? (state.retryable ? 'retry' : 'transcribing') : state.phase;
   if (changed) {
     const cached = store.get(currentVoiceDraftKey(), null), field=voiceInput();
     if (field && !field.value) field.value = cached?.text ?? state.draft ?? "";
@@ -1535,12 +1538,12 @@ function renderVoice() {
   input.classList.remove("hidden");
   $("composer").querySelector(".tools").classList.remove("hidden");
   const busy = voiceState.phase === 'transcribing' || voiceState.phase === 'preparing';
-  $("voice").disabled = busy || (active && !!voiceState.target);
+  $("voice").disabled = busy || voiceState.phase==='retry' || (active && !!voiceState.target);
   $("voice").classList.toggle("voice-active", active && !voiceState.target);
   $("voice").setAttribute("aria-pressed", String(active && !voiceState.target));
   for (const button of $('dockcards').querySelectorAll('[data-answer-voice]')) {
     const own=active && button.dataset.answerVoice===voiceState.target;
-    button.disabled=busy || (active && !own);
+    button.disabled=busy || voiceState.phase==='retry' || (active && !own);
     button.classList.toggle('voice-active',own);
     button.setAttribute('aria-pressed',String(own));
     button.setAttribute('aria-label',own && voiceState.phase==='recording' ? 'Stop And Transcribe Answer' : 'Record Answer');
@@ -1548,7 +1551,10 @@ function renderVoice() {
   for (const button of $('dockcards').querySelectorAll('[data-answer], [data-async-answer]')) button.disabled=active;
   $("voice").setAttribute("aria-label", voiceState.phase === "recording" ? "Stop And Transcribe" : active ? "Transcribing Voice" : "Record Voice");
   $("send").disabled = active;
-  $("voice-label").textContent = voiceState.phase === "recording" ? "Listening" : voiceState.phase === "transcribing" ? "Transcribing" : "Starting";
+  $("voice-label").textContent = voiceState.phase === 'retry' ? 'Recording Saved' : voiceState.phase === "recording" ? "Listening" : voiceState.phase === "transcribing" ? "Transcribing" : "Starting";
+  $('voice-retry').classList.toggle('hidden',voiceState.phase!=='retry');
+  $('voice-wave').classList.toggle('hidden',voiceState.phase==='retry');
+  $('voice-cancel').setAttribute('aria-label',voiceState.phase==='retry' ? 'Discard Saved Recording' : 'Cancel Recording');
   $("voice-wave").classList.toggle("transcribing", voiceState.phase === "transcribing");
   $("voice-spinner").classList.toggle("hidden", voiceState.phase !== "transcribing");
 }
@@ -1578,7 +1584,7 @@ async function startVoice(target = '') {
   const field=target ? answerInput(target) : input;
   if (!field || field.type === 'password') return;
   pauseChatAudio();
-  voiceState.target=target;
+  voiceState.target=target;voiceState.error='';
   voiceState.id = sid(); voiceState.native=false; const request = voiceState.id;
   store.set('voice-target:'+request,target);
   if (target) {
@@ -1607,6 +1613,13 @@ async function startVoice(target = '') {
   else Native.startVoice(request);
 }
 $("voice-cancel").onclick = cancelVoice;
+$('voice-retry').onclick=()=>{
+  if(voiceState.phase!=='retry')return;
+  const c=conns.get(voiceState.server?.id);
+  if(!c?.ok){toast('Connect To This Computer To Retry');return;}
+  voiceState.phase='transcribing';renderVoice();
+  Native?.retryVoiceSession?.(voiceState.id,c.s.id,c.base);
+};
 function transcribeVoice() {
   if (voiceState.phase !== "recording") return;
   voiceState.phase = "transcribing"; renderVoice();
@@ -1638,8 +1651,13 @@ window.onVoiceEvent = (e) => {
     mark("voiceTranscript");
     window.lastVoiceTiming = { serverMs: e.durationMs, totalMs: e.totalMs, audioBytes:e.audioBytes, uploadBytes:e.uploadBytes };
   } else if (e.type === "error") {
-    voiceState.phase="idle";voiceState.id="";voiceState.target="";renderVoice();
-    Native?.acknowledgeVoice?.(e.id);toast(nice(e.message));
+    if(e.retryable && Native?.retryVoiceSession) {
+      const show=voiceState.error!==e.message;voiceState.error=e.message;
+      voiceState.phase='retry';renderVoice();if(show)toast(nice(e.message)+' (Recording Saved)');
+    } else {
+      voiceState.phase="idle";voiceState.id="";voiceState.target="";renderVoice();
+      Native?.acknowledgeVoice?.(e.id);toast(nice(e.message));
+    }
   }
 };
 window.onImageDownload = (e) => {
@@ -1691,6 +1709,8 @@ async function sendText(text) {
   const a = await conn().call({ op: "send", id: S.id, text, images, files }, 40000);
   $("send").disabled = false;
   if (!a.ok) { pending.remove(); waiting?.remove(); if (fromInput) { input.value = keep; if (savedVoiceDraft) store.set(voiceDraftKey(),savedVoiceDraft); autosize(); } toast(nice(a.msg)); renderActivity(); return; }
+  for(const [batchId,batch] of attachmentBatches)if(batch.list===S.attach)attachmentBatches.delete(batchId);
+  persistAttachmentBatches();store.set('attachment-return',null);
   S.attach = []; renderAttachments();
   store.set(voiceDraftKey(), null);
   renderActivity();
@@ -1713,35 +1733,91 @@ async function applySettings(ch, label) {
 // Attachments stay on the selected computer. Android reads provider URIs directly.
 let fileTarget = "thread";
 const attachmentBatches = new Map();
+let attachmentStateLoaded = false;
+function attachmentOrigin(batch) { return JSON.stringify([batch.provider,batch.server.id,batch.thread,batch.target]); }
+function persistAttachmentBatches() {
+  if (!Native?.getAttachmentEvents) return;
+  const saved=[];
+  for (const [id,batch] of attachmentBatches) {
+    if (batch.target==='thread' && batch.server.id===S.sid && batch.thread===S.id && batch.provider===S.provider) batch.draft=input.value;
+    saved.push({id,target:batch.target,server:batch.server.id,thread:batch.thread,provider:batch.provider,draft:batch.draft,newDraft:batch.newDraft,selected:batch.selected,
+      finished:[...batch.finished],list:batch.list.map(a=>({uploadId:a.uploadId,name:a.name,kind:a.kind,path:a.path,uploading:a.uploading}))});
+  }
+  store.set('attachment-batches',saved.slice(-16));
+}
+function attachmentPreview(a, server, address) {
+  if (a.kind!=='image' || !a.path || a.url || a.previewing) return;
+  a.previewing=true;
+  fetch((address || conns.get(server.id)?.base || server.url)+'/image?path='+encodeURIComponent(a.path),{headers:{Authorization:'Bearer '+server.token}})
+    .then(r=>{if(!r.ok)throw Error();return r.blob();})
+    .then(blob=>{a.url=URL.createObjectURL(blob);renderAttachments();if(S.sheet==='new')redrawAttachments('new');})
+    .catch(()=>{}).finally(()=>{a.previewing=false;});
+}
+function restoreThreadAttachments() {
+  const batch=[...attachmentBatches.values()].find(b=>b.target==='thread' && b.server.id===S.sid && b.thread===S.id && b.provider===S.provider);
+  if (!batch) return;
+  S.attach=batch.list;
+  if (!input.value && batch.draft) {input.value=batch.draft;autosize();}
+  for(const a of batch.list)attachmentPreview(a,batch.server);
+  renderAttachments();
+}
+function finishAttachmentBatch(id,batch) {
+  persistAttachmentBatches();
+  if (!batch.selected || batch.items.size) return;
+  Native?.acknowledgeAttachments?.(id);
+  if (!batch.list.length) {attachmentBatches.delete(id);persistAttachmentBatches();}
+}
+window.restoreAttachmentUploads = () => {
+  if (!Native?.getAttachmentEvents || document.readyState!=='complete') return;
+  let events;try {events=JSON.parse(Native.getAttachmentEvents());}catch{return;}
+  if (!attachmentStateLoaded) {
+    attachmentStateLoaded=true;
+    const origins=new Map();
+    for(const record of store.get('attachment-batches',[])) {
+      const server=S.servers.find(s=>s.id===record.server);if(!server)continue;
+      const batch={...record,server,items:new Map(),finished:new Set(record.finished||[])};
+      const origin=attachmentOrigin(batch), list=origins.get(origin)||[];
+      for(const a of record.list||[])if(!list.some(x=>a.uploadId ? x.uploadId===a.uploadId : x.path===a.path))list.push({...a,url:''});
+      origins.set(origin,list);batch.list=list;
+      for(const a of list)if(a.uploading && a.uploadId?.startsWith(record.id+':'))batch.items.set(a.uploadId,a);
+      // A killed process cannot finish its old workers. Keep completed files,
+      // remove interrupted placeholders and let the user choose those again.
+      if(batch.selected && batch.items.size && !events.some(e=>e.batch===record.id)) {
+        for(const a of batch.items.values()){const index=list.indexOf(a);if(index>=0)list.splice(index,1);}
+        batch.items.clear();toast('Upload Interrupted. Choose The File Again');
+      }
+      attachmentBatches.set(record.id,batch);
+    }
+    const returnTo=store.get('attachment-return',null);
+    const batch=returnTo && attachmentBatches.get(returnTo);
+    if(batch && S.view!=='thread' && voiceState.phase==='idle') {
+      if(batch.target==='new') {S.newDraft=batch.newDraft;S.newAttach=batch.list;openSheet('new');}
+      else {if(S.provider!==batch.provider)selectProvider(batch.provider,false);openThread(batch.server.id,batch.thread,false);}
+    }
+  }
+  for(const event of events)window.onImageUpload(event);
+  restoreThreadAttachments();persistAttachmentBatches();
+};
 window.onImageUpload = (event) => {
   const batch = attachmentBatches.get(event.batch);
-  if (batch && event.type === "selected") {
-    const a = { url:"", kind:"file", name:"Uploading File", uploading:true, path:"" };
-    batch.list.push(a); batch.items.set(event.id, a); redrawAttachments(batch.target); return;
-  }
-  if (batch && event.type === "selectionComplete") {
-    batch.selected = true;
-    if (!batch.items.size) attachmentBatches.delete(event.batch);
-    return;
-  }
-  if (batch && batch.items.has(event.id)) {
-    const a = batch.items.get(event.id); batch.items.delete(event.id);
-    if (event.ok) {
-      Object.assign(a, { uploading:false, path:event.path, name:event.name || base(event.path), kind:event.kind || "file" });
-      if (a.kind === "image") {
-        const c = conns.get(batch.server.id);
-        fetch((event.base || c?.base || batch.server.url) + "/image?path=" + encodeURIComponent(a.path), {headers:{Authorization:"Bearer " + batch.server.token}})
-          .then(r => { if (!r.ok) throw Error(); return r.blob(); })
-          .then(blob => { a.url = URL.createObjectURL(blob); redrawAttachments(batch.target); }).catch(() => {});
-      }
-    } else {
-      const index = batch.list.indexOf(a); if (index >= 0) batch.list.splice(index, 1);
-      toast("Upload Failed: " + (event.message || "Choose The File Again"));
+  if (!batch) {Native?.acknowledgeAttachments?.(event.batch);return;}
+  if (event.type === 'selected') {
+    if(!batch.items.has(event.id) && !batch.finished.has(event.id)) {
+      const a={uploadId:event.id,url:'',kind:'file',name:'Uploading File',uploading:true,path:''};
+      batch.list.push(a);batch.items.set(event.id,a);
     }
-    redrawAttachments(batch.target);
-    if (batch.selected && !batch.items.size) attachmentBatches.delete(event.batch);
-    return;
+  } else if (event.type === 'selectionComplete') batch.selected=true;
+  else if(batch.items.has(event.id)) {
+    const a=batch.items.get(event.id);batch.items.delete(event.id);batch.finished.add(event.id);
+    if(event.ok) {
+      Object.assign(a,{uploading:false,path:event.path,name:event.name||base(event.path),kind:event.kind||'file'});
+      attachmentPreview(a,batch.server,event.base);
+    } else {
+      const index=batch.list.indexOf(a);if(index>=0)batch.list.splice(index,1);
+      toast('Upload Failed: '+(event.message||'Choose The File Again'));
+    }
   }
+  redrawAttachments(batch.target);finishAttachmentBatch(event.batch,batch);
 };
 async function uploadImage(blob, server, url, name) {
   if (blob.size > 25 * 1024 * 1024) throw new Error("Image Must Be Smaller Than 25 MB");
@@ -1768,14 +1844,17 @@ function pickAttachments(target, kind) {
   const serverId = target === "new" ? S.newDraft?.sid : S.sid;
   const server = S.servers.find(s => s.id === serverId);
   if (!server) return;
+  if([...attachmentBatches.values()].some(b=>!b.selected||b.items.size)) {toast('Waiting For Files To Upload');return;}
   const id = sid(), list = target === "new" ? S.newAttach : S.attach;
-  attachmentBatches.set(id, {list, target, server, items:new Map(), selected:false});
+  attachmentBatches.set(id, {list,target,server,thread:S.id,provider:S.provider,draft:input.value,newDraft:S.newDraft,items:new Map(),finished:new Set(),selected:false});
+  while(attachmentBatches.size>16) {const old=[...attachmentBatches].find(([key,b])=>key!==id&&b.selected&&!b.items.size);if(!old)break;attachmentBatches.delete(old[0]);}
+  store.set('attachment-return',id);persistAttachmentBatches();
   try {
     const address=conns.get(server.id)?.base || server.url;
     if (kind === 'photos' && Native.pickPhotos) Native.pickPhotos(id,server.id,address);
     else Native.pickAttachments(id, server.id, address);
   }
-  catch { attachmentBatches.delete(id); toast("Could Not Open File Picker"); }
+  catch { attachmentBatches.delete(id);persistAttachmentBatches();toast("Could Not Open File Picker"); }
 }
 $("attach").onclick = () => pickAttachments("thread");
 let imageSelection = 0;
@@ -1826,12 +1905,19 @@ function shrink(file) {
 const attHTML = (list) => list.map((a, i) => `<div class="att${a.uploading ? " loading" : ""}${a.kind === "file" ? " document" : ""}" title="${esc(a.name || "Image")}">${a.url ? `<img src="${esc(a.url)}" alt="${esc(a.name || "Image")}">` : `<span>${a.uploading ? loadingHTML("Uploading") : esc(a.name || "Image")}</span>`}<button type="button" data-rm="${i}" aria-label="Remove Attachment">&times;</button></div>`).join("");
 function renderAttachments() { $("attachments").innerHTML = attHTML(S.attach); }
 function redrawAttachments(target) {
+  persistAttachmentBatches();
   if (target === "new") { const el = document.getElementById("nt-att"); if (el) el.innerHTML = attHTML(S.newAttach); }
   else renderAttachments();
 }
+function removeAttachment(list,index) {
+  const [removed]=list.splice(index,1);
+  if(removed?.uploadId)for(const batch of attachmentBatches.values())if(batch.list===list){batch.finished.add(removed.uploadId);batch.items.delete(removed.uploadId);}
+  if(removed?.url)URL.revokeObjectURL(removed.url);
+  persistAttachmentBatches();
+}
 $("attachments").addEventListener("click", (e) => {
   const b = e.target.closest("[data-rm]");
-  if (b) { S.attach.splice(+b.dataset.rm, 1); renderAttachments(); }
+  if (b) { removeAttachment(S.attach,+b.dataset.rm);renderAttachments(); }
 });
 
 // ------------------------------------------------------------------- diff --
@@ -2184,7 +2270,7 @@ const SHEETS = {
       const v = e.target.closest("[data-v]");
       if (v) { const k = v.parentElement.dataset.key; d[k] = v.dataset.v; if (k === "model") d.effort = ""; draw(); return; }
       const rm = e.target.closest("[data-rm]");
-      if (rm) { S.newAttach.splice(+rm.dataset.rm, 1); redrawAttachments("new"); return; }
+      if (rm) { removeAttachment(S.newAttach,+rm.dataset.rm); redrawAttachments("new"); return; }
       const x = e.target.dataset.x;
       if (x === "img") { pickAttachments("new"); }
       if (x === "start") {
@@ -2195,6 +2281,8 @@ const SHEETS = {
         const a = await conns.get(d.sid).call({ op: "new", cwd: d.cwd, text: d.text.trim(), model: d.model || undefined, effort: d.effort || undefined, images: S.newAttach.filter(x => x.kind !== "file").map(x => x.path), files:S.newAttach.filter(x => x.kind === "file").map(x => x.path) }, 60000);
         if (!a.ok) { toast(nice(a.msg)); e.target.disabled = false; e.target.textContent = "Start Chat"; return; }
         const target = d.sid;
+        for(const [batchId,batch] of attachmentBatches)if(batch.list===S.newAttach)attachmentBatches.delete(batchId);
+        persistAttachmentBatches();store.set('attachment-return',null);
         S.newDraft = null; S.newAttach = [];
         closeSheet(true);
         // The sheet's history entry becomes the thread.
@@ -2289,7 +2377,7 @@ window.onAndroidIntent = function () {
       try {
         const capture=JSON.parse(Native.getVoiceSession());
         if (capture.id && capture.thread===it.thread && capture.server===it.server && capture.provider===(it.provider || "codex")) { window.restoreVoiceSession();return; }
-        if (capture.id && Native.cancelVoiceSession) {
+        if (capture.id && Native.cancelVoiceSession && !(capture.phase==='error' && capture.retryable)) {
           cancelledVoices.add(capture.id);
           while (cancelledVoices.size>32) cancelledVoices.delete(cancelledVoices.values().next().value);
           if (["transcript","error","cancelled"].includes(capture.phase)) {
@@ -2325,6 +2413,8 @@ window.finishVoiceRestore = () => {
   const cached = S.id && store.get(voiceDraftKey(), null);
   if (Native && !document.hidden && voiceState.phase === "idle" && cached?.id) { input.value=cached.text;autosize(); }
 };
-window.addEventListener("load", () => { voicePageReady=true;window.restoreVoiceSession(); }, {once:true});
+window.addEventListener("load", () => { voicePageReady=true;window.restoreVoiceSession();window.restoreAttachmentUploads(); }, {once:true});
+if(document.readyState==='complete')window.restoreAttachmentUploads();
+document.addEventListener('visibilitychange',()=>{if(document.hidden)persistAttachmentBatches();else window.restoreAttachmentUploads();});
 if (document.readyState === "complete") window.finishVoiceRestore();
 if (!Native && "serviceWorker" in navigator && window.isSecureContext && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});

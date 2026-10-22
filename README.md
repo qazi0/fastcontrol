@@ -81,7 +81,7 @@ Open `http://127.0.0.1:8789/` and pair with the target computer's token. Command
 
 Subscription limits come from the account signed in on the selected computer. Computers sharing an account share its quota. Token and cost totals come from that computer's local logs. Dollar amounts estimate the API value of those tokens, including cached usage; they are separate from subscription charges. Unpriced models are identified rather than assigned a guessed cost.
 
-Audio is sent to the computer selected for the chat, transcribed locally and returned as a draft. No speech model runs on the phone. Mac uploads use 16 kHz mono AAC at 32 kbps. Linux and Windows support AAC when FFmpeg is installed and use WAV otherwise. Android recording continues while you switch apps. Return to stop recording, or use the recording notification to transcribe or cancel. Recordings are limited to two minutes and temporary audio is removed after transcription.
+Audio is sent to the computer selected for the chat, transcribed locally and returned as a draft. No speech model runs on the phone. Mac uploads use 16 kHz mono AAC at 32 kbps. Linux and Windows support AAC when FFmpeg is installed and use WAV otherwise. Android recording continues while you switch apps. Return to stop recording, or use the recording notification to transcribe or cancel. Recordings continue until you stop them. Failed transcriptions can be retried using the saved recording. Audio is removed after successful transcription or when you discard it.
 
 ## Build From Source
 

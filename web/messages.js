@@ -36,7 +36,9 @@ const MessageContent = (() => {
           for (const reply of replies) parts.push({kind:"reply", question:reply.question, answer:reply.answer});
         } else parts.push({kind:"text", text:"Answered a question"});
       } else if (tag === "external_codex_apps_open_page") {
-        parts.push({kind:"context", title:"Opened a Page", text:""});
+        let page;
+        try {page = JSON.parse(body);}catch {}
+        parts.push({kind:"context", title:page?.page_id === null ? "Page Closed" : page?.page_id ? "Opened a Page" : "Page Context Updated", text:""});
       } else if (tag === "environment_context") {
         const labels = {cwd:"Working Directory", shell:"Shell", current_date:"Date", timezone:"Time Zone"};
         const rows = Object.entries(labels).map(([key,label]) => { const value = field(body,key); return value ? label + ": " + value : ""; }).filter(Boolean);

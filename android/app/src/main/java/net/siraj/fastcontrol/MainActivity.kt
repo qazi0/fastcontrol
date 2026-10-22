@@ -123,9 +123,7 @@ class MainActivity : Activity() {
         webView.webViewClient = ShellClient()
         webView.webChromeClient = ShellChrome()
         webView.addJavascriptInterface(Bridge(), "CodexAndroid")
-        uploads = ImageUploads { event -> runOnUiThread {
-            if (!isDestroyed) webView.evaluateJavascript("window.onImageUpload && window.onImageUpload($event)", null)
-        } }
+        uploads = ImageUploads()
         downloads = Downloads(this, { event -> runOnUiThread {
             if (!isDestroyed) webView.evaluateJavascript("window.onImageDownload && window.onImageDownload($event)", null)
         } }, { file, mime, name -> runOnUiThread {
@@ -183,6 +181,8 @@ class MainActivity : Activity() {
         }
         webView.onResume()
         VoiceCaptureService.observer = voiceObserver
+        ImageUploads.observer = uploadObserver
+        webView.evaluateJavascript("window.restoreAttachmentUploads && window.restoreAttachmentUploads()", null)
         launchPendingVoice()
         updateVoiceScreenState()
         restoreVoiceSession()
@@ -192,6 +192,7 @@ class MainActivity : Activity() {
         UiState.resumed = false
         webView.evaluateJavascript("window.pauseChatAudio && window.pauseChatAudio()", null)
         if (VoiceCaptureService.observer === voiceObserver) VoiceCaptureService.observer = null
+        if (ImageUploads.observer === uploadObserver) ImageUploads.observer = null
         updateVoiceScreenState()
         webView.onPause()
         super.onPause()
@@ -199,6 +200,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         if (VoiceCaptureService.observer === voiceObserver) VoiceCaptureService.observer = null
+        if (ImageUploads.observer === uploadObserver) ImageUploads.observer = null
         pendingImage?.delete(); pendingImage = null
         webView.destroy()
         super.onDestroy()
@@ -214,6 +216,10 @@ class MainActivity : Activity() {
 
     private fun restoreVoiceSession() {
         if (!isDestroyed && UiState.resumed) webView.evaluateJavascript("window.restoreVoiceSession && window.restoreVoiceSession()", null)
+    }
+
+    private val uploadObserver: (String) -> Unit = { event ->
+        if (!isDestroyed) webView.evaluateJavascript("window.onImageUpload && window.onImageUpload($event)", null)
     }
 
     private fun voiceSnapshot(): String {
@@ -347,7 +353,7 @@ class MainActivity : Activity() {
 
     private inner class ShellClient : WebViewClient() {
         override fun onPageFinished(view: WebView, url: String) {
-            if (!isDestroyed && UiState.resumed) view.evaluateJavascript("window.finishVoiceRestore && window.finishVoiceRestore()", null)
+            if (!isDestroyed && UiState.resumed) view.evaluateJavascript("window.finishVoiceRestore && window.finishVoiceRestore(); window.restoreAttachmentUploads && window.restoreAttachmentUploads()", null)
         }
         override fun shouldInterceptRequest(
             view: WebView, request: WebResourceRequest
@@ -570,6 +576,12 @@ class MainActivity : Activity() {
         fun downloadRemoteImage(url: String) { if (Uri.parse(url).scheme == "https") downloads.download(url) }
 
         @JavascriptInterface
+        fun getAttachmentEvents(): String = ImageUploads.events()
+
+        @JavascriptInterface
+        fun acknowledgeAttachments(batch: String) = ImageUploads.acknowledge(batch)
+
+        @JavascriptInterface
         fun pickAttachments(requestId: String, serverId: String, base: String) = openAttachments(requestId, serverId, base, false)
 
         @JavascriptInterface
@@ -603,6 +615,16 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun updateVoiceDraft(id: String, text: String) = runOnUiThread { VoiceCaptureService.updateDraft(id, text) }
+
+        @JavascriptInterface
+        fun retryVoiceSession(id: String, serverId: String, base: String) = runOnUiThread {
+            val state=try{JSONObject(voiceSnapshot())}catch (_: Exception){return@runOnUiThread}
+            val server=Store.servers(ctx).find{it.id==serverId} ?: return@runOnUiThread
+            if(!UiState.resumed || state.optString("id")!=id || state.optString("server")!=serverId || state.optString("phase")!="error" || !state.optBoolean("retryable") || base.trimEnd('/') !in server.urls.map{it.trimEnd('/')})return@runOnUiThread
+            state.put("base",base.trimEnd('/'))
+            try {startForegroundService(Intent(ctx,VoiceCaptureService::class.java).setAction(VoiceCaptureService.RETRY).putExtra("session",state.toString()))}
+            catch (_: Exception) {VoiceCaptureService.failStart(ctx,state,"Could Not Retry. Your Recording Is Saved")}
+        }
 
         @JavascriptInterface
         fun startVoice(requestId: String) = startVoiceRequest(requestId, UiState.activeServer, "", UiState.activeThread, UiState.activeProvider, false, "")
@@ -660,6 +682,7 @@ class MainActivity : Activity() {
         fun cancelVoiceSession(id: String) = runOnUiThread {
             if (JSONObject(pendingVoice ?: "{}").optString("id") == id) { awaitingMic = false; pendingVoice = null }
             if (JSONObject(launchingVoice ?: "{}").optString("id") == id) launchingVoice = null
+            VoiceCaptureService.discardSaved(ctx,id)
             VoiceCaptureService.cancel(id)
         }
 

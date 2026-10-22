@@ -21,6 +21,7 @@ import org.json.JSONObject
 class VoiceCaptureService : Service() {
     companion object {
         const val START = "net.siraj.fastcontrol.voice.START"
+        const val RETRY = "net.siraj.fastcontrol.voice.RETRY"
         private const val FINISH = "net.siraj.fastcontrol.voice.FINISH"
         private const val CANCEL = "net.siraj.fastcontrol.voice.CANCEL"
         private const val CHANNEL = "voice-recording"
@@ -40,6 +41,14 @@ class VoiceCaptureService : Service() {
             if (service?.state?.optString("id") == id && service.terminal()) service.snapshotJSON = "{}"
             val saved = try { JSONObject(prefs(ctx).getString(RESULT, "{}") ?: "{}") } catch (_: Exception) { JSONObject() }
             if (saved.optString("id") == id) prefs(ctx).edit().remove(RESULT).apply()
+        }
+
+        fun discardSaved(ctx: Context, id: String) {
+            val saved = try {JSONObject(snapshot(ctx))}catch (_: Exception){return}
+            if (saved.optString("id") != id || saved.optString("phase") != "error" || !saved.optBoolean("retryable")) return
+            VoiceRecorder.savedFile(ctx,saved.optString("audioPath"))?.delete()
+            prefs(ctx).edit().remove(RESULT).apply()
+            instance?.let { if(it.state.optString("id")==id && it.terminal()){it.state.put("phase","cancelled");it.snapshotJSON="{}";it.stopWhenIdle()} }
         }
 
         private val cancelledStarts = linkedSetOf<String>()
@@ -100,6 +109,7 @@ class VoiceCaptureService : Service() {
         lastStartId = startId
         when (intent?.action) {
             START -> startCapture(intent)
+            RETRY -> retryCapture(intent)
             FINISH -> if (intent.getStringExtra("id") == state.optString("id")) {
                 val server = Store.servers(this).find { it.id == state.optString("server") }
                 val base = state.optString("base")
@@ -129,7 +139,7 @@ class VoiceCaptureService : Service() {
             if (Build.VERSION.SDK_INT >= 30) startForeground(NOTIFICATION, notice, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
             else startForeground(NOTIFICATION, notice)
             wake = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "fastcontrol:voice").apply {
-                acquire(250000L)
+                acquire()
             }
             if (cancelledStarts.remove(state.getString("id"))) {
                 cancelCapture(); return
@@ -142,12 +152,31 @@ class VoiceCaptureService : Service() {
     private fun publish() { snapshotJSON = JSONObject(state.toString()).put("levels", JSONArray(levels.toList())).toString() }
     private fun terminal() = state.optString("phase") in setOf("transcript", "error", "cancelled")
 
+    private fun retryCapture(intent: Intent) {
+        val requested = try {JSONObject(intent.getStringExtra("session") ?: "{}")}catch (_: Exception){stopSelfResult(lastStartId);return}
+        if(recorder.isBusy || requested.optString("phase")!="error" || !requested.optBoolean("retryable")) return
+        val server=Store.servers(this).find {it.id==requested.optString("server")}
+        val base=requested.optString("base")
+        state=requested
+        if(server==null || base !in server.urls.map{it.trimEnd('/')}) {failStart(this,state,"Reconnect To The Computer And Retry");stopSelfResult(lastStartId);return}
+        if(VoiceRecorder.savedFile(this,state.optString("audioPath"))==null) {state.put("retryable",false);failStart(this,state,"Saved Recording Is No Longer Available");stopSelfResult(lastStartId);return}
+        state.put("phase","transcribing").put("type","transcribing");publish()
+        try {
+            if(Build.VERSION.SDK_INT>=30)startForeground(NOTIFICATION,notification(),ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            else startForeground(NOTIFICATION,notification())
+            wake=getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"fastcontrol:voice").apply{acquire()}
+            check(recorder.retry(state.getString("id"),state.getString("audioPath"),state.optBoolean("compressed"),server,base))
+            observer?.invoke(snapshotJSON)
+        } catch (_: Exception) {state.put("phase","error").put("type","error").put("message","Could Not Retry. Your Recording Is Saved");publish();prefs(this).edit().putString(RESULT,snapshotJSON).apply();observer?.invoke(snapshotJSON);stopWhenIdle()}
+    }
+
     private fun onVoiceEvent(event: JSONObject) {
         if (event.optString("id") != state.optString("id") || terminal()) return
         val type = event.optString("type")
         if (state.optString("phase") == "transcribing" && type in setOf("level", "recording")) return
         for (key in event.keys()) state.put(key, event.get(key))
         state.put("phase", if (type == "level") "recording" else type)
+        if(type=="transcript"){state.remove("retryable");state.remove("audioPath")}
         if (type == "level") { levels.addLast(event.optDouble("level")); if (levels.size > 24) levels.removeFirst() }
         publish()
         if (terminal()) prefs(this).edit().putString(RESULT, snapshotJSON).apply()

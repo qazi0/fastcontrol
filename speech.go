@@ -18,7 +18,6 @@ import (
 	"time"
 )
 
-const maxVoiceBytes = 44 + 16000*2*120
 const bundledSpeechModel = "ggml-base-q5_1.bin"
 const bundledSpeechModelSHA256 = "422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898"
 
@@ -47,7 +46,7 @@ func discoverSpeech(home string, preferMacWhisper bool) *Speech {
 			if !speechExecutable(path) {
 				continue
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			out, err := exec.CommandContext(ctx, path, "models", "list").Output()
 			cancel()
 			if err != nil {
@@ -117,17 +116,19 @@ func (s *Speech) config() (string, string, string, string) {
 	return s.bin, s.model, s.engine, s.modelPath
 }
 
-// Voice accepts a bounded PCM WAV, rather than arbitrary paths or commands.
-func validateVoice(b []byte) error {
-	if len(b) < 46 || len(b) > maxVoiceBytes || len(b)%2 != 0 ||
+// Voice accepts mono PCM WAV audio, rather than arbitrary paths or commands.
+func validateVoice(b []byte) error { return validateVoiceHeader(b, int64(len(b))) }
+
+func validateVoiceHeader(b []byte, size int64) error {
+	if len(b) < 44 || size < 46 || size%2 != 0 ||
 		string(b[:4]) != "RIFF" || string(b[8:12]) != "WAVE" ||
 		string(b[12:16]) != "fmt " || binary.LittleEndian.Uint32(b[16:20]) != 16 ||
 		binary.LittleEndian.Uint16(b[20:22]) != 1 || binary.LittleEndian.Uint16(b[22:24]) != 1 ||
 		binary.LittleEndian.Uint32(b[24:28]) != 16000 || binary.LittleEndian.Uint32(b[28:32]) != 32000 ||
 		binary.LittleEndian.Uint16(b[32:34]) != 2 || binary.LittleEndian.Uint16(b[34:36]) != 16 ||
-		string(b[36:40]) != "data" || int(binary.LittleEndian.Uint32(b[40:44])) != len(b)-44 ||
-		int(binary.LittleEndian.Uint32(b[4:8])) != len(b)-8 {
-		return errors.New("Record Mono PCM Audio at 16 kHz, Up To Two Minutes")
+		string(b[36:40]) != "data" || int64(binary.LittleEndian.Uint32(b[40:44])) != size-44 ||
+		int64(binary.LittleEndian.Uint32(b[4:8])) != size-8 {
+		return errors.New("Record Mono PCM Audio at 16 kHz")
 	}
 	return nil
 }
@@ -166,27 +167,8 @@ func (s *Speech) serve(w http.ResponseWriter, r *http.Request) {
 		fail(429, "This Mac Is Transcribing Another Recording")
 		return
 	}
-	limit := int64(maxVoiceBytes)
-	if compressed {
-		limit = 1 << 20
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, limit)
-	b, err := io.ReadAll(r.Body)
-	if err != nil {
-		fail(413, "Recording Is Too Large")
-		return
-	}
 	if compressed && !compressedVoiceAvailable() {
-		fail(415, "Compressed Voice Is Unavailable On This Computer. Record Again As WAV")
-		return
-	}
-	if !compressed {
-		if err := validateVoice(b); err != nil {
-			fail(400, err.Error())
-			return
-		}
-	} else if len(b) < 12 || string(b[4:8]) != "ftyp" {
-		fail(400, "Invalid AAC Recording")
+		fail(415, "Compressed Voice Is Unavailable On This Computer")
 		return
 	}
 	home, _ := os.UserHomeDir()
@@ -205,34 +187,40 @@ func (s *Speech) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer os.Remove(f.Name())
-	_, err = f.Write(b)
-	closeErr := f.Close()
-	if err != nil || closeErr != nil {
+	defer f.Close()
+	uploadBytes, err := io.Copy(f, r.Body)
+	if err != nil {
+		fail(500, "Could Not Save Recording")
+		return
+	}
+	head := make([]byte, 44)
+	count, _ := f.ReadAt(head, 0)
+	if !compressed {
+		if err := validateVoiceHeader(head[:count], uploadBytes); err != nil {
+			fail(400, err.Error())
+			return
+		}
+	} else if count < 12 || string(head[4:8]) != "ftyp" {
+		fail(400, "Invalid AAC Recording")
+		return
+	}
+	if err := f.Close(); err != nil {
 		fail(500, "Could Not Save Recording")
 		return
 	}
 	audioPath := f.Name()
-	audioBytes := len(b)
+	audioBytes := uploadBytes
 	if compressed {
 		audioPath = f.Name() + ".wav"
 		defer os.Remove(audioPath)
-		decoded, err := decodeVoice(r.Context(), f.Name(), audioPath)
+		decodedBytes, err := decodeVoice(r.Context(), f.Name(), audioPath)
 		if err != nil {
-			if errors.Is(err, errVoiceTooLarge) {
-				fail(413, "Recording Is Too Long")
-			} else {
-				fail(400, "Could Not Decode The Recording")
-			}
+			fail(400, "Could Not Decode The Recording")
 			return
 		}
-		audioBytes = len(decoded)
-		if err = os.WriteFile(audioPath, decoded, 0600); err != nil {
-			fail(500, "Could Not Save Recording")
-			return
-		}
+		audioBytes = decodedBytes
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
-	defer cancel()
+	ctx := r.Context()
 	start := time.Now()
 	cmd := exec.CommandContext(ctx, bin, "transcribe", audioPath, "--model", model, "--language", "auto", "--no-speakers", "--format", "txt", "--no-timestamps")
 	transcriptPath := audioPath + ".txt"
@@ -244,7 +232,7 @@ func (s *Speech) serve(w http.ResponseWriter, r *http.Request) {
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
-			fail(504, "Transcription Timed Out. Try a Shorter Recording")
+			fail(504, "Transcription Was Interrupted. Your Recording Can Be Retried")
 		} else {
 			fail(502, "Transcription Failed. Check The Speech Runtime On The Computer")
 		}
@@ -257,7 +245,7 @@ func (s *Speech) serve(w http.ResponseWriter, r *http.Request) {
 			fail(502, "Could Not Read The Transcript")
 			return
 		}
-		data, readErr := io.ReadAll(io.LimitReader(file, 1<<20))
+		data, readErr := io.ReadAll(file)
 		_ = file.Close()
 		if readErr != nil {
 			fail(502, "Could Not Read The Transcript")
@@ -272,5 +260,5 @@ func (s *Speech) serve(w http.ResponseWriter, r *http.Request) {
 		fail(422, "No Speech Detected")
 		return
 	}
-	_, _ = w.Write(mustJSON(map[string]any{"text": text, "model": model, "durationMs": time.Since(start).Milliseconds(), "audioBytes": audioBytes, "uploadBytes": len(b)}))
+	_, _ = w.Write(mustJSON(map[string]any{"text": text, "model": model, "durationMs": time.Since(start).Milliseconds(), "audioBytes": audioBytes, "uploadBytes": uploadBytes}))
 }

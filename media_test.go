@@ -41,7 +41,7 @@ func TestVoiceRejectsInvalidPCMAndConcurrentRequest(t *testing.T) {
 			t.Fatalf("accepted invalid WAV field at %d", offset)
 		}
 	}
-	for _, b := range [][]byte{nil, []byte("RIFF"), make([]byte, maxVoiceBytes+1)} {
+	for _, b := range [][]byte{nil, []byte("RIFF"), make([]byte, 200)} {
 		if validateVoice(b) == nil {
 			t.Fatal("accepted invalid recording")
 		}
@@ -125,7 +125,11 @@ printf 'Runtime Log Should Not Be The Draft\n'
 		t.Fatal(err)
 	}
 	s := &Speech{bin: bin, model: "whisper.cpp:base-q5_1", engine: "whispercpp", modelPath: "/model with spaces.bin", busy: make(chan struct{}, 1)}
-	r := httptest.NewRequest("POST", "/transcribe", bytes.NewReader(testVoiceWAV()))
+	recording := make([]byte, 44+32000*185)
+	copy(recording, testVoiceWAV())
+	binary.LittleEndian.PutUint32(recording[4:], uint32(len(recording)-8))
+	binary.LittleEndian.PutUint32(recording[40:], uint32(len(recording)-44))
+	r := httptest.NewRequest("POST", "/transcribe", bytes.NewReader(recording))
 	r.Header.Set("Content-Type", "audio/wav")
 	w := httptest.NewRecorder()
 	s.serve(w, r)
@@ -182,11 +186,22 @@ func TestConvertedVoiceWAVPreservesPCM(t *testing.T) {
 	if _, err := canonicalVoiceWAV(bad); err == nil {
 		t.Fatal("accepted overflowing chunk")
 	}
-	tooLong := make([]byte, maxVoiceBytes+2)
-	copy(tooLong, original)
-	binary.LittleEndian.PutUint32(tooLong[4:], uint32(len(tooLong)-8))
-	binary.LittleEndian.PutUint32(tooLong[40:], uint32(len(tooLong)-44))
-	if _, err := canonicalVoiceWAV(tooLong); err == nil {
-		t.Fatal("accepted audio over two minutes")
+	longRecording := make([]byte, 44+32000*185)
+	copy(longRecording, original)
+	binary.LittleEndian.PutUint32(longRecording[4:], uint32(len(longRecording)-8))
+	binary.LittleEndian.PutUint32(longRecording[40:], uint32(len(longRecording)-44))
+	if _, err := canonicalVoiceWAV(longRecording); err != nil {
+		t.Fatalf("rejected a valid recording longer than two minutes: %v", err)
 	}
+	path := filepath.Join(t.TempDir(), "long.wav")
+	if err := os.WriteFile(path, longRecording, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := canonicalVoiceFile(path); err != nil || n != int64(len(longRecording)) {
+		t.Fatalf("disk normalization: %d %v", n, err)
+	}
+	if data, err := os.ReadFile(path); err != nil || !bytes.Equal(data, longRecording) {
+		t.Fatalf("disk normalization changed PCM: %v", err)
+	}
+
 }
