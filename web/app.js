@@ -1687,6 +1687,8 @@ async function sendText(text) {
   const images = S.attach.filter(a => a.kind !== "file").map(a => a.path);
   const files = S.attach.filter(a => a.kind === "file").map(a => a.path);
   if (!text && !images.length && !files.length) return;
+  const sent={sid:S.sid,id:S.id,provider:S.provider,list:S.attach,voiceKey:voiceDraftKey()};
+  const sameChat=()=>S.sid===sent.sid&&S.id===sent.id&&S.provider===sent.provider;
   const steering = S.meta && S.meta.running;
   buzz();
   // Show the message right away; the real one replaces it when the Mac echoes it.
@@ -1707,12 +1709,16 @@ async function sendText(text) {
   if (fromInput) { input.value = ""; store.set(voiceDraftKey(), null); autosize(); }
   S.stick = true;
   const a = await conn().call({ op: "send", id: S.id, text, images, files }, 40000);
-  $("send").disabled = false;
-  if (!a.ok) { pending.remove(); waiting?.remove(); if (fromInput) { input.value = keep; if (savedVoiceDraft) store.set(voiceDraftKey(),savedVoiceDraft); autosize(); } toast(nice(a.msg)); renderActivity(); return; }
-  for(const [batchId,batch] of attachmentBatches)if(batch.list===S.attach)attachmentBatches.delete(batchId);
-  persistAttachmentBatches();store.set('attachment-return',null);
-  S.attach = []; renderAttachments();
-  store.set(voiceDraftKey(), null);
+  $("send").disabled = voiceState.phase!=='idle';
+  if (!a.ok) {
+    pending.remove();waiting?.remove();
+    if(fromInput) {store.set(sent.voiceKey,savedVoiceDraft||{id:'',text:keep});if(sameChat()&&!input.value){input.value=keep;autosize();}}
+    toast(nice(a.msg));renderActivity();return;
+  }
+  for(const [batchId,batch] of attachmentBatches)if(batch.list===sent.list)attachmentBatches.delete(batchId);
+  persistAttachmentBatches();
+  if(S.attach===sent.list) {S.attach=[];renderAttachments();store.set('attachment-return',null);}
+  if(fromInput)store.set(sent.voiceKey,null);
   renderActivity();
   if (a.queued) toast("Queued");
 }
@@ -1799,6 +1805,7 @@ window.restoreAttachmentUploads = () => {
   restoreThreadAttachments();persistAttachmentBatches();
 };
 window.onImageUpload = (event) => {
+  if(!attachmentStateLoaded) {window.restoreAttachmentUploads();if(!attachmentStateLoaded)return;}
   const batch = attachmentBatches.get(event.batch);
   if (!batch) {Native?.acknowledgeAttachments?.(event.batch);return;}
   if (event.type === 'selected') {
