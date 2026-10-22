@@ -1599,7 +1599,7 @@ async function startVoice(target = '') {
   if (!c?.ok) {cancelVoice();toast("Connect To This Computer First");return;}
   const capability = await speechCapability(c);
   if (voiceState.id !== request) return;
-  if (!capability.available) {cancelVoice();openSheet("speech",{server:c.s.id});return;}
+  if (!capability.available) {cancelVoice();openSheet("speech",{server:c.s.id,target});return;}
   voiceState.server = c.s; voiceState.base = c.base;
   voiceState.levels.fill(0.08);
   $("voice-time").textContent = "0:00";
@@ -1641,7 +1641,8 @@ window.onVoiceEvent = (e) => {
     [...$("voice-wave").children].forEach((bar, i) => { bar.style.transform = `scaleY(${voiceState.levels[i]})`; });
     const sec = Math.floor(e.seconds); $("voice-time").textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
   } else if (e.type === "transcript") {
-    const text = (e.text || "").trim();
+    const transcript = (e.text || "").trim();
+    const text = voiceState.target ? transcript.replace(/\s*[\r\n]+\s*/g, ' ') : transcript;
     const key=currentVoiceDraftKey(), cached=store.get(key,null), field=voiceInput();
     const value=cached?.id === e.id ? cached.text : [field?.value.trimEnd() ?? cached?.text ?? e.draft ?? '',text].filter(Boolean).join(' ');
     store.set(key,{id:e.id,text:value});
@@ -2037,7 +2038,7 @@ const SHEETS = {
    const button=event.target.closest('[data-x]');if(!button)return;
    if(button.dataset.x==='close'){clearTimeout(timer);closeSheet();return;}
    if(button.dataset.x!=='install'||requesting)return;
-   if(c.speech?.available){closeSheet(true);$('voice').click();return;}
+   if(c.speech?.available){closeSheet(true);startVoice(opts.target || '');return;}
    requesting=true;button.disabled=true;
    try{const r=await fetch(c.base+'/speech/install',{method:'POST',headers:{Authorization:'Bearer '+c.s.token},signal:AbortSignal.timeout(10000)});const status=await r.json();if(!r.ok)throw Error(status.error||'Could Not Install Speech Model');c.speech=status;c.speechAt=Date.now();requesting=false;clearTimeout(timer);draw(status);if(status.installing)timer=setTimeout(poll,500);}
    catch(error){requesting=false;draw({...c.speech,error:error.message});}
