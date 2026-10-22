@@ -586,6 +586,9 @@ function openThread(sidv, id, push) {
   $("t-status").className = "status hidden";
   $("t-ring").innerHTML = "";
   $("feed").innerHTML = `<div class="empty">${loadingHTML("Loading Chat")}</div>`;
+  rememberAnswers();
+  $('composer').prepend($('voice-panel'));
+  lastCards = '';
   $("dockcards").innerHTML = "";
   $("banner").classList.add("hidden");
   renderComposer();
