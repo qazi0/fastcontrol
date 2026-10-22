@@ -37,6 +37,7 @@ const I = {
   share: svg('<path d="M4 12v7a2 2 0 002 2h12a2 2 0 002-2v-7M16 6l-4-4-4 4M12 2v13"/>'),
   download: svg('<path d="M12 3v12M7 10l5 5 5-5M4 16v4h16v-4"/>'),
   plus: svg('<path d="M12 5v14M5 12h14"/>'),
+  photo: svg('<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="M3 16l5-5 4 4 3-3 6 6"/>'),
   minus: svg('<path d="M5 12h14"/>'),
   trash: svg('<path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/>'),
   close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
@@ -928,6 +929,14 @@ function stepHTML(s, t, key, active = false) {
 }
 
 function hiddenTool(it) { return it?.k === "tool" && (it.title || "").replace(/__/g, ".").endsWith("cua_repl.js"); }
+function userMessageHTML(text) {
+  const render = parts => parts.map(part => {
+    if (part.kind === "reply") return `<div class="question-reply"><div class="answered-question">${esc(part.question)}</div><div class="answered-value">${esc(part.answer)}</div></div>`;
+    if (part.kind === "context") return part.text || part.parts?.length ? `<details class="message-context"><summary>${esc(part.title)}</summary><div>${part.parts ? render(part.parts) : esc(part.text)}</div></details>` : `<div class="message-context">${esc(part.title)}</div>`;
+    return `<div>${esc(part.text)}</div>`;
+  }).join("");
+  return render(MessageContent.parse(text));
+}
 function turnHTML(t, animate = false) {
   const items = (t.items || []).filter((it) => it && (!hiddenTool(it) || it.images?.length || it.audio?.length));
   const running = t.status === "inProgress";
@@ -951,7 +960,7 @@ function turnHTML(t, animate = false) {
   items.forEach((it, i) => {
     if (it.k === "user") {
       flush();
-      out += `<div class="u${userSeen ? " steer" : ""}" data-entry="${esc(t.key+":"+(it.id||i))}">${esc((it.text || "").replace(/\[Image\]/g, it.images?.length ? "" : "[Image]").trim())}${imagesHTML(it.images)}${audioHTMLs(it.audio)}</div>`;
+      out += `<div class="u${userSeen ? " steer" : ""}" data-entry="${esc(t.key+":"+(it.id||i))}">${userMessageHTML((it.text || "").replace(/\[Image\]/g, it.images?.length ? "" : "[Image]").trim())}${imagesHTML(it.images)}${audioHTMLs(it.audio)}</div>`;
       userSeen = true;
     } else if (it.k === "assistant") {
       flush();
@@ -1265,6 +1274,16 @@ function optionHTML(label, description, action) {
   const title = label.replace(/\s*\(Recommended\)\s*$/i, '');
   return `<button class="opt" ${action}="${esc(label)}"${action === 'data-pick' ? ' aria-pressed="false"' : ''}><span class="choice-mark" aria-hidden="true"></span><span class="choice-text"><span class="choice-title">${esc(title)}</span>${description ? `<span class="choice-desc">${esc(description)}</span>` : ''}</span>${recommended ? '<span class="recommended">Recommended</span>' : ''}</button>`;
 }
+function answerFieldHTML(key, secret = false) {
+  return `<div class="answer-field"><label for="answer-${esc(key)}">Your Answer</label><div class="answer-entry"><input id="answer-${esc(key)}" data-other data-answer-key="${esc(key)}" placeholder="Write Your Answer" type="${secret ? 'password' : 'text'}" enterkeyhint="done">${Native?.startVoice && !secret ? `<button type="button" class="icon-btn answer-mic" data-answer-voice="${esc(key)}" aria-label="Record Answer">${$('voice').innerHTML}</button>` : ''}</div></div>`;
+}
+function answerKey(card, question) { return JSON.stringify([S.provider,S.sid,S.id,card,question]); }
+function answerInput(key) { return [...$('dockcards').querySelectorAll('[data-answer-key]')].find(el => el.dataset.answerKey === key); }
+const answerDrafts = new Map();
+function rememberAnswers() {
+  for (const el of $('dockcards').querySelectorAll('[data-answer-key]')) answerDrafts.set(el.dataset.answerKey,{text:el.value,value:el.closest('.qq').dataset.value});
+  while (answerDrafts.size > 100) answerDrafts.delete(answerDrafts.keys().next().value);
+}
 let lastCards = "";
 function renderCards() {
   const m = S.meta || {};
@@ -1283,7 +1302,7 @@ function renderCards() {
     } else if (q.kind === "question") {
       const body = (q.questions || []).map((x, index) => `<section class="qq" data-q="${esc(x.id)}" aria-label="${esc(x.header || 'Question ' + (index + 1))}">${x.header ? `<div class="q-h">${esc(x.header)}</div>` : ""}<div class="q md">${md(x.question)}</div>` +
         `<div class="opts">${(x.options || []).map((o, i) => optionHTML(o, x.descriptions?.[i], 'data-pick')).join("")}</div>` +
-        (x.other || !(x.options || []).length ? `<label class="answer-field"><span>Your Answer</span><input data-other placeholder="Write Your Answer" type="${x.secret ? "password" : "text"}"></label>` : "") + "</section>").join("") +
+        (x.other || !(x.options || []).length ? answerFieldHTML(answerKey(key,x.id),x.secret) : "") + "</section>").join("") +
         `<div class="btns"><button class="btn primary" data-answer="${esc(q.id)}">Send Answer</button></div>`;
       h += cardHTML(key, "Your Input", (q.questions || [])[0]?.question || "Your Input", body);
     } else {
@@ -1292,16 +1311,31 @@ function renderCards() {
   }
   const ask = pendingAsk();
   if (ask) {
-    const body = ask.item.asks.map((a,index) => `<section class="qq" data-async="${index}" data-title="${esc(a.title)}"><div class="q md">${md(a.title)}</div><div class="opts">${(a.options || []).map((o,i)=>optionHTML(o,a.descriptions?.[i],'data-pick')).join('')}</div><label class="answer-field"><span>Your Answer</span><input data-other placeholder="Write Your Answer" enterkeyhint="done"></label></section>`).join('') + '<div class="btns"><button class="btn primary" data-async-answer="1">Send Answer</button></div>';
+    const body = ask.item.asks.map((a,index) => `<section class="qq" data-async="${index}" data-title="${esc(a.title)}"><div class="q md">${md(a.title)}</div><div class="opts">${(a.options || []).map((o,i)=>optionHTML(o,a.descriptions?.[i],'data-pick')).join('')}</div>${answerFieldHTML(answerKey("a:" + ask.key,index))}</section>`).join('') + '<div class="btns"><button class="btn primary" data-async-answer="1">Send Answer</button></div>';
     h += cardHTML("a:" + ask.key, "Your Input", ask.item.asks[0].title, body);
   }
   // Re-rendering would wipe a half-typed answer, so skip identical markup.
   if (h === lastCards) return;
+  rememberAnswers();
+  // The recording strip has one owner even when a question card is replaced.
+  $('composer').prepend($('voice-panel'));
   lastCards = h;
   $("dockcards").innerHTML = h;
+  for (const el of $('dockcards').querySelectorAll('[data-answer-key]')) {
+    const draft = answerDrafts.get(el.dataset.answerKey);
+    const voice = store.get(voiceDraftKey(S.sid,S.id,S.provider,el.dataset.answerKey),null);
+    el.value = draft?.text ?? voice?.text ?? '';
+    if (draft?.value) {
+      const qq=el.closest('.qq'); qq.dataset.value=draft.value;
+      for (const button of qq.querySelectorAll('[data-pick]')) {const on=button.dataset.pick===draft.value;button.classList.toggle('on',on);button.setAttribute('aria-pressed',String(on));}
+    }
+  }
+  renderVoice();
 }
 $("dockcards").addEventListener("click", async (e) => {
   const t = e.target;
+  const mic = t.closest('[data-answer-voice]');
+  if (mic) { startVoice(mic.dataset.answerVoice); return; }
   const mn = t.closest("[data-min]");
   if (mn) {
     const k = mn.dataset.min;
@@ -1320,6 +1354,7 @@ $("dockcards").addEventListener("click", async (e) => {
     return;
   }
   if(t.closest('[data-async-answer]')) {
+    if (voiceState.phase !== 'idle') return;
     const parts=[];
     for(const question of t.closest('.card').querySelectorAll('.qq')) {
       const value=question.querySelector('[data-other]').value.trim()||question.dataset.value;
@@ -1340,6 +1375,7 @@ $("dockcards").addEventListener("click", async (e) => {
     return;
   }
   if (t.closest("[data-answer]")) {
+    if (voiceState.phase !== 'idle') return;
     const answers = {};
     for (const el of card.querySelectorAll(".qq")) {
       const other = el.querySelector("[data-other]");
@@ -1422,35 +1458,49 @@ $("t-ring").onclick = () => openSheet("context");
 
 // Audio stays on the phone until Transcribe is pressed. The transcript is a
 // draft in the composer, never a message sent automatically to Codex.
-const voiceState = { phase: "idle", id: "", server: null, base: "", native:false, levels: Array(24).fill(0.08) };
+const voiceState = { phase: "idle", id: "", target:"", server: null, base: "", native:false, levels: Array(24).fill(0.08) };
 let voicePageReady = false;
 const cancelledVoices = new Set();
-function voiceDraftKey(server = S.sid, thread = S.id, provider = S.provider) { return "voice-draft:" + provider + ":" + server + ":" + thread; }
+function voiceDraftKey(server = S.sid, thread = S.id, provider = S.provider, target = "") { return "voice-draft:" + provider + ":" + server + ":" + thread + (target ? ":answer:" + target : ""); }
+function voiceInput() { return voiceState.target ? answerInput(voiceState.target) : input; }
+function currentVoiceDraftKey() { return voiceDraftKey(S.sid,S.id,S.provider,voiceState.target); }
 function keepVoiceDraft(event) {
   if (!S.id) return;
-  const key = voiceDraftKey(), previous = store.get(key, null);
-  if (voiceState.phase !== "idle" || (previous && event?.type === "input")) store.set(key, { id:previous?.id || "", text:input.value });
-  if (voiceState.id && Native?.updateVoiceDraft) Native.updateVoiceDraft(voiceState.id, input.value);
+  const field=voiceInput(); if (!field || (event && event.target !== field)) return;
+  const key = currentVoiceDraftKey(), previous = store.get(key, null);
+  if (voiceState.phase !== "idle" || (previous && event?.type === "input")) store.set(key, { id:previous?.id || "", text:field.value });
+  if (voiceState.id && Native?.updateVoiceDraft) Native.updateVoiceDraft(voiceState.id, field.value);
 }
-input.addEventListener("input", keepVoiceDraft);
+input.addEventListener("input", e => {
+  if (!voiceState.target) {keepVoiceDraft(e);return;}
+  const key=voiceDraftKey(), previous=store.get(key,null);
+  store.set(key,{id:previous?.id || voiceState.id,text:input.value});
+});
+$('dockcards').addEventListener('input', e => {
+  if (!e.target.matches('[data-other]')) return;
+  rememberAnswers();
+  const key=voiceDraftKey(S.sid,S.id,S.provider,e.target.dataset.answerKey), previous=store.get(key,null);
+  if (previous) store.set(key,{id:previous.id,text:e.target.value});
+  keepVoiceDraft(e);
+});
 window.restoreVoiceSession = () => {
   if (!voicePageReady || !Native?.getVoiceSession || document.hidden) return;
   let state;
   try { state = JSON.parse(Native.getVoiceSession()); } catch { return; }
   if (!state.id) {
-    if (voiceState.native && voiceState.phase !== "idle") { voiceState.phase="idle";voiceState.id="";renderVoice(); }
+    if (voiceState.native && voiceState.phase !== "idle") { voiceState.phase="idle";voiceState.id="";voiceState.target="";renderVoice(); }
     return;
   }
   const terminal = ["transcript","error","cancelled"].includes(state.phase);
   if (state.phase === "cancelled" || cancelledVoices.has(state.id)) {
-    if (voiceState.id === state.id) {voiceState.phase="idle";voiceState.id="";renderVoice();}
+    if (voiceState.id === state.id) {voiceState.phase="idle";voiceState.id="";voiceState.target="";renderVoice();}
     if (terminal) Native.acknowledgeVoice(state.id);
     return;
   }
   const server = S.servers.find(s => s.id === state.server);
   if (!server) {
     Native.cancelVoiceSession?.(state.id); Native.acknowledgeVoice(state.id);
-    voiceState.phase="idle";voiceState.id="";renderVoice();return;
+    voiceState.phase="idle";voiceState.id="";voiceState.target="";renderVoice();return;
   }
   if (state.thread && (S.view !== "thread" || S.sid !== state.server || S.id !== state.thread || S.provider !== state.provider)) {
     voiceState.phase="idle";voiceState.id="";
@@ -1459,11 +1509,11 @@ window.restoreVoiceSession = () => {
     history.replaceState({view:"thread",sid:state.server,id:state.thread,provider:state.provider}, "");
   }
   const changed = voiceState.id !== state.id;
-  voiceState.id=state.id;voiceState.server=server;voiceState.base=state.base;voiceState.native=true;
+  voiceState.id=state.id;voiceState.target=store.get('voice-target:'+state.id,'');voiceState.server=server;voiceState.base=state.base;voiceState.native=true;
   voiceState.phase=terminal ? "transcribing" : state.phase;
   if (changed) {
-    const cached = store.get(voiceDraftKey(), null);
-    if (!input.value) input.value = cached?.text ?? state.draft ?? "";
+    const cached = store.get(currentVoiceDraftKey(), null), field=voiceInput();
+    if (field && !field.value) field.value = cached?.text ?? state.draft ?? "";
     voiceState.levels=Array(24).fill(0.08);
   }
   if (Array.isArray(state.levels) && state.levels.length) {
@@ -1476,12 +1526,26 @@ window.restoreVoiceSession = () => {
 };
 function renderVoice() {
   const active = voiceState.phase !== "idle";
+  const field=voiceState.target && answerInput(voiceState.target);
+  const panel=$('voice-panel');
+  const owner=active && field ? field.closest('.answer-field') : $('composer');
+  if (panel.parentElement !== owner) owner.prepend(panel);
+  panel.classList.toggle('answer-recording',!!field && active);
   $("voice-panel").classList.toggle("hidden", !active);
   input.classList.remove("hidden");
   $("composer").querySelector(".tools").classList.remove("hidden");
-  $("voice").disabled = voiceState.phase === "transcribing" || voiceState.phase === "preparing";
-  $("voice").classList.toggle("voice-active", active);
-  $("voice").setAttribute("aria-pressed", String(active));
+  const busy = voiceState.phase === 'transcribing' || voiceState.phase === 'preparing';
+  $("voice").disabled = busy || (active && !!voiceState.target);
+  $("voice").classList.toggle("voice-active", active && !voiceState.target);
+  $("voice").setAttribute("aria-pressed", String(active && !voiceState.target));
+  for (const button of $('dockcards').querySelectorAll('[data-answer-voice]')) {
+    const own=active && button.dataset.answerVoice===voiceState.target;
+    button.disabled=busy || (active && !own);
+    button.classList.toggle('voice-active',own);
+    button.setAttribute('aria-pressed',String(own));
+    button.setAttribute('aria-label',own && voiceState.phase==='recording' ? 'Stop And Transcribe Answer' : 'Record Answer');
+  }
+  for (const button of $('dockcards').querySelectorAll('[data-answer], [data-async-answer]')) button.disabled=active;
   $("voice").setAttribute("aria-label", voiceState.phase === "recording" ? "Stop And Transcribe" : active ? "Transcribing Voice" : "Record Voice");
   $("send").disabled = active;
   $("voice-label").textContent = voiceState.phase === "recording" ? "Listening" : voiceState.phase === "transcribing" ? "Transcribing" : "Starting";
@@ -1494,7 +1558,7 @@ function cancelVoice() {
   cancelledVoices.add(cancelledId);
   while (cancelledVoices.size > 32) cancelledVoices.delete(cancelledVoices.values().next().value);
   keepVoiceDraft();
-  voiceState.phase = "idle"; voiceState.id = "";
+  voiceState.phase = "idle"; voiceState.id = ""; voiceState.target="";
   if (Native?.cancelVoiceSession) Native.cancelVoiceSession(cancelledId);
   else if (Native?.cancelVoice) Native.cancelVoice();
   renderVoice();
@@ -1507,11 +1571,20 @@ async function speechCapability(c) {
   } catch { c.speech = { available: false }; }
   c.speechAt = Date.now(); return c.speech;
 }
-$("voice").onclick = async () => {
-  if (voiceState.phase === "recording") { transcribeVoice(); return; }
+$("voice").onclick = () => startVoice('');
+async function startVoice(target = '') {
+  if (voiceState.phase === "recording" && voiceState.target === target) { transcribeVoice(); return; }
   if (!Native?.startVoice || voiceState.phase !== "idle") return;
+  const field=target ? answerInput(target) : input;
+  if (!field || field.type === 'password') return;
   pauseChatAudio();
+  voiceState.target=target;
   voiceState.id = sid(); voiceState.native=false; const request = voiceState.id;
+  store.set('voice-target:'+request,target);
+  if (target) {
+    const key=voiceDraftKey(), previous=store.get(key,null);
+    store.set(key,{id:previous?.id || request,text:input.value});
+  }
   voiceState.phase = "preparing"; renderVoice();
   const c = conn();
   if (!c?.ok) {cancelVoice();toast("Connect To This Computer First");return;}
@@ -1522,15 +1595,17 @@ $("voice").onclick = async () => {
   voiceState.levels.fill(0.08);
   $("voice-time").textContent = "0:00";
   $("voice-wave").innerHTML = voiceState.levels.map(() => '<span style="transform:scaleY(0.08)"></span>').join("");
+  const draft=voiceInput();
+  if (!draft) {cancelVoice();return;}
   buzz();
   keepVoiceDraft();
   if (Native.startVoiceSession) {
     voiceState.native=true;
-    Native.startVoiceSession(request,c.s.id,c.base,S.id,S.provider,!!capability.formats?.includes("aac"),input.value);
+    Native.startVoiceSession(request,c.s.id,c.base,S.id,S.provider,!!capability.formats?.includes("aac"),draft.value);
   }
   else if (capability.formats?.includes("aac") && Native.startVoiceCompressed) Native.startVoiceCompressed(request);
   else Native.startVoice(request);
-};
+}
 $("voice-cancel").onclick = cancelVoice;
 function transcribeVoice() {
   if (voiceState.phase !== "recording") return;
@@ -1551,17 +1626,19 @@ window.onVoiceEvent = (e) => {
     const sec = Math.floor(e.seconds); $("voice-time").textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
   } else if (e.type === "transcript") {
     const text = (e.text || "").trim();
-    const key=voiceDraftKey(), cached=store.get(key,null);
-    if (cached?.id !== e.id) {
-      input.value = [input.value.trimEnd(), text].filter(Boolean).join(" ");
-      store.set(key,{id:e.id,text:input.value});
-    } else input.value=cached.text;
-    voiceState.phase = "idle"; voiceState.id = ""; renderVoice(); autosize(); if (!document.hidden) input.focus();
+    const key=currentVoiceDraftKey(), cached=store.get(key,null), field=voiceInput();
+    const value=cached?.id === e.id ? cached.text : [field?.value.trimEnd() ?? cached?.text ?? e.draft ?? '',text].filter(Boolean).join(' ');
+    store.set(key,{id:e.id,text:value});
+    if (field) field.value=value;
+    if (voiceState.target) {const previous=answerDrafts.get(voiceState.target);answerDrafts.set(voiceState.target,{...previous,text:value});}
+    const wasAnswer=!!voiceState.target;
+    voiceState.phase = "idle"; voiceState.id = ""; voiceState.target=''; renderVoice(); autosize(); if (!document.hidden && field) field.focus();
+    if (wasAnswer && !field) toast('Voice Answer Saved To Its Question');
     Native?.acknowledgeVoice?.(e.id);
     mark("voiceTranscript");
     window.lastVoiceTiming = { serverMs: e.durationMs, totalMs: e.totalMs, audioBytes:e.audioBytes, uploadBytes:e.uploadBytes };
   } else if (e.type === "error") {
-    voiceState.phase="idle";voiceState.id="";renderVoice();
+    voiceState.phase="idle";voiceState.id="";voiceState.target="";renderVoice();
     Native?.acknowledgeVoice?.(e.id);toast(nice(e.message));
   }
 };
@@ -1635,7 +1712,6 @@ async function applySettings(ch, label) {
 
 // Attachments stay on the selected computer. Android reads provider URIs directly.
 let fileTarget = "thread";
-const imageUploads = new Map();
 const attachmentBatches = new Map();
 window.onImageUpload = (event) => {
   const batch = attachmentBatches.get(event.batch);
@@ -1666,35 +1742,11 @@ window.onImageUpload = (event) => {
     if (batch.selected && !batch.items.size) attachmentBatches.delete(event.batch);
     return;
   }
-  const pending = imageUploads.get(event.id);
-  if (!pending) return;
-  imageUploads.delete(event.id); clearTimeout(pending.timer);
-  if (event.ok && event.path) pending.resolve(event.path);
-  else pending.reject(new Error(event.message || "Could Not Upload Image. Try Again"));
 };
-function imageDataURL(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error("Could Not Read This Image. Choose It Again"));
-    reader.onabort = () => reject(new Error("Image Reading Was Cancelled"));
-    reader.readAsDataURL(blob);
-  });
-}
 async function uploadImage(blob, server, url, name) {
   if (blob.size > 25 * 1024 * 1024) throw new Error("Image Must Be Smaller Than 25 MB");
   const mime = blob.type || "application/octet-stream";
-  if (Native?.uploadImage && mime.startsWith("image/")) {
-    const data = await imageDataURL(blob);
-    return new Promise((resolve, reject) => {
-      const id = sid();
-      const timer = setTimeout(() => { imageUploads.delete(id); reject(new Error("Image Upload Timed Out. Try Again")); }, 60000);
-      imageUploads.set(id, { resolve, reject, timer });
-      try { Native.uploadImage(id, server.id, url, mime, data.slice(data.indexOf(",") + 1)); }
-      catch (error) { clearTimeout(timer); imageUploads.delete(id); reject(error); }
-    });
-  }
-  const body = new Blob([await blob.arrayBuffer()], { type: mime });
+  const body = blob;
   const urls = [...new Set([url, server.url, ...(server.alts || [])])];
   for (const address of urls) {
     let response;
@@ -1709,15 +1761,20 @@ async function uploadImage(blob, server, url, name) {
   }
   throw new Error("Could Not Reach This Computer. Check Its Connection And Try Again");
 }
-function pickAttachments(target) {
+function pickAttachments(target, kind) {
   fileTarget = target;
+  if (!kind && Native?.pickPhotos) {openSheet('attachments',{target});return;}
   if (!Native?.pickAttachments) { $("file").click(); return; }
   const serverId = target === "new" ? S.newDraft?.sid : S.sid;
   const server = S.servers.find(s => s.id === serverId);
   if (!server) return;
   const id = sid(), list = target === "new" ? S.newAttach : S.attach;
   attachmentBatches.set(id, {list, target, server, items:new Map(), selected:false});
-  try { Native.pickAttachments(id, server.id, conns.get(server.id)?.base || server.url); }
+  try {
+    const address=conns.get(server.id)?.base || server.url;
+    if (kind === 'photos' && Native.pickPhotos) Native.pickPhotos(id,server.id,address);
+    else Native.pickAttachments(id, server.id, address);
+  }
   catch { attachmentBatches.delete(id); toast("Could Not Open File Picker"); }
 }
 $("attach").onclick = () => pickAttachments("thread");
@@ -1853,6 +1910,14 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.sheet)
 const mi = (act, icon, name, d = "", side = "", cls = "") => `<button class="mi ${cls}" data-act="${act}">${icon || ""}<span class="txt">${name}${d ? `<span class="d">${d}</span>` : ""}</span>${side}</button>`;
 
 const SHEETS = {
+ attachments(sh, {target}) {
+  sh.innerHTML='<div class="grip"></div><h2>Add Attachment</h2>'+mi('photos',I.photo,'Photos')+mi('files',I.folder,'Files','PDFs, Documents And Other Files');
+  sh.onclick=e=>{
+    const choice=e.target.closest('[data-act]');if(!choice)return;
+    if(target==='new')openSheet('new');else closeSheet();
+    pickAttachments(target,choice.dataset.act);
+  };
+ },
  speech(sh, opts) {
   const c=conns.get(opts.server),generation=sheetGeneration;
   if(!c){closeSheet(true);return;}
@@ -2228,9 +2293,9 @@ window.onAndroidIntent = function () {
           cancelledVoices.add(capture.id);
           while (cancelledVoices.size>32) cancelledVoices.delete(cancelledVoices.values().next().value);
           if (["transcript","error","cancelled"].includes(capture.phase)) {
-            const key=voiceDraftKey(capture.server,capture.thread,capture.provider), previous=store.get(key,null);
+            const key=voiceDraftKey(capture.server,capture.thread,capture.provider,store.get('voice-target:'+capture.id,'')), previous=store.get(key,null);
             if (previous?.id !== capture.id) store.set(key,{id:capture.id,text:[previous?.text ?? capture.draft ?? "",capture.phase === "transcript" ? (capture.text || "").trim() : ""].filter(Boolean).join(" ")});
-            if (S.sid===capture.server && S.id===capture.thread && S.provider===capture.provider) {input.value="";voiceState.phase="idle";voiceState.id="";renderVoice();autosize();}
+            if (S.sid===capture.server && S.id===capture.thread && S.provider===capture.provider) {input.value="";voiceState.phase="idle";voiceState.id="";voiceState.target="";renderVoice();autosize();}
             Native.acknowledgeVoice(capture.id);
           } else Native.cancelVoiceSession(capture.id);
         }
