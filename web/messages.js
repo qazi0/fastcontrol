@@ -66,5 +66,36 @@ const MessageContent = (() => {
     }
     flush(); return parts;
   }
-  return {parse};
+  function fileCitation(body) {
+    const fields = new Map();
+    const attribute = /\s*([a-zA-Z_]\w*)\s*=\s*("(?:\\.|[^"\\])*"|'[^']*'|\d+)/y;
+    let at = 0;
+    while (body.slice(at).trim()) {
+      attribute.lastIndex = at;
+      const match = attribute.exec(body);
+      if (!match || fields.has(match[1])) return null;
+      let value = match[2];
+      try { value = value.startsWith('"') ? JSON.parse(value) : value.replace(/^'|'$/g, ''); } catch { return null; }
+      fields.set(match[1], value); at = attribute.lastIndex;
+    }
+    const path = fields.get('path');
+    if (typeof path !== 'string' || !/^(\/|[a-z]:[\\/])/i.test(path) || /[\u0000-\u001f]/.test(path)) return null;
+    let label = path.split(/[\\/]/).pop() || 'Source File';
+    const start = fields.get('line_start') ?? fields.get('start_line') ?? fields.get('line');
+    const end = fields.get('line_end') ?? fields.get('end_line');
+    if (/^[1-9]\d*$/.test(start || '')) {
+      label += ':' + start;
+      if (/^[1-9]\d*$/.test(end || '') && Number(end) > Number(start)) label += '-' + end;
+    }
+    return {path, label};
+  }
+  function renderFileCitations(text, render) {
+    // Inline code is literal. Fenced blocks are separated by the Markdown renderer.
+    return text.replace(/(`+)[^\n]*?\1|:{1,2}codex-file-citation\{((?:[^"'{}\n]|"(?:\\.|[^"\\])*"|'[^']*')*)\}/g, (match, code, body) => {
+      if (code) return match;
+      const citation = fileCitation(body);
+      return citation ? render(citation) : 'Source Unavailable';
+    });
+  }
+  return {parse, renderFileCitations};
 })();

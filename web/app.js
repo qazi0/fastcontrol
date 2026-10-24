@@ -1022,7 +1022,7 @@ function isAudioPath(path) { return /\.(mp3|wav|m4a|aac|ogg|opus|flac|aiff?)(?:[
 function fileHTML(path, label, iconOnly = false) {
   path = audioPath(path);
   const name = base(path.split(/[?#]/)[0]) || "File";
-  return `<button type="button" class="file-download${iconOnly ? " icon-btn" : ""}" data-file-path="${esc(path)}" data-file-server="${esc(S.sid)}" aria-label="Download ${esc(name)}">${I.download}${iconOnly ? "" : `<span>${esc(label || name)}</span>`}</button>`;
+  return `<button type="button" class="file-download${iconOnly ? " icon-btn" : ""}" data-file-path="${esc(path)}" data-file-server="${esc(S.sid)}" title="${esc(path)}" aria-label="Download ${esc(label || name)}">${I.download}${iconOnly ? "" : `<span>${esc(label || name)}</span>`}</button>`;
 }
 document.addEventListener("click", async event => {
   const button = event.target.closest("[data-file-path]");
@@ -1151,6 +1151,10 @@ function md(src) {
   src = src.replace(/```[^\n]*\n([\s\S]*?)(```|$)/g, (_, code) => { blocks.push(code.replace(/\n$/, "")); return `\u0000${blocks.length - 1}\u0000`; });
   const inline = (s) => {
     const images = [];
+    s = MessageContent.renderFileCitations(s, ({path, label}) => {
+      images.push(fileHTML(path, label));
+      return `\u0001${images.length - 1}\u0001`;
+    });
     s = s.replace(/`[^`\n]+`|(!?)\[([^\]]*)\]\(([^)\n]+)\)/g, (match, image, alt, path) => {
       if (match.startsWith("`")) return match;
       if (isAudioPath(path)) images.push(audioHTML(path, alt));
