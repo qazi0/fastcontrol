@@ -3,11 +3,16 @@
 // Presentation only. Keep the original transcript and provider input intact.
 const MessageContent = (() => {
   const tags = new Set(["send_user_message_question_reply", "environment_context", "external_codex_apps_open_page", "heartbeat", "INSTRUCTIONS", "local-command-caveat", "command-name", "command-args", "command-message", "local-command-stdout", "system-reminder", "task-notification", "pasted_content"]);
-  function field(body, name) {
-    const match = body.match(new RegExp("<" + name + ">([\\s\\S]*?)</" + name + ">"));
-    return match ? match[1].trim() : "";
+  function trimClosingPrefix(text, name) {
+    const close = '</' + name + '>';
+    for (let n = close.length - 1; n > 0; n--) if (text.endsWith(close.slice(0,n))) return text.slice(0,-n);
+    return text;
   }
-  function parse(text, depth = 0) {
+  function field(body, name, partial = false) {
+    const match = body.match(new RegExp("<" + name + ">([\\s\\S]*?)(?:</" + name + ">" + (partial ? "|$" : "") + ")"));
+    return match ? (partial && !match[0].endsWith('</' + name + '>') ? trimClosingPrefix(match[1], name) : match[1]).trim() : "";
+  }
+  function parse(text, depth = 0, streaming = false) {
     if (depth >= 8) return [{kind:"text", text:"Additional Session Context"}];
     const parts = [];
     let plain = [], fence = null;
@@ -21,20 +26,26 @@ const MessageContent = (() => {
         plain.push(line); continue;
       }
       const open = !fence && line.match(/^\s*<([\w-]+)>/);
-      if (!open || !tags.has(open[1])) { plain.push(line); continue; }
+      if (!open || !tags.has(open[1])) {
+        const prefix = !fence && streaming && line.match(/^\s*<([\w-]*)$/);
+        if (prefix && [...tags].some(tag => tag.startsWith(prefix[1]))) continue;
+        plain.push(line); continue;
+      }
       const tag = open[1], close = "</" + tag + ">";
       let end = i;
       while (end < lines.length && !lines[end].includes(close)) end++;
-      if (end === lines.length) { plain.push(line); continue; }
-      const block = lines.slice(i, end + 1).join("\n"), at = block.indexOf(close);
-      const body = block.slice(block.indexOf(">") + 1, at).trim();
+      const partial = end === lines.length;
+      if (partial && !streaming) { plain.push(line); continue; }
+      const block = lines.slice(i, end + 1).join("\n"), at = partial ? block.length : block.indexOf(close);
+      const raw = block.slice(block.indexOf(">") + 1, at);
+      const body = (partial ? trimClosingPrefix(raw,tag) : raw).trim();
       flush(); i = end;
       if (tag === "send_user_message_question_reply") {
         let replies;
         try { replies = JSON.parse(body); } catch {}
         if (Array.isArray(replies) && replies.length && replies.every(r => r && typeof r.question === "string" && typeof r.answer === "string")) {
           for (const reply of replies) parts.push({kind:"reply", question:reply.question, answer:reply.answer});
-        } else parts.push({kind:"text", text:"Answered a question"});
+        } else if (!partial) parts.push({kind:"text", text:"Answered a question"});
       } else if (tag === "external_codex_apps_open_page") {
         let page;
         try {page = JSON.parse(body);}catch {}
@@ -44,13 +55,17 @@ const MessageContent = (() => {
         const rows = Object.entries(labels).map(([key,label]) => { const value = field(body,key); return value ? label + ": " + value : ""; }).filter(Boolean);
         parts.push({kind:"context", title:"Session Context", text:rows.join("\n")});
       } else if (tag === "heartbeat") {
-        parts.push({kind:"context", title:"Scheduled Check", text:field(body,"instructions")});
+        if (body.includes('<message>')) parts.push(...parse(field(body,"message",partial),depth + 1,streaming));
+        else if (!partial || body.includes('<instructions>')) {
+          const instructions = field(body,"instructions",partial);
+          if (instructions || !body.includes('<decision>')) parts.push({kind:"context", title:"Scheduled Check", text:instructions});
+        }
       } else if (tag === "task-notification") {
         const status = field(body,"status");
         const title = {completed:"Task Completed", failed:"Task Failed", stopped:"Task Stopped", running:"Task Running"}[status] || "Task Update";
-        parts.push({kind:"context", title, text:[field(body,"summary"),field(body,"result")].filter(Boolean).join("\n\n")});
+        parts.push({kind:"context", title, text:[field(body,"summary",partial),field(body,"result",partial)].filter(Boolean).join("\n\n")});
       } else if (tag === "system-reminder" || tag === "pasted_content") {
-        parts.push({kind:"context", title:tag === "system-reminder" ? "Session Note" : "Pasted Text", parts:parse(body, depth + 1)});
+        parts.push({kind:"context", title:tag === "system-reminder" ? "Session Note" : "Pasted Text", parts:parse(body, depth + 1,streaming)});
       } else if (tag === "INSTRUCTIONS") {
         // The desktop prepends this heading to its project instruction envelope.
         if (parts.at(-1)?.kind === "text" && /^# AGENTS\.md instructions\s*$/.test(parts.at(-1).text)) parts.pop();

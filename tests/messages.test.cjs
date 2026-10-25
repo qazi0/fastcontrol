@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const context = vm.createContext({});
 vm.runInContext(fs.readFileSync('web/messages.js', 'utf8') + '\nthis.parse = MessageContent.parse; this.renderFileCitations = MessageContent.renderFileCitations;', context);
 const parse = text => JSON.parse(JSON.stringify(context.parse(text)));
+const heartbeat = '<heartbeat>\n<automation_id>internal-check-id</automation_id>\n<decision>NOTIFY</decision>\n<message>Final verification and scoped shutdown completed. **All records match.**\n\nReport: [Final Report](/reports/final report.md).</message>\n</heartbeat>';
 
 test('question replies expose questions and answers without transport identifiers', () => {
   const replies = [{questionItemId:'private-call-id',question:'Which folder?',answer:'My reports'}, {question:'Continue?',answer:'Yes'}];
@@ -29,6 +30,20 @@ test('scheduled checks and local commands hide protocol scaffolding', () => {
   assert.deepEqual(parse('<heartbeat><automation_id>private</automation_id><instructions>Check the build.</instructions></heartbeat>\n<command-name>/status</command-name>'), [
     {kind:'context',title:'Scheduled Check',text:'Check the build.'}, {kind:'context',title:'Command',text:'/status'}
   ]);
+});
+test('scheduled results retain their report and omit automation routing fields', () => {
+  assert.deepEqual(parse(heartbeat),[{kind:'text',text:'Final verification and scoped shutdown completed. **All records match.**\n\nReport: [Final Report](/reports/final report.md).'}]);
+  assert.deepEqual(parse('<heartbeat><automation_id>internal-check-id</automation_id><decision>SILENT</decision><message></message></heartbeat>'),[]);
+  assert.deepEqual(parse('<heartbeat><automation_id>internal-check-id</automation_id><decision>SILENT</decision></heartbeat>'),[]);
+});
+test('streamed scheduled results never expose partial transport tags or IDs', () => {
+  for (let n=1;n<=heartbeat.length;n++) {
+    const result=JSON.stringify(context.parse(heartbeat.slice(0,n),0,true));
+    assert.doesNotMatch(result,/<\/?|automation_id|internal-check-id|NOTIFY|decision>/, 'prefix '+n);
+  }
+  const literal='```xml\n'+heartbeat+'\n```';
+  assert.deepEqual(parse(literal),[{kind:'text',text:literal}]);
+  assert.deepEqual(parse('Example: `<heartbeat>hello</heartbeat>`'),[{kind:'text',text:'Example: `<heartbeat>hello</heartbeat>`'}]);
 });
 test('Claude task notices show the result and omit internal paths and IDs', () => {
   const result = parse('<system-reminder>\n<task-notification><task-id>private</task-id><output-file>/private/output</output-file><status>completed</status><summary>Checked the files</summary><result>Everything passed.</result></task-notification>\n</system-reminder>');
@@ -70,4 +85,27 @@ test('Markdown file citations use escaped, host-scoped downloads and preserve li
   assert.doesNotMatch(unsafe,/<img/);
   assert.match(unsafe,/&lt;img onerror=alert\(1\)&gt;/);
   assert.match(renderer.md(citation+' and '+citation),/file-download[\s\S]*file-download/);
+});
+
+test('assistant responses and user messages share envelope formatting without losing Markdown', () => {
+  const app=fs.readFileSync('web/app.js','utf8');
+  const renderer=vm.createContext({
+    S:{sid:'selected-host'}, I:{download:'<svg></svg>'},
+    esc:s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
+    base:s=>s.split(/[\\/]/).pop(),MessageContent:context.MessageContent || {parse:context.parse,renderFileCitations:context.renderFileCitations},isAudioPath:()=>false,
+  });
+  vm.runInContext(app.slice(app.indexOf('function audioPath('),app.indexOf('document.addEventListener("click", async event => {',app.indexOf('function audioPath(')))+app.slice(app.indexOf('function md(src)'),app.indexOf('// ------------------------------------------------------------- thread meta'))+app.slice(app.indexOf('function messageHTML('),app.indexOf('function turnHTML(')),renderer);
+  const html=renderer.messageHTML(heartbeat,true);
+  assert.match(html,/<b>All records match\.<\/b>/);
+  assert.match(html,/data-file-path="\/reports\/final report.md"/);
+  assert.match(html,/<span>Final Report<\/span>/);
+  assert.doesNotMatch(html,/heartbeat|automation_id|internal-check-id|NOTIFY|&lt;\/?message/);
+  assert.match(renderer.messageHTML('<system-reminder>\n**Session note**\n</system-reminder>',true),/<b>Session note<\/b>/);
+  assert.match(renderer.messageHTML('<send_user_message_question_reply>[{"question":"Folder?","answer":"Reports"}]</send_user_message_question_reply>',true),/answered-question/);
+  assert.match(renderer.messageHTML('<invoice>hello</invoice>',true),/&lt;invoice&gt;hello&lt;\/invoice&gt;/);
+  assert.match(renderer.messageHTML('```xml\n'+heartbeat+'\n```',true),/&lt;heartbeat&gt;/);
+  assert.match(renderer.messageHTML('Hello **world**',false),/Hello \*\*world\*\*/);
+  const paint=app.slice(app.indexOf('function paintResponse('),app.indexOf('function revealResponses('));
+  assert.match(paint,/content\.innerHTML = messageHTML\(r\.shown, true,/);
+  assert.doesNotMatch(paint,/content\.innerHTML = md\(/);
 });

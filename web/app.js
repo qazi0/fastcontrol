@@ -744,7 +744,7 @@ function paintResponse(r) {
   el.dataset.shown = r.shown;
   rememberTranscriptScroll(el);
   const content = document.createElement("template");
-  content.innerHTML = md(r.shown);
+  content.innerHTML = messageHTML(r.shown, true, r.live || r.shown !== r.target);
   preserveImages(el, content.content);
   const fresh = !el.childNodes.length && r.animate;
   const oldChildren=[...el.childNodes];
@@ -935,13 +935,14 @@ function stepHTML(s, t, key, active = false) {
 }
 
 function hiddenTool(it) { return it?.k === "tool" && (it.title || "").replace(/__/g, ".").endsWith("cua_repl.js"); }
-function userMessageHTML(text) {
+function messageHTML(text, markdown = false, streaming = false) {
+  const prose = value => markdown ? md(value) : esc(value);
   const render = parts => parts.map(part => {
     if (part.kind === "reply") return `<div class="question-reply"><div class="answered-question">${esc(part.question)}</div><div class="answered-value">${esc(part.answer)}</div></div>`;
-    if (part.kind === "context") return part.text || part.parts?.length ? `<details class="message-context"><summary>${esc(part.title)}</summary><div>${part.parts ? render(part.parts) : esc(part.text)}</div></details>` : `<div class="message-context">${esc(part.title)}</div>`;
-    return `<div>${esc(part.text)}</div>`;
+    if (part.kind === "context") return part.text || part.parts?.length ? `<details class="message-context"><summary>${esc(part.title)}</summary><div>${part.parts ? render(part.parts) : prose(part.text)}</div></details>` : `<div class="message-context">${esc(part.title)}</div>`;
+    return markdown ? md(part.text) : `<div>${esc(part.text)}</div>`;
   }).join("");
-  return render(MessageContent.parse(text));
+  return render(MessageContent.parse(text,0,streaming));
 }
 function turnHTML(t, animate = false) {
   const items = (t.items || []).filter((it) => it && (!hiddenTool(it) || it.images?.length || it.audio?.length));
@@ -966,7 +967,7 @@ function turnHTML(t, animate = false) {
   items.forEach((it, i) => {
     if (it.k === "user") {
       flush();
-      out += `<div class="u${userSeen ? " steer" : ""}" data-entry="${esc(t.key+":"+(it.id||i))}">${userMessageHTML((it.text || "").replace(/\[Image\]/g, it.images?.length ? "" : "[Image]").trim())}${imagesHTML(it.images)}${audioHTMLs(it.audio)}</div>`;
+      out += `<div class="u${userSeen ? " steer" : ""}" data-entry="${esc(t.key+":"+(it.id||i))}">${messageHTML((it.text || "").replace(/\[Image\]/g, it.images?.length ? "" : "[Image]").trim())}${imagesHTML(it.images)}${audioHTMLs(it.audio)}</div>`;
       userSeen = true;
     } else if (it.k === "assistant") {
       flush();
