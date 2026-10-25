@@ -20,6 +20,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.provider.MediaStore
+import android.provider.Settings
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
@@ -81,6 +82,10 @@ class MainActivity : Activity() {
     private lateinit var audioStreams: AudioStreams
     private var pendingImage: File? = null
     private var pendingAttachments: String? = null
+    private var pendingAppInstall = false
+    private val updateObserver: (String) -> Unit = { state ->
+        if (!isDestroyed) webView.evaluateJavascript("window.onAppUpdate && window.onAppUpdate($state)", null)
+    }
 
     @Volatile private var pendingLaunch = ""
 
@@ -92,6 +97,7 @@ class MainActivity : Activity() {
         }
 
         pendingAttachments = savedInstanceState?.getString("pendingAttachments")
+        pendingAppInstall = savedInstanceState?.getBoolean("pendingAppInstall") ?: false
         pendingVoice = savedInstanceState?.getString("pendingVoice")
         awaitingMic = savedInstanceState?.getBoolean("awaitingMic") ?: false
         voiceCompressed = savedInstanceState?.getBoolean("voiceCompressed") ?: false
@@ -123,6 +129,7 @@ class MainActivity : Activity() {
         webView.webViewClient = ShellClient()
         webView.webChromeClient = ShellChrome()
         webView.addJavascriptInterface(Bridge(), "CodexAndroid")
+        AppUpdates.initialize(this)
         uploads = ImageUploads()
         downloads = Downloads(this, { event -> runOnUiThread {
             if (!isDestroyed) webView.evaluateJavascript("window.onImageDownload && window.onImageDownload($event)", null)
@@ -157,6 +164,7 @@ class MainActivity : Activity() {
         webView.saveState(outState)
         outState.putString("pendingLaunch", pendingLaunch)
         outState.putString("pendingAttachments", pendingAttachments)
+        outState.putBoolean("pendingAppInstall", pendingAppInstall)
         outState.putString("pendingVoice", pendingVoice)
         outState.putBoolean("awaitingMic", awaitingMic)
         outState.putBoolean("voiceCompressed", voiceCompressed)
@@ -175,6 +183,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         UiState.resumed = true
+        AppUpdates.observer = updateObserver
         // A force stop or app update kills the service; bring it back if the user wants alerts.
         if (Store.notificationsEnabled(this) && !RelayWatchService.isRunning) {
             startForegroundService(Intent(this, RelayWatchService::class.java))
@@ -186,10 +195,18 @@ class MainActivity : Activity() {
         launchPendingVoice()
         updateVoiceScreenState()
         restoreVoiceSession()
+        webView.evaluateJavascript("window.restoreAppUpdates && window.restoreAppUpdates()", null)
+        AppUpdates.installReturned()
+        if (pendingAppInstall) {
+            pendingAppInstall = false
+            if (packageManager.canRequestPackageInstalls()) requestAppInstall()
+            else AppUpdates.installBlocked("Allow Updates From fastcontrol In Android Settings, Then Tap Install")
+        }
     }
 
     override fun onPause() {
         UiState.resumed = false
+        if (AppUpdates.observer === updateObserver) AppUpdates.observer = null
         webView.evaluateJavascript("window.pauseChatAudio && window.pauseChatAudio()", null)
         if (VoiceCaptureService.observer === voiceObserver) VoiceCaptureService.observer = null
         if (ImageUploads.observer === uploadObserver) ImageUploads.observer = null
@@ -199,6 +216,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        if (AppUpdates.observer === updateObserver) AppUpdates.observer = null
         if (VoiceCaptureService.observer === voiceObserver) VoiceCaptureService.observer = null
         if (ImageUploads.observer === uploadObserver) ImageUploads.observer = null
         pendingImage?.delete(); pendingImage = null
@@ -344,6 +362,23 @@ class MainActivity : Activity() {
 
     // External links
 
+    private fun requestAppInstall() {
+        if (!UiState.resumed || AppUpdates.voiceBusy()) {
+            AppUpdates.installBlocked("Finish Voice Recording Or Transcription Before Installing")
+            return
+        }
+        val install = AppUpdates.installIntent() ?: return
+        if (!packageManager.canRequestPackageInstalls()) {
+            pendingAppInstall = true
+            AppUpdates.installBlocked("Allow Updates From fastcontrol In Android Settings")
+            try { startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))) }
+            catch (_: ActivityNotFoundException) { pendingAppInstall = false; AppUpdates.installReturned(); AppUpdates.installBlocked("Open Android Settings To Allow Updates From fastcontrol") }
+            return
+        }
+        try { startActivity(install) }
+        catch (_: ActivityNotFoundException) { AppUpdates.installReturned(); AppUpdates.installBlocked("Installer Unavailable. Download The APK From GitHub") }
+    }
+
     private fun openExternal(uri: Uri) {
         try {
             startActivity(Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE))
@@ -353,7 +388,7 @@ class MainActivity : Activity() {
 
     private inner class ShellClient : WebViewClient() {
         override fun onPageFinished(view: WebView, url: String) {
-            if (!isDestroyed && UiState.resumed) view.evaluateJavascript("window.finishVoiceRestore && window.finishVoiceRestore(); window.restoreAttachmentUploads && window.restoreAttachmentUploads()", null)
+            if (!isDestroyed && UiState.resumed) view.evaluateJavascript("window.finishVoiceRestore && window.finishVoiceRestore(); window.restoreAttachmentUploads && window.restoreAttachmentUploads(); window.restoreAppUpdates && window.restoreAppUpdates()", null)
         }
         override fun shouldInterceptRequest(
             view: WebView, request: WebResourceRequest
@@ -746,6 +781,21 @@ class MainActivity : Activity() {
                 return out
             }
         }
+
+        @JavascriptInterface
+        fun appUpdateState(): String = AppUpdates.snapshot
+
+        @JavascriptInterface
+        fun checkAppUpdates(manual: Boolean) = runOnUiThread { AppUpdates.checkForUpdates(manual) }
+
+        @JavascriptInterface
+        fun downloadAppUpdate() = runOnUiThread { AppUpdates.download() }
+
+        @JavascriptInterface
+        fun installAppUpdate() = runOnUiThread { requestAppInstall() }
+
+        @JavascriptInterface
+        fun deferAppUpdate() = runOnUiThread { pendingAppInstall = false; AppUpdates.later() }
 
         @JavascriptInterface
         fun appVersion(): String =

@@ -1994,6 +1994,10 @@ function openSheet(name, opts = {}) {
 }
 function closeSheet(fromPop) {
   if (!S.sheet) return;
+  if (S.sheet === 'update') {
+   appUpdateInstallWanted = false;
+   if(['available','ready','downloading','installing'].includes(appUpdate.phase))Native?.deferAppUpdate?.();
+  }
   if (S.sheet === "agent") window.disposeAgentViewer?.();
   S.sheet = null; S.redraw = null;
   const generation = ++sheetGeneration, sh = $("sheet"), scrim = $("scrim");
@@ -2012,6 +2016,31 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.sheet)
 const mi = (act, icon, name, d = "", side = "", cls = "") => `<button class="mi ${cls}" data-act="${act}">${icon || ""}<span class="txt">${name}${d ? `<span class="d">${d}</span>` : ""}</span>${side}</button>`;
 
 const SHEETS = {
+ update(sh) {
+  const draw = () => {
+   const u=appUpdate, busy=['checking','downloading','installing'].includes(u.phase);
+   const progress=sh.querySelector('.app-update-body progress');
+   if(u.phase==='downloading' && sh.dataset.updatePhase===u.phase && progress) {
+    progress.value=u.progress || 0;
+    sh.querySelector('.speech-install-progress').textContent=`${u.progress || 0}%`;
+    return;
+   }
+   sh.dataset.updatePhase=u.phase;
+   const title={available:'Update available',ready:'Ready to install',current:"You're up to date",checking:'Checking for updates',downloading:'Downloading update',installing:'Android installer',error:'App update'}[u.phase] || 'App updates';
+   const size=u.size ? `${(u.size/1048576).toFixed(1)} MB` : '';
+   const description=u.message || ({available:'Android will ask you to approve installation after the download.',ready:'Android will ask you to approve installation.',current:'You have the latest version of fastcontrol.',checking:'Checking GitHub releases.',downloading:'You can close this panel while the download finishes.',installing:'Finish or cancel installation in Android.'}[u.phase] || 'Check GitHub for the latest version.');
+   const action={available:'Download update',ready:'Install update',error:'Try again',idle:'Check for updates'}[u.phase];
+   sh.innerHTML=`<div class="grip"></div><h2>${title}</h2><div class="app-update-body"><p class="update-version">fastcontrol ${esc((u.phase==='current' ? u.installed : u.version) || u.installed || '')}</p><p class="hint">Installed ${esc(u.installed || '')}${size ? ' · '+size : ''}</p><p role="status">${esc(description)}</p>${busy ? `<div class="speech-install-progress">${u.phase==='downloading' ? `${u.progress || 0}%` : loadingHTML('Please wait')}</div>` : ''}${u.phase==='downloading' ? `<progress max="100" value="${u.progress || 0}" aria-label="Downloading update"></progress>` : ''}<a class="link-btn" href="${esc(u.url || 'https://github.com/qazi0/fastcontrol/releases/latest')}" target="_blank" rel="noopener">Download from GitHub</a></div><div class="sheet-actions"><button class="btn" data-update-later>${['available','ready','downloading'].includes(u.phase) ? 'Later' : 'Close'}</button><span class="grow"></span>${action ? `<button class="btn primary" data-update-action>${action}</button>` : ''}</div>`;
+  };
+  S.redraw=draw;draw();
+  sh.onclick=e=>{
+   if(e.target.closest('[data-update-later]')){closeSheet();return;}
+   if(!e.target.closest('[data-update-action]'))return;
+   if(appUpdate.phase==='ready'){Native.installAppUpdate();return;}
+   if(appUpdate.phase==='available'){appUpdateInstallWanted=true;Native.downloadAppUpdate();return;}
+   Native.checkAppUpdates(true);
+  };
+ },
  attachments(sh, {target}) {
   sh.innerHTML='<div class="grip"></div><h2>Add Attachment</h2>'+mi('photos',I.photo,'Photos')+mi('files',I.folder,'Files','PDFs, Documents And Other Files');
   sh.onclick=e=>{
@@ -2321,6 +2350,7 @@ const SHEETS = {
             `<button class="chip" data-usage="${esc(s.id)}">Usage</button><button class="icon-btn" data-del="${s.id}" aria-label="Remove Mac">${I.trash}</button></div>`;
         }).join("") +
         (Native ? `<div class="toggle"><div><div style="font-weight:650">Notifications</div><div class="hint" style="margin:0;font-size:13px;color:var(--faint)">Finished Turns And Approvals</div></div><button class="switch${notif ? " on" : ""}" data-x="notif" aria-label="Notifications"></button></div>` : "") +
+        (Native?.checkAppUpdates ? mi('app-updates',I.download,'Check for updates','fastcontrol '+esc(Native.appVersion()),I.chev) : '') +
         `<h3>Add A Mac</h3><div class="field"><input id="sv-url" placeholder="Pairing Link Or http://100.64.0.2:8787" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="url"></div>` +
         `<div class="field"><input id="sv-token" placeholder="Token" autocomplete="off" autocapitalize="off" spellcheck="false"></div>` +
         `<div class="field"><input id="sv-name" placeholder="Name (Optional)" autocomplete="off"></div>` +
@@ -2335,6 +2365,7 @@ const SHEETS = {
     };
     draw();
     sh.onclick = async (e) => {
+      if(e.target.closest('[data-act="app-updates"]')){openSheet('update');Native.checkAppUpdates(true);return;}
       const usage = e.target.closest("[data-usage]");
       if(usage){openUsage(usage.dataset.usage);return;}
       const del = e.target.closest("[data-del]");
@@ -2415,6 +2446,31 @@ window.onAndroidIntent = function () {
 };
 
 // ------------------------------------------------------------------- boot --
+
+let appUpdate = {phase:'idle'}, appUpdateOffered = '', appUpdateInstallWanted = false;
+function considerAppUpdate() {
+ if(!Native?.checkAppUpdates || document.hidden || S.sheet || voiceState.phase!=='idle' || input.value.trim() || S.meta?.running) return;
+ if(appUpdate.automatic && appUpdate.offer && ['available','ready'].includes(appUpdate.phase) && appUpdateOffered!==appUpdate.version) {
+  appUpdateOffered=appUpdate.version;openSheet('update');
+ }
+}
+window.onAppUpdate = state => {
+ appUpdate=state;
+ if(S.sheet==='update')S.redraw?.();
+ if(state.phase==='ready' && appUpdateInstallWanted && !document.hidden) {appUpdateInstallWanted=false;Native.installAppUpdate();}
+ if(state.phase==='error')appUpdateInstallWanted=false;
+ considerAppUpdate();
+};
+window.restoreAppUpdates = () => {
+ if(!Native?.appUpdateState || document.hidden)return;
+ try{window.onAppUpdate(JSON.parse(Native.appUpdateState()));}catch{}
+ Native.checkAppUpdates(false);
+};
+if(Native?.checkAppUpdates) {
+ setTimeout(()=>window.restoreAppUpdates(),1500);
+ setInterval(considerAppUpdate,15000);
+ document.addEventListener('visibilitychange',()=>{if(!document.hidden)window.restoreAppUpdates();});
+}
 
 adoptPairingLink();
 history.replaceState({view:"home",provider:S.provider}, "");
