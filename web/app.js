@@ -2036,7 +2036,7 @@ const SHEETS = {
   sh.onclick=e=>{
    if(e.target.closest('[data-update-later]')){closeSheet();return;}
    if(!e.target.closest('[data-update-action]'))return;
-   if(appUpdate.phase==='ready'){Native.installAppUpdate();return;}
+   if(appUpdate.phase==='ready'){requestAppUpdateInstall();return;}
    if(appUpdate.phase==='available'){appUpdateInstallWanted=true;Native.downloadAppUpdate();return;}
    Native.checkAppUpdates(true);
   };
@@ -2448,8 +2448,15 @@ window.onAndroidIntent = function () {
 // ------------------------------------------------------------------- boot --
 
 let appUpdate = {phase:'idle'}, appUpdateOffered = '', appUpdateInstallWanted = false;
+function requestAppUpdateInstall() {
+ if(S.id && input.value.trim()) {
+  const key=voiceDraftKey(), previous=store.get(key,null);
+  store.set(key,{id:previous?.id || 'app-update',text:input.value});
+ }
+ Native.installAppUpdate();
+}
 function considerAppUpdate() {
- if(!Native?.checkAppUpdates || document.hidden || S.sheet || voiceState.phase!=='idle' || input.value.trim() || S.meta?.running) return;
+ if(!Native?.checkAppUpdates || document.hidden || S.sheet || voiceState.phase!=='idle' || input.value.trim() || S.meta?.running || S.meta?.requests?.length || pendingAsk()) return;
  if(appUpdate.automatic && appUpdate.offer && ['available','ready'].includes(appUpdate.phase) && appUpdateOffered!==appUpdate.version) {
   appUpdateOffered=appUpdate.version;openSheet('update');
  }
@@ -2457,7 +2464,7 @@ function considerAppUpdate() {
 window.onAppUpdate = state => {
  appUpdate=state;
  if(S.sheet==='update')S.redraw?.();
- if(state.phase==='ready' && appUpdateInstallWanted && !document.hidden) {appUpdateInstallWanted=false;Native.installAppUpdate();}
+ if(state.phase==='ready' && appUpdateInstallWanted && !document.hidden) {appUpdateInstallWanted=false;requestAppUpdateInstall();}
  if(state.phase==='error')appUpdateInstallWanted=false;
  considerAppUpdate();
 };

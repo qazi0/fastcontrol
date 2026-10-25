@@ -7,7 +7,7 @@ function fixture() {
  const calls=[], context=vm.createContext({
   Native:{checkAppUpdates:manual=>calls.push(['check',manual]),appUpdateState:()=>JSON.stringify({phase:'current',installed:'0.2.6'}),installAppUpdate:()=>calls.push(['install'])},
   document:{hidden:false,addEventListener(){}},S:{sheet:null,meta:{}},voiceState:{phase:'idle'},input:{value:''},
-  openSheet:name=>calls.push(['sheet',name]),setTimeout(){},setInterval(){},window:{},
+  openSheet:name=>calls.push(['sheet',name]),pendingAsk:()=>null,setTimeout(){},setInterval(){},window:{},
  });
  const app=fs.readFileSync('web/app.js','utf8');
  vm.runInContext(app.slice(app.indexOf('let appUpdate ='),app.indexOf('adoptPairingLink();',app.indexOf('let appUpdate ='))),context);
@@ -40,4 +40,9 @@ test('only a requested download completion can request the Android installer',()
  vm.runInContext('appUpdateInstallWanted=true',c);c.document.hidden=true;c.event({phase:'ready'});assert.deepEqual(calls,[]);
  c.document.hidden=false;c.event({phase:'ready'});c.event({phase:'ready'});assert.deepEqual(calls,[['install']]);
  vm.runInContext('appUpdateInstallWanted=true',c);c.event({phase:'error'});c.event({phase:'ready'});assert.deepEqual(calls,[['install']]);
+});
+test('unsent chat text is saved before handing off to the installer',()=>{
+ const {context:c,calls}=fixture();c.S.id='chat';c.input.value='Keep this unsent message';c.voiceDraftKey=()=> 'chat-draft';
+ c.store={get:()=>null,set:(key,draft)=>calls.push(['saved',key,draft.text])};
+ c.requestAppUpdateInstall();assert.deepEqual(calls,[['saved','chat-draft','Keep this unsent message'],['install']]);
 });
