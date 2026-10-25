@@ -16,6 +16,8 @@ import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileNotFoundException
@@ -70,6 +72,29 @@ object AppUpdates {
         kotlin.check(Regex("[a-fA-F0-9]{64}").matches(hash) && size in 1..100L * 1024 * 1024)
         return Release(version, url, hash.lowercase(), size)
     }
+    private fun body(response: Response, limit: Int): ByteArray = (response.body ?: error("Empty Response")).byteStream().use { input ->
+        ByteArrayOutputStream().use { out ->
+            val buffer = ByteArray(8192)
+            while (true) { val n = input.read(buffer); if (n < 0) break; kotlin.check(out.size() + n <= limit); out.write(buffer, 0, n) }
+            out.toByteArray()
+        }
+    }
+    private fun publishedRelease(): JSONObject {
+        val sums = client.newCall(Request.Builder().url("$REPO/releases/latest/download/SHA256SUMS").build()).execute().use { response ->
+            kotlin.check(response.isSuccessful)
+            String(body(response, 64 * 1024), Charsets.UTF_8)
+        }
+        val entry = Regex("(?m)^([a-fA-F0-9]{64})[ \\t]+\\*?fastcontrol_android_v([0-9]{1,8}\\.[0-9]{1,8}\\.[0-9]{1,8})\\.apk[ \\t]*$").find(sums) ?: error("No Android Release")
+        val version = entry.groupValues[2]; val name = "fastcontrol_android_v$version.apk"
+        val url = "$REPO/releases/download/v$version/$name"
+        val size = client.newCall(Request.Builder().url(url).head().build()).execute().use { response ->
+            kotlin.check(response.isSuccessful)
+            response.header("Content-Length")?.toLong() ?: error("Unknown APK Size")
+        }
+        return JSONObject().put("tag_name", "v$version").put("draft", false).put("prerelease", false)
+            .put("assets", JSONArray().put(JSONObject().put("name", name).put("browser_download_url", url)
+                .put("size", size).put("digest", "sha256:" + entry.groupValues[1])))
+    }
     fun initialize(ctx: Context) {
         if (::context.isInitialized) return
         context = ctx.applicationContext
@@ -89,7 +114,7 @@ object AppUpdates {
         val candidate = release
         snapshot = JSONObject().put("phase", phase).put("installed", installed.versionName)
             .put("version", candidate?.version ?: "").put("size", candidate?.size ?: 0)
-            .put("url", candidate?.url ?: "$REPO/releases/latest")
+            .put("url", candidate?.takeIf { newer(it.version) }?.url ?: "$REPO/releases/latest")
             .put("message", message).put("progress", progress).put("automatic", automatic)
             .put("offer", candidate != null && newer(candidate.version) && System.currentTimeMillis() >= prefs().getLong("later", 0))
             .toString()
@@ -110,25 +135,21 @@ object AppUpdates {
                 prefs().getString("etag", null)?.let { request.header("If-None-Match", it) }
                 var etag: String? = null
                 val data = client.newCall(request.build()).execute().use { response ->
-                    if (response.code == 304) JSONObject(prefs().getString("release", null) ?: error("No Cached Release"))
+                    if (response.code == 304) {
+                        etag = prefs().getString("etag", null)
+                        JSONObject(prefs().getString("release", null) ?: error("No Cached Release"))
+                    } else if (response.code == 403 || response.code == 429) publishedRelease()
                     else {
                         kotlin.check(response.isSuccessful) { "Could Not Check GitHub. Try Again Later" }
                         etag = response.header("ETag")
-                        val body = response.body ?: error("Empty Release")
-                        val text = body.byteStream().use { input -> ByteArrayOutputStream().use { out ->
-                            val buffer = ByteArray(8192)
-                            while (true) { val n = input.read(buffer); if (n < 0) break; kotlin.check(out.size() + n <= 1024 * 1024); out.write(buffer, 0, n) }
-                            out.toByteArray()
-                        } }
-                        kotlin.check(text.size <= 1024 * 1024)
-                        JSONObject(String(text, Charsets.UTF_8))
+                        JSONObject(String(body(response, 1024 * 1024), Charsets.UTF_8))
                     }
                 }
                 val found = readRelease(data)
                 main.post {
                     release = found; working = false
                     prefs().edit().putLong("checked", System.currentTimeMillis()).putString("release", data.toString())
-                        .putString("etag", etag ?: prefs().getString("etag", null)).apply()
+                        .putString("etag", etag).apply()
                     phase = if (!newer(found.version)) "current" else if (apk().isFile && runCatching { validate(apk(), found) }.isSuccess) "ready" else "available"
                     publish(automatic = !manual)
                 }
