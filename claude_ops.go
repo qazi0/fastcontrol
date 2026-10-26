@@ -385,7 +385,28 @@ func (m *ClaudeManager) handle(c *Client, raw []byte) {
 		entry := m.entries[id]
 		m.mu.Unlock()
 		var diffs map[string]string
-		if run != nil {
+		if strings.HasPrefix(id, claudeWorkPrefix) {
+			m.mu.Lock()
+			watch, known := m.workWatch[c][id]
+			m.mu.Unlock()
+			if !known {
+				ack(errors.New("Open This Subagent From Its Parent Chat"), nil)
+				return
+			}
+			work, err := m.resolveWork(watch.Parent, id)
+			if err != nil {
+				ack(err, nil)
+				return
+			}
+			if work.Info.Kind == "agent" {
+				view, err := readClaudeTranscriptMode(work.Path, watch.Window, 8<<20, true)
+				if err != nil {
+					ack(err, nil)
+					return
+				}
+				diffs = view.Diffs
+			}
+		} else if run != nil {
 			run.mu.Lock()
 			diffs = map[string]string{}
 			for k, d := range run.view.Diffs {

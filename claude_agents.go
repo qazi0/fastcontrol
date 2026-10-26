@@ -376,19 +376,15 @@ func (m *ClaudeManager) publishWork(c *Client, work claudeWorkEntry, w claudeWor
 	meta := Meta{Provider: "claude", ReadOnly: true, Mode: "tail", Title: work.Info.Title, Cwd: work.Info.Cwd, Running: work.Info.Running, AgentState: work.Info.AgentState}
 	var turns []Turn
 	if work.Info.Kind == "agent" {
-		size := int64(2 << 20)
-		var view *claudeTranscript
-		for {
-			view, err = readClaudeTranscriptMode(work.Path, w.Window, size, true)
-			if err != nil {
-				return err
-			}
-			if len(view.Turns) >= w.Window || size >= st.Size() {
-				break
-			}
-			size *= 2
+		// Agents often have one very long turn. Grow history only on an explicit
+		// earlier-history request, rather than scanning that entire turn on open.
+		size := int64(w.Window/15) * (2 << 20)
+		view, readErr := readClaudeTranscriptMode(work.Path, w.Window, size, true)
+		if readErr != nil {
+			return readErr
 		}
 		meta.Model = view.Meta.Model
+		meta.Effort = view.Meta.Effort
 		meta.CtxUsed = view.Meta.CtxUsed
 		meta.CtxMax = view.Meta.CtxMax
 		meta.HasOlder = view.More

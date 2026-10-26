@@ -141,6 +141,30 @@ func TestClaudeWorkIndexRetriesPartialLinesAndInvalidatesReplacement(t *testing.
 		t.Fatal("replaced transcript retained old tasks")
 	}
 }
+
+func TestClaudeAgentDiffUsesTheReadOnlySidechain(t *testing.T) {
+	m, root, _, path := claudeWorkFixture(t)
+	writeClaudeWorkRows(t, path, map[string]any{"type": "assistant", "isSidechain": true, "uuid": "edit-reply", "message": map[string]any{"content": []any{map[string]any{"type": "tool_use", "id": "edit", "name": "Edit", "input": map[string]any{"file_path": "/private/example.txt", "old_string": "before", "new_string": "after"}}}}})
+	list, err := m.listWork(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Client{out: make(chan []byte, 16), done: make(chan struct{})}
+	m.hub.addClient(c)
+	for len(c.out) > 0 {
+		<-c.out
+	}
+	if err = m.openWork(c, root, list[0].ID, false); err != nil {
+		t.Fatal(err)
+	}
+	<-c.out
+	m.handle(c, mustJSON(map[string]any{"op": "diff", "id": list[0].ID, "key": "prompt"}))
+	var result map[string]any
+	json.Unmarshal(<-c.out, &result)
+	if result["t"] != "diff" || !strings.Contains(result["text"].(string), "-before") || !strings.Contains(result["text"].(string), "+after") {
+		t.Fatalf("agent diff: %+v", result)
+	}
+}
 func TestClaudeWorkflowChildrenAndBackgroundOutput(t *testing.T) {
 	m, root, parent, _ := claudeWorkFixture(t)
 	dir := filepath.Join(strings.TrimSuffix(parent, ".jsonl"), "subagents", "workflows", "wf-test")
