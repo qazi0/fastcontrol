@@ -111,6 +111,7 @@ function paintAgentViewer(more = false) {
   $("agent-working").classList.toggle("hidden", !connected || waiting || !view.meta?.running);
   view.loaded = true;
 }
+window.agentIsFollowing = () => !!agentView?.stick;
 window.followAgentResponses = () => { const root=$("agent-feed");if(root && agentView?.stick)root.scrollTop=root.scrollHeight; };
 function dirtyAgentViewer() {
   if (!agentFrame) agentFrame = requestAnimationFrame(()=>{ agentFrame=0;paintAgentViewer(); });

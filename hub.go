@@ -14,12 +14,13 @@ import (
 )
 
 const (
-	windowTurns  = 15
-	flushEvery   = 60 * time.Millisecond
-	pollEvery    = 300 * time.Millisecond
-	followRetry  = 5 * time.Second
-	idleShutdown = 60 * time.Second
-	ipcTimeout   = 15 * time.Second
+	windowTurns       = 15
+	flushEvery        = 60 * time.Millisecond
+	pollEvery         = 300 * time.Millisecond
+	followRetry       = 5 * time.Second
+	idleShutdown      = 60 * time.Second
+	ipcTimeout        = 15 * time.Second
+	turnSubmitTimeout = 45 * time.Second
 )
 
 // ---- clients ----
@@ -544,24 +545,27 @@ type Session struct {
 	watch   bool // kept following for notifications even with no viewer
 
 	// Owned by the run goroutine.
-	owner     string
-	revision  int64
-	state     map[string]any
-	sentKeys  []string
-	sentSet   map[string]bool
-	dirtyT    map[string]bool
-	dirtyI    map[string]map[int]bool
-	dirtyH    map[string]bool
-	dirtyMeta bool
-	dirtyOrd  bool
-	lastMeta  []byte
-	lastOpen  []byte
-	rv        *rolloutView
-	following bool
-	lastTry   time.Time
-	waiters   []chan struct{} // notified when the session goes live
-	window    int             // turns sent to clients
-	moreAt    time.Time       // last Load Earlier request; full renders soon after keep the reader's place
+	owner               string
+	revision            int64
+	state               map[string]any
+	sentKeys            []string
+	sentSet             map[string]bool
+	dirtyT              map[string]bool
+	dirtyI              map[string]map[int]bool
+	dirtyH              map[string]bool
+	dirtyMeta           bool
+	dirtyOrd            bool
+	lastMeta            []byte
+	lastOpen            []byte
+	rv                  *rolloutView
+	following           bool
+	awaitingSnapshot    bool
+	snapshotMinRevision int64
+	followAt            time.Time
+	lastTry             time.Time
+	waiters             []chan struct{} // notified when the session goes live
+	window              int             // turns sent to clients
+	moreAt              time.Time       // last Load Earlier request; full renders soon after keep the reader's place
 }
 
 func newSession(h *Hub, info ThreadInfo) *Session {
@@ -795,6 +799,9 @@ func (s *Session) run() {
 				continue
 			}
 			idleSince = time.Time{}
+			if s.awaitingSnapshot && time.Since(s.followAt) >= ipcTimeout && time.Since(s.lastTry) > followRetry {
+				go s.tryFollow()
+			}
 			if s.state == nil {
 				s.pollRollout()
 				if time.Since(s.lastTry) > followRetry {
@@ -814,6 +821,8 @@ func (s *Session) dropLive() {
 	s.state = nil
 	s.lastOpen = nil
 	s.following = false
+	s.awaitingSnapshot = false
+	s.snapshotMinRevision = 0
 	s.setLive(false)
 	_ = s.rv.load()
 	s.broadcast(s.openMessage())
@@ -833,7 +842,7 @@ func (s *Session) tryFollow() {
 	}
 	owner := r.HandledBy
 	s.cmds <- func() {
-		if s.owner == owner && s.following && s.state != nil {
+		if s.owner == owner && s.following && s.state != nil && !s.awaitingSnapshot {
 			return
 		}
 		s.follow(owner, false)
@@ -841,13 +850,29 @@ func (s *Session) tryFollow() {
 }
 
 func (s *Session) follow(owner string, resync bool) {
+	// A slow first snapshot must not cause another full snapshot on every
+	// ensureLive tick. Keep one request in flight, with a bounded retry.
+	if s.owner == owner && s.awaitingSnapshot && time.Since(s.followAt) < ipcTimeout {
+		return
+	}
+	if s.owner != "" && s.owner != owner {
+		s.unfollow()
+		s.state = nil
+		s.lastOpen = nil
+		s.revision = -1
+		s.snapshotMinRevision = 0
+		s.setLive(false)
+	}
 	s.owner = owner
 	s.following = true
-	if resync {
-		s.revision = -1
-	}
+	s.awaitingSnapshot = true
+	s.followAt = time.Now()
+	// Preserve the last applied revision while resyncing, so late patches
+	// cannot repeatedly force the same resync or roll the state backwards.
 	err := s.hub.ipc.Broadcast("thread-stream-following-changed", map[string]any{"conversationId": s.id, "hostId": "local", "following": true}, []string{owner})
 	if err != nil {
+		s.following = false
+		s.awaitingSnapshot = false
 		log.Printf("session %s: follow: %v", s.id, err)
 	}
 }
@@ -857,6 +882,7 @@ func (s *Session) unfollow() {
 		_ = s.hub.ipc.Broadcast("thread-stream-following-changed", map[string]any{"conversationId": s.id, "hostId": "local", "following": false}, []string{s.owner})
 	}
 	s.following = false
+	s.awaitingSnapshot = false
 }
 
 type streamChange struct {
@@ -882,6 +908,12 @@ func (s *Session) onFrame(f *ipcFrame) {
 	ch := p.Change
 	switch ch.Type {
 	case "snapshot":
+		if s.owner != "" && f.SourceClientID != s.owner {
+			return
+		}
+		if ch.Revision < s.snapshotMinRevision || s.state != nil && ch.Revision < s.revision {
+			return
+		}
 		var st map[string]any
 		if err := json.Unmarshal(ch.State, &st); err != nil {
 			log.Printf("session %s: bad snapshot: %v", s.id, err)
@@ -890,6 +922,8 @@ func (s *Session) onFrame(f *ipcFrame) {
 		s.state = st
 		s.owner = f.SourceClientID
 		s.revision = ch.Revision
+		s.awaitingSnapshot = false
+		s.snapshotMinRevision = 0
 		s.clearDirty()
 		s.setLive(true)
 		log.Printf("session %s: live (snapshot rev %d, %d bytes)", s.id, ch.Revision, len(ch.State))
@@ -902,7 +936,11 @@ func (s *Session) onFrame(f *ipcFrame) {
 		if s.state == nil || f.SourceClientID != s.owner {
 			return
 		}
+		if ch.Revision <= s.revision || s.awaitingSnapshot {
+			return
+		}
 		if ch.BaseRevision != s.revision {
+			s.snapshotMinRevision = ch.Revision
 			log.Printf("session %s: revision gap (have %d, base %d), resyncing", s.id, s.revision, ch.BaseRevision)
 			s.follow(s.owner, true)
 			return
@@ -1173,13 +1211,16 @@ func (s *Session) sendMessage(text string, images []string) error {
 	}
 	msgID := uuid()
 	if li.running {
+		started := time.Now()
+		log.Printf("session %s: submitting steer (owner %s)", s.id, li.owner)
 		_, err = s.hub.ipc.Request("thread-follower-steer-turn", map[string]any{
 			"conversationId":      s.id,
 			"input":               textInput(text, images),
 			"restoreMessage":      map[string]any{"id": msgID, "text": text, "context": map[string]any{}},
 			"attachments":         []any{},
 			"clientUserMessageId": msgID,
-		}, li.owner, ipcTimeout, nil)
+		}, li.owner, turnSubmitTimeout, nil)
+		log.Printf("session %s: steer acknowledgement after %s (failed=%t)", s.id, time.Since(started).Round(time.Millisecond), err != nil)
 		return err
 	}
 	_, err = s.hub.ipc.Request("thread-follower-start-turn", map[string]any{
@@ -1188,7 +1229,7 @@ func (s *Session) sendMessage(text string, images []string) error {
 			"request": map[string]any{"threadId": s.id, "input": textInput(text, images), "clientUserMessageId": msgID},
 			"context": map[string]any{},
 		},
-	}, li.owner, ipcTimeout, nil)
+	}, li.owner, turnSubmitTimeout, nil)
 	return err
 }
 

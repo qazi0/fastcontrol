@@ -644,7 +644,7 @@ function restoreTranscriptScroll(root) { transcriptScrollers(root, (node, key) =
 // Follow only deliberate scrolling. DOM rebuilds and composer resizing also emit
 // scroll events, so proximity to the end alone cannot decide the reader's intent.
 function bindTranscriptScroll(root, state, changed = () => {}) {
-  let gesture = null, intentUntil = 0;
+  let gesture = null, intentUntil = 0, direction = "";
   const nearEnd = () => root.scrollHeight - root.scrollTop - root.clientHeight <= 4;
   const set = follow => { state.stick = follow; changed(); };
   root.addEventListener("pointerdown", event => {
@@ -655,7 +655,8 @@ function bindTranscriptScroll(root, state, changed = () => {}) {
   root.addEventListener("pointermove", event => {
     if (!gesture || Math.abs(event.clientY - gesture.y) < 3) return;
     gesture.moved = true; intentUntil = Date.now() + 1200;
-    if (event.clientY > gesture.y) set(false);
+    direction=event.clientY>gesture.y ? "up" : "down";
+    if (direction === "up") set(false);
   }, {passive:true});
   const finish = () => {
     if (!gesture) return;
@@ -666,35 +667,40 @@ function bindTranscriptScroll(root, state, changed = () => {}) {
   root.addEventListener("pointercancel", finish, {passive:true});
   root.addEventListener("wheel", event => {
     state.readingOutput = !!event.target.closest("pre,.md-table");
-    intentUntil = Date.now() + 200;
+    intentUntil = Date.now() + 200;direction=event.deltaY<0 ? "up" : "down";
     if (event.deltaY < 0 || state.readingOutput) set(false);
   }, {passive:true});
   root.addEventListener("keydown", event => {
-    if (["ArrowUp","PageUp","Home"].includes(event.key)) set(false);
-    if (["ArrowDown","PageDown","End"," "].includes(event.key)) intentUntil = Date.now() + 300;
+    state.readingOutput=!!event.target.closest('pre,.md-table');
+    if (["ArrowUp","PageUp","Home"].includes(event.key) || event.key===' ' && event.shiftKey) {direction='up';set(false);}
+    if (["ArrowDown","PageDown","End"," "].includes(event.key) && !event.shiftKey) {direction='down';intentUntil = Date.now() + 300;}
+    if(state.readingOutput)set(false);
   });
   root.addEventListener("scroll", () => {
-    if (Date.now() <= intentUntil && !state.readingOutput) set(nearEnd());
+    if (Date.now() <= intentUntil && !state.readingOutput) {
+      if(direction==='up')set(false);else if(direction==='down')set(nearEnd());
+    }
     changed();
   }, {passive:true});
 }
 function captureReadingPlace(root) {
-  const top = root.getBoundingClientRect().top;
-  const candidates = [...root.querySelectorAll(".prose-line,.output-line,pre,li")];
-  const node = candidates.find(node => node.getBoundingClientRect().bottom > top + 2 && node.getClientRects().length) ||
-    [...root.querySelectorAll("[data-entry],[data-response]")].find(node => node.getBoundingClientRect().bottom > top + 2);
-  const owner = node?.closest("[data-entry],[data-response]");
-  if (!owner) return {top:root.scrollTop};
-  const selector = node.matches('.prose-line') ? '.prose-line' : node.matches('.output-line') ? '.output-line' : node.tagName.toLowerCase();
-  return {top:root.scrollTop, key:owner.dataset.entry || owner.dataset.response, selector,
-    index:[...owner.querySelectorAll(selector)].indexOf(node), offset:node.getBoundingClientRect().top - top};
+  const viewport=root.getBoundingClientRect(),top=viewport.top;
+  const visible=node=>{const rect=node.getBoundingClientRect();return rect.bottom>top+2 && rect.top<viewport.bottom-2 && node.getClientRects().length;};
+  const node=[...root.querySelectorAll('.prose-line,.output-line,pre,li,.image-preview')].find(visible) ||
+    [...root.querySelectorAll('[data-entry],[data-response],.turn[data-key]')].find(visible);
+  const owner=node?.closest('[data-entry],[data-response],.turn[data-key]');
+  if(!owner)return {top:root.scrollTop};
+  const selector=node.matches('.prose-line') ? '.prose-line' : node.matches('.output-line') ? '.output-line' : node.matches('.image-preview') ? '.image-preview' : node.tagName.toLowerCase();
+  return {top:root.scrollTop,key:owner.dataset.entry || owner.dataset.response || owner.dataset.key,turn:!!owner.dataset.key,selector,
+    index:[...owner.querySelectorAll(selector)].indexOf(node),offset:node.getBoundingClientRect().top-top};
 }
-function restoreReadingPlace(root, place) {
-  if (!place) return;
-  const owner = [...root.querySelectorAll('[data-entry],[data-response]')].find(node => (node.dataset.entry || node.dataset.response) === place.key);
-  const node = place.index < 0 ? owner : owner?.querySelectorAll(place.selector)[place.index];
-  root.scrollTop = node ? root.scrollTop + node.getBoundingClientRect().top - root.getBoundingClientRect().top - place.offset : place.top;
+function restoreReadingPlace(root,place) {
+  if(!place)return;
+  const owner=[...root.querySelectorAll(place.turn ? '.turn[data-key]' : '[data-entry],[data-response]')].find(node=>(place.turn ? node.dataset.key : node.dataset.entry || node.dataset.response)===place.key);
+  const node=place.index<0 ? owner : owner?.querySelectorAll(place.selector)[place.index];
+  root.scrollTop=node ? root.scrollTop+node.getBoundingClientRect().top-root.getBoundingClientRect().top-place.offset : place.top;
 }
+
 bindTranscriptScroll(feed, S, () => $("jump").classList.toggle("hidden", S.stick));
 $("jump-btn").onclick = () => { S.readingOutput = false; S.stick = true; feed.scrollTop = feed.scrollHeight; $("jump").classList.add("hidden"); };
 
@@ -793,6 +799,8 @@ function paintResponse(r) {
   el.classList.toggle("live", r.live || r.shown !== r.target);
   if (el.dataset.shown === r.shown) return;
   el.dataset.shown = r.shown;
+  const root=el.closest('.feed');
+  const place=root && (root===feed ? !S.stick : window.agentIsFollowing?.()===false) ? captureReadingPlace(root) : null;
   rememberTranscriptScroll(el);
   const content = document.createElement("template");
   content.innerHTML = messageHTML(r.shown, true, r.live || r.shown !== r.target);
@@ -828,6 +836,7 @@ function paintResponse(r) {
     }
     offset = end;
   }
+  if(place)restoreReadingPlace(root,place);
 }
 function revealResponses(now) {
   responseFrame = 0;
@@ -851,7 +860,7 @@ function preserveImages(previous, next) {
  const key = button => {const image=button.querySelector('img');return image?.dataset.relayImage ? image.dataset.server+':'+image.dataset.relayImage : image?.getAttribute('src');};
  const images=new Map();
  for(const button of previous.querySelectorAll('.image-preview')) {const id=key(button);if(!id)continue;if(!images.has(id))images.set(id,[]);images.get(id).push(button);}
- for(const button of next.querySelectorAll('.image-preview')) {const existing=images.get(key(button))?.shift();if(existing && existing!==button)button.replaceWith(existing);}
+ for(const button of next.querySelectorAll('.image-preview')) {const existing=images.get(key(button))?.shift();if(existing && existing!==button)button.liveImage=existing;}
  const players=new Map();
  for(const player of previous.querySelectorAll('.chat-audio')) {const id=player.dataset.audioKey;if(!players.has(id))players.set(id,[]);players.get(id).push(player);}
  for(const player of next.querySelectorAll('.chat-audio')) player.liveAudio=players.get(player.dataset.audioKey)?.shift();
@@ -861,7 +870,7 @@ function enterTranscript(node, distance = 8) {
  node.animate([{opacity:0.2,transform:`translateY(${distance}px)`},{offset:0.78,opacity:1,transform:'translateY(-1px)'},{opacity:1,transform:'translateY(0)'}],{duration:180,easing:'cubic-bezier(0.22,1,0.36,1)'});
 }
 function patchTranscriptNode(old, next, animate = false) {
- if (next.liveAudio) return next.liveAudio;
+ if (next.liveImage || next.liveAudio) return next.liveImage || next.liveAudio;
  if (old === next) return old;
  if (!old || old.nodeType !== next.nodeType || (old.nodeType === 1 && old.tagName !== next.tagName)) {
   if (animate && next.nodeType === 1 && next.matches('.prose-line,li,.dl,.output-line')) next.dataset.enter="5";
@@ -879,6 +888,11 @@ function entryHTML(html,key) {return html ? html.replace(/^<(\w+)/,`<$1 data-ent
 function reconcileChildren(parent,nodes) {
  for(let i=0;i<nodes.length;i++) if(parent.childNodes[i]!==nodes[i]) parent.insertBefore(nodes[i],parent.childNodes[i]||null);
  while(parent.childNodes.length>nodes.length)parent.lastChild.remove();
+ // Resolve media only after the replacement structure is in place. Never
+ // detach a loaded image merely to build a detached template.
+ for(const node of parent.querySelectorAll('.image-preview,.chat-audio')) {
+  const live=node.liveImage || node.liveAudio;if(live && live!==node)node.replaceWith(live);
+ }
  for(const node of parent.querySelectorAll('[data-enter]')) {const distance=Number(node.dataset.enter);delete node.dataset.enter;enterTranscript(node,distance);}
 }
 function renderTurn(el, t, animate) {
@@ -888,7 +902,7 @@ function renderTurn(el, t, animate) {
  preserveImages(el,template.content);
  const resolve = next => {
   if(next.nodeType!==1)return next;
-  if(next.liveAudio)return next.liveAudio;
+  if(next.liveImage || next.liveAudio)return next.liveImage || next.liveAudio;
   const key=next.dataset.response||next.dataset.entry;
   let existing=key&&old.get(key);
   if(!existing&&next.classList.contains('u')&&feed.contains(el)) {
@@ -1774,7 +1788,7 @@ async function sendText(text) {
       {opacity:1,transform:'translateY(0)'}
     ],{duration:240,easing:'cubic-bezier(0.16,1,0.3,1)'});
   }
-  const a = await conn().call({ op: "send", id: S.id, text, images, files }, 40000);
+  const a = await conn().call({ op: "send", id: S.id, text, images, files }, 60000);
   $("send").disabled = voiceState.phase!=='idle';
   if (!a.ok) {
     pending.remove();waiting?.remove();

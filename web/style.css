@@ -176,7 +176,7 @@ html.page-hidden .badge.run .dot { animation-play-state: paused; }
 .banner span { flex: 1; }
 
 /* transcript */
-.feed { padding: 8px 20px 20px; overflow-anchor: none; }
+.feed { padding: 8px 20px 20px; overflow-anchor: auto; }
 .turn { padding: 8px 0 20px; }
 .stamp { font-size: 12px; color: var(--faint); text-align: center; margin: 8px 0 14px; font-variant-numeric: tabular-nums; }
 .load-earlier { display: block; margin: 8px auto 16px; height: 40px; padding: 0 20px; border-radius: 20px; background: var(--surface); font-weight: 500; font-size: 14px; color: var(--muted); }
