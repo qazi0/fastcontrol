@@ -109,6 +109,7 @@ func (h *Hub) organizationGroup(id string) ([]ThreadInfo, error) {
 			s = current
 		}
 	}
+	h.links.apply(&s)
 	ids, ok := organizationMembers(s, id)
 	if !ok {
 		return nil, errors.New("This group is no longer available")

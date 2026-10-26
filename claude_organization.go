@@ -211,7 +211,7 @@ func loadClaudeOrganization(root, store string, known map[string]bool) (Organiza
 		delete(byCLI, id)
 	}
 	for id, record := range byCLI {
-		p := SessionPlacement{DisplayTitle: record.Title, Archived: record.Archived}
+		p := SessionPlacement{DisplayTitle: record.Title, Archived: record.Archived, Detached: record.Detached}
 		parent, relation := "", ""
 		if !record.Detached {
 			if record.Lineage != nil && record.Lineage.SessionID != "" {

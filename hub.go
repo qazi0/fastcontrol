@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,6 +36,7 @@ type Client struct {
 	// else: no thread lists, which are large and change often.
 	eventsOnly bool
 	done       chan struct{}
+	doneOnce   sync.Once
 }
 
 func (c *Client) push(b []byte) {
@@ -42,11 +44,7 @@ func (c *Client) push(b []byte) {
 	case c.out <- b:
 	default:
 		// Slow consumer; the reader side will notice the closed channel.
-		select {
-		case <-c.done:
-		default:
-			close(c.done)
-		}
+		c.doneOnce.Do(func() { close(c.done) })
 	}
 }
 
@@ -59,6 +57,7 @@ func mustJSON(v any) []byte {
 
 type Hub struct {
 	organization *OrganizationReader
+	links        *sessionLinks
 	claude       *ClaudeManager
 	headless     *HeadlessCodex
 	ipc          *IPCClient
@@ -80,7 +79,7 @@ type Hub struct {
 
 func NewHub(ipc *IPCClient, db string) *Hub {
 	home, _ := os.UserHomeDir()
-	h := &Hub{organization: NewOrganizationReader(home), ipc: ipc, db: db, clients: map[*Client]bool{}, sessions: map[string]*Session{}, execs: map[string]*execRun{}}
+	h := &Hub{organization: NewOrganizationReader(home), links: newSessionLinks(filepath.Join(home, ".fastcontrol/codex-forks.json")), ipc: ipc, db: db, clients: map[*Client]bool{}, sessions: map[string]*Session{}, execs: map[string]*execRun{}}
 	ipc.OnBroadcast = h.onBroadcast
 	ipc.OnReset = h.onReset
 	return h
@@ -219,6 +218,7 @@ func (h *Hub) refreshList() {
 	if h.organization != nil && h.db != "" && len(ts) > 0 {
 		ids := codexOrganizationIDs(h.db, ts)
 		organization, _ = h.organization.Codex(h.db, ids)
+		h.links.apply(&organization)
 		ts = applyThreadOrganization(ts, organization)
 	}
 	h.mu.Lock()
@@ -485,6 +485,10 @@ func (h *Hub) handle(c *Client, raw []byte) {
 			id, err := h.newThread(m.Cwd, m.Text, deref(m.Model), deref(m.Effort), m.Images)
 			ack(err, map[string]any{"thread": id})
 		}()
+	case "rename":
+		go func() { ack(h.renameSession(m.ID, m.Text), map[string]any{"title": m.Text}) }()
+	case "fork":
+		go func() { id, err := h.forkSession(m.ID); ack(err, map[string]any{"thread": id}) }()
 	case "send":
 		if x := h.execFor(m.ID); x != nil && x.queue(m.Text, m.Images) {
 			ack(nil, map[string]any{"queued": true})

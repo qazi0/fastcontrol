@@ -124,7 +124,7 @@ func (h *Hub) isSubagent(id string) bool {
 
 func agentControl(op string) bool {
 	switch op {
-	case "send", "stop", "wake", "settings", "approve", "answer", "compact", "archive", "unarchive":
+	case "send", "stop", "wake", "settings", "approve", "answer", "compact", "archive", "unarchive", "rename", "fork":
 		return true
 	}
 	return false

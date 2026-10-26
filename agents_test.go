@@ -78,7 +78,7 @@ func TestSubagentControlsAreRejectedBeforeDispatch(t *testing.T) {
 		t.Fatal("full child session was treated as a read-only subagent")
 	}
 	c := &Client{out: make(chan []byte, 32), done: make(chan struct{})}
-	for _, op := range []string{"send", "stop", "wake", "settings", "approve", "answer", "compact", "archive", "unarchive"} {
+	for _, op := range []string{"send", "stop", "wake", "settings", "approve", "answer", "compact", "archive", "unarchive", "rename", "fork"} {
 		h.handle(c, mustJSON(map[string]any{"op": op, "id": "child", "nonce": op}))
 		select {
 		case data := <-c.out:

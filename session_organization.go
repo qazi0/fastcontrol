@@ -44,6 +44,7 @@ type SessionPlacement struct {
 	Relation     string   `json:"relation,omitempty"`
 	Position     int      `json:"position,omitempty"`
 	Archived     bool     `json:"archived,omitempty"`
+	Detached     bool     `json:"-"`
 }
 
 // Apply optional native presentation metadata to fresh thread values. Source
