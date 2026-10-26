@@ -58,10 +58,11 @@ func mustJSON(v any) []byte {
 // ---- hub ----
 
 type Hub struct {
-	claude   *ClaudeManager
-	headless *HeadlessCodex
-	ipc      *IPCClient
-	db       string
+	organization *OrganizationReader
+	claude       *ClaudeManager
+	headless     *HeadlessCodex
+	ipc          *IPCClient
+	db           string
 
 	listMu      sync.Mutex  // serializes refreshList
 	listRefresh atomic.Bool // coalesces client and session refresh requests
@@ -72,12 +73,14 @@ type Hub struct {
 	sessions map[string]*Session
 	execs    map[string]*execRun
 	threads  []ThreadInfo
+	orgState OrganizationSnapshot // complete immutable snapshot, guarded by mu
 	listJSON []byte
 	prev     map[string]threadState // last state per thread, for events
 }
 
 func NewHub(ipc *IPCClient, db string) *Hub {
-	h := &Hub{ipc: ipc, db: db, clients: map[*Client]bool{}, sessions: map[string]*Session{}, execs: map[string]*execRun{}}
+	home, _ := os.UserHomeDir()
+	h := &Hub{organization: NewOrganizationReader(home), ipc: ipc, db: db, clients: map[*Client]bool{}, sessions: map[string]*Session{}, execs: map[string]*execRun{}}
 	ipc.OnBroadcast = h.onBroadcast
 	ipc.OnReset = h.onReset
 	return h
@@ -212,6 +215,12 @@ func (h *Hub) refreshList() {
 		log.Printf("thread list: %v", err)
 		return
 	}
+	organization := emptyOrganization()
+	if h.organization != nil && h.db != "" && len(ts) > 0 {
+		ids := codexOrganizationIDs(h.db, ts)
+		organization, _ = h.organization.Codex(h.db, ids)
+		ts = applyThreadOrganization(ts, organization)
+	}
 	h.mu.Lock()
 	for i := range ts {
 		t := &ts[i]
@@ -234,9 +243,10 @@ func (h *Hub) refreshList() {
 			}
 		}
 	}
-	b := mustJSON(map[string]any{"t": "threads", "threads": ts})
+	b := mustJSON(map[string]any{"t": "threads", "threads": ts, "groups": organization.Groups})
 	changed := !bytes.Equal(b, h.listJSON)
 	h.threads = ts
+	h.orgState = organization
 	h.listJSON = b
 	var cs []*Client
 	if changed {
@@ -440,6 +450,8 @@ func (h *Hub) handle(c *Client, raw []byte) {
 			home, _ := os.UserHomeDir()
 			c.push(mustJSON(map[string]any{"t": "projects", "projects": ps, "home": home}))
 		}()
+	case "group":
+		go func() { threads, err := h.organizationGroup(m.ID); ack(err, map[string]any{"threads": threads}) }()
 	case "project":
 		go func() {
 			ts, err := listProjectThreads(h.db, m.Cwd)

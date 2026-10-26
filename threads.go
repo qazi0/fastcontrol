@@ -19,30 +19,34 @@ import (
 )
 
 type ThreadInfo struct {
-	Provider  string `json:"provider,omitempty"`
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Preview   string `json:"preview"`
-	Cwd       string `json:"cwd"`
-	Source    string `json:"source"`
-	Kind      string `json:"kind,omitempty"`
-	Recency   int64  `json:"recency"`
-	Rollout   string `json:"-"`
-	Active    bool   `json:"active"`
-	Live      bool   `json:"live"`
-	Running   bool   `json:"running"`
-	Attention bool   `json:"attention,omitempty"` // waiting on an approval or a question
-	Subagent  bool   `json:"subagent,omitempty"`
-	ParentID  string `json:"parentId,omitempty"`
-	AgentPath string `json:"agentPath,omitempty"`
-	AgentName string `json:"agentName,omitempty"`
-	Activity  string `json:"activity,omitempty"`
-	Pinned    bool   `json:"pinned,omitempty"`
-	Exec      bool   `json:"exec,omitempty"` // first turn running headless via codex exec
-	LastMsg   string `json:"lastMsg,omitempty"`
-	LastErr   string `json:"lastErr,omitempty"`
-	TurnAt    int64  `json:"turnAt,omitempty"` // when the current or last turn started (ms)
-	Branch    string `json:"branch,omitempty"`
+	Provider     string   `json:"provider,omitempty"`
+	ID           string   `json:"id"`
+	Title        string   `json:"title"`
+	Preview      string   `json:"preview"`
+	Cwd          string   `json:"cwd"`
+	Source       string   `json:"source"`
+	Kind         string   `json:"kind,omitempty"`
+	Recency      int64    `json:"recency"`
+	Rollout      string   `json:"-"`
+	Active       bool     `json:"active"`
+	Live         bool     `json:"live"`
+	Running      bool     `json:"running"`
+	Attention    bool     `json:"attention,omitempty"` // waiting on an approval or a question
+	Subagent     bool     `json:"subagent,omitempty"`
+	ParentID     string   `json:"parentId,omitempty"`
+	AgentPath    string   `json:"agentPath,omitempty"`
+	AgentName    string   `json:"agentName,omitempty"`
+	Activity     string   `json:"activity,omitempty"`
+	Pinned       bool     `json:"pinned,omitempty"`
+	Exec         bool     `json:"exec,omitempty"` // first turn running headless via codex exec
+	LastMsg      string   `json:"lastMsg,omitempty"`
+	LastErr      string   `json:"lastErr,omitempty"`
+	TurnAt       int64    `json:"turnAt,omitempty"` // when the current or last turn started (ms)
+	Branch       string   `json:"branch,omitempty"`
+	DisplayTitle string   `json:"displayTitle,omitempty"`
+	ProjectID    string   `json:"projectId,omitempty"`
+	GroupIDs     []string `json:"groupIds,omitempty"`
+	Relation     string   `json:"relation,omitempty"`
 
 	// Settings recorded in the database, used for threads the desktop has not loaded.
 	Model    string `json:"-"`

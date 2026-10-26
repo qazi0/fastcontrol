@@ -51,6 +51,13 @@ func listSubagents(db, parent string) ([]ThreadInfo, error) {
 		// Earlier Codex databases recorded parentage only in source metadata.
 		agents, err = queryThreads(db, threadSelect+` where `+sourceMatch+` order by recency_at_ms desc limit 500`)
 	}
+	filtered := agents[:0]
+	for _, agent := range agents {
+		if agent.Subagent || !codexFullChild(agent) {
+			filtered = append(filtered, agent)
+		}
+	}
+	agents = filtered
 	for i := range agents {
 		agents[i].Subagent = true
 		agents[i].ParentID = parent
@@ -65,6 +72,24 @@ func listSubagents(db, parent string) ([]ThreadInfo, error) {
 	return agents, err
 }
 
+func codexFullChild(t ThreadInfo) bool {
+	if t.Subagent {
+		return false
+	}
+	switch t.Source {
+	case "desktop", "app", "vscode", "cli":
+		return true
+	}
+	switch t.Kind {
+	case "main", "user", "app", "cli":
+		return true
+	}
+	var source struct {
+		Fork string `json:"forked_from_id"`
+	}
+	return json.Unmarshal([]byte(t.Source), &source) == nil && source.Fork != ""
+}
+
 func (h *Hub) isSubagent(id string) bool {
 	if id == "" {
 		return false
@@ -72,6 +97,9 @@ func (h *Hub) isSubagent(id string) bool {
 	info, cached := h.threadInfo(id)
 	if cached && info.Subagent {
 		return true
+	}
+	if cached && codexFullChild(info) {
+		return false
 	}
 	h.mu.Lock()
 	s := h.sessions[id]
@@ -85,6 +113,9 @@ func (h *Hub) isSubagent(id string) bool {
 	rows, err := queryThreads(h.db, threadSelect+` where id=`+sqlQuote(id)+` limit 1`)
 	if err == nil && len(rows) == 1 && rows[0].Subagent {
 		return true
+	}
+	if err == nil && len(rows) == 1 && codexFullChild(rows[0]) {
+		return false
 	}
 	data, err := sqliteJSON(h.db, `select child_thread_id from thread_spawn_edges where child_thread_id=`+sqlQuote(id)+` limit 1`)
 	var edges []map[string]any

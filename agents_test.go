@@ -26,7 +26,8 @@ CREATE TABLE thread_spawn_edges(parent_thread_id TEXT,child_thread_id TEXT PRIMA
 INSERT INTO threads VALUES('child','','Review','Prompt','','/same',` + sqlQuote(source) + `,'subagent',20,` + sqlQuote(rollout) + `,0,'','gpt-6.1-sol','low','never','{}',1);
 INSERT INTO threads VALUES('edge-child','','Edge Child','Prompt','Preview','/same','exec','',10,` + sqlQuote(rollout) + `,0,'','gpt-6.1-sol','low','never','{}',0);
 INSERT INTO threads VALUES('unrelated','','Other','Prompt','Preview','/same','exec','',30,` + sqlQuote(rollout) + `,0,'','gpt-6.1-sol','low','never','{}',0);
-INSERT INTO thread_spawn_edges VALUES('parent','child','open'),('parent','edge-child','open');`
+INSERT INTO threads VALUES('full-child','','Full child','Prompt','Preview','/same','desktop','',40,` + sqlQuote(rollout) + `,0,'','gpt-6.1-sol','low','never','{}',0);
+INSERT INTO thread_spawn_edges VALUES('parent','child','open'),('parent','edge-child','open'),('parent','full-child','open');`
 	if runtime.GOOS == "darwin" {
 		if out, err := exec.Command(sqliteBinary(), path, schema).CombinedOutput(); err != nil {
 			t.Fatalf("database fixture: %s %v", out, err)
@@ -72,6 +73,9 @@ func TestSubagentControlsAreRejectedBeforeDispatch(t *testing.T) {
 	h.threads[1].Subagent = false
 	if !h.isSubagent("edge-child") {
 		t.Fatal("edge-only child is writable")
+	}
+	if h.isSubagent("full-child") {
+		t.Fatal("full child session was treated as a read-only subagent")
 	}
 	c := &Client{out: make(chan []byte, 32), done: make(chan struct{})}
 	for _, op := range []string{"send", "stop", "wake", "settings", "approve", "answer", "compact", "archive", "unarchive"} {

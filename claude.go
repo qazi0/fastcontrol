@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -45,8 +46,10 @@ type ClaudeManager struct {
 	models                     []Model
 	active                     map[string]claudeActive
 	lastList                   []byte
+	orgState                   OrganizationSnapshot // immutable after publication under mu
 	watchedMod                 map[string]time.Time
 	refreshMu                  sync.Mutex
+	refreshJob                 atomic.Bool
 	modelsMu                   sync.Mutex
 }
 
@@ -203,10 +206,20 @@ func (m *ClaudeManager) refresh() {
 		}
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Recency > list[j].Recency })
-	b := mustJSON(map[string]any{"t": "threads", "provider": "claude", "threads": list})
+	organization := emptyOrganization()
+	if m.hub.organization != nil && len(list) > 0 {
+		ids := make([]string, len(list))
+		for i := range list {
+			ids[i] = list[i].ID
+		}
+		organization, _ = m.hub.organization.Claude(ids)
+		list = applyThreadOrganization(list, organization)
+	}
+	b := mustJSON(map[string]any{"t": "threads", "provider": "claude", "threads": list, "groups": organization.Groups})
 	m.mu.Lock()
 	changed := !bytes.Equal(b, m.lastList)
 	m.lastList = b
+	m.orgState = organization
 	m.mu.Unlock()
 	if changed {
 		m.hub.mu.Lock()

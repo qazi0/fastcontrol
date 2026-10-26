@@ -132,11 +132,13 @@ func (m *ClaudeManager) handle(c *Client, raw []byte) {
 	}
 	switch op {
 	case "threads":
-		m.refresh()
+		m.requestRefresh()
 		m.mu.Lock()
 		b := append([]byte(nil), m.lastList...)
 		m.mu.Unlock()
-		c.push(b)
+		if len(b) > 0 {
+			c.push(b)
+		}
 	case "open", "more":
 		ack(m.open(c, id, op == "more"), nil)
 	case "close":
@@ -147,6 +149,12 @@ func (m *ClaudeManager) handle(c *Client, raw []byte) {
 		m.projects(c, "")
 	case "project":
 		m.projects(c, str(v, "cwd"))
+	case "group":
+		go func() {
+			m.refresh()
+			threads, err := m.organizationGroup(id)
+			ack(err, map[string]any{"threads": threads})
+		}()
 	case "models":
 		go func() {
 			err := m.discoverModels()
