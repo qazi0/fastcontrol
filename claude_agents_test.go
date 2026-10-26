@@ -106,6 +106,16 @@ func TestClaudeAgentTranscriptLifecycleAndReadOnlyControls(t *testing.T) {
 	if len(c.out) != 0 {
 		t.Fatal("closed view was re-published")
 	}
+	if err = m.openWork(c, root, list[0].ID, false); err != nil {
+		t.Fatal(err)
+	}
+	<-c.out
+	if err = m.publishWork(c, work, old, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.out) != 0 {
+		t.Fatal("an old subscription overwrote a reopened view")
+	}
 	if _, err = m.resolveWork("unrelated", list[0].ID); err == nil {
 		t.Fatal("unrelated parent opened an agent")
 	}

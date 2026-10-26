@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -23,6 +24,7 @@ type claudeWorkEntry struct {
 	Root, Path, Directory string
 }
 type claudeWorkWatch struct {
+	Gate               *sync.Mutex // serializes discovery and publication for this view
 	Parent             string
 	Window, Generation int
 	File               os.FileInfo
@@ -317,7 +319,7 @@ func (m *ClaudeManager) resolveWork(parent, id string) (claudeWorkEntry, error) 
 	return claudeWorkEntry{}, errors.New("Subagent Does Not Belong To This Chat")
 }
 func (m *ClaudeManager) openWork(c *Client, parent, id string, more bool) error {
-	work, err := m.resolveWork(parent, id)
+	_, err := m.resolveWork(parent, id)
 	if err != nil {
 		return err
 	}
@@ -334,6 +336,9 @@ func (m *ClaudeManager) openWork(c *Client, parent, id string, more bool) error 
 		m.workWatch[c] = map[string]claudeWorkWatch{}
 	}
 	w := m.workWatch[c][id]
+	if w.Gate == nil {
+		w.Gate = &sync.Mutex{}
+	}
 	w.Parent = parent
 	if w.Window == 0 {
 		w.Window = 15
@@ -346,7 +351,22 @@ func (m *ClaudeManager) openWork(c *Client, parent, id string, more bool) error 
 	m.workWatch[c][id] = w
 	m.mu.Unlock()
 	m.hub.mu.Unlock()
-	return m.publishWork(c, work, w, more)
+	return m.refreshWork(c, id, w, more)
+}
+func (m *ClaudeManager) refreshWork(c *Client, id string, w claudeWorkWatch, more bool) error {
+	w.Gate.Lock()
+	defer w.Gate.Unlock()
+	m.mu.Lock()
+	current, ok := m.workWatch[c][id]
+	m.mu.Unlock()
+	if !ok || current.Generation != w.Generation || current.Gate != w.Gate {
+		return nil
+	}
+	work, err := m.resolveWork(w.Parent, id)
+	if err != nil {
+		return err
+	}
+	return m.publishWork(c, work, current, more)
 }
 func (m *ClaudeManager) moreWork(c *Client, id string, more bool) error {
 	m.mu.Lock()
@@ -415,7 +435,7 @@ func (m *ClaudeManager) publishWork(c *Client, work claudeWorkEntry, w claudeWor
 	m.hub.mu.Lock()
 	m.mu.Lock()
 	current, ok := m.workWatch[c][work.Info.ID]
-	if !m.hub.clients[c] || !ok || current.Generation != w.Generation {
+	if !m.hub.clients[c] || !ok || current.Generation != w.Generation || current.Gate != w.Gate {
 		m.mu.Unlock()
 		m.hub.mu.Unlock()
 		return nil
@@ -447,10 +467,7 @@ func (m *ClaudeManager) pollWork() {
 	}
 	m.mu.Unlock()
 	for _, s := range clients {
-		work, err := m.resolveWork(s.watch.Parent, s.id)
-		if err == nil {
-			err = m.publishWork(s.client, work, s.watch, false)
-		}
+		err := m.refreshWork(s.client, s.id, s.watch, false)
 		if err != nil {
 			m.unavailableWork(s.client, s.id, s.watch)
 		}
@@ -460,7 +477,7 @@ func (m *ClaudeManager) unavailableWork(c *Client, id string, w claudeWorkWatch)
 	m.hub.mu.Lock()
 	m.mu.Lock()
 	current, ok := m.workWatch[c][id]
-	if !m.hub.clients[c] || !ok || current.Generation != w.Generation || current.State == "unavailable" {
+	if !m.hub.clients[c] || !ok || current.Generation != w.Generation || current.Gate != w.Gate || current.State == "unavailable" {
 		m.mu.Unlock()
 		m.hub.mu.Unlock()
 		return
