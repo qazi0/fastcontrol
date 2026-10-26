@@ -70,7 +70,7 @@ test('Markdown file citations use escaped, host-scoped downloads and preserve li
     MessageContent:{renderFileCitations:context.renderFileCitations},
     isAudioPath:()=>false,
   });
-  vm.runInContext(app.slice(app.indexOf('function audioPath('),app.indexOf('document.addEventListener("click", async event => {',app.indexOf('function audioPath('))) + app.slice(app.indexOf('function md(src)'),app.indexOf('// ------------------------------------------------------------- thread meta')), renderer);
+  vm.runInContext(app.slice(app.indexOf('function audioPath('),app.indexOf('document.addEventListener("click", async event => {',app.indexOf('function audioPath('))) + app.slice(app.indexOf('function md('),app.indexOf('// ------------------------------------------------------------- thread meta')), renderer);
   const citation = ':codex-file-citation{path="/reports/Vision Capability Workbook.xlsx" artifact_kind="workbook" purpose="source"}';
   const html = renderer.md('Source: '+citation);
   assert.match(html,/class="file-download"/);
@@ -94,7 +94,7 @@ test('assistant responses and user messages share envelope formatting without lo
     esc:s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
     base:s=>s.split(/[\\/]/).pop(),MessageContent:context.MessageContent || {parse:context.parse,renderFileCitations:context.renderFileCitations},isAudioPath:()=>false,
   });
-  vm.runInContext(app.slice(app.indexOf('function audioPath('),app.indexOf('document.addEventListener("click", async event => {',app.indexOf('function audioPath(')))+app.slice(app.indexOf('function md(src)'),app.indexOf('// ------------------------------------------------------------- thread meta'))+app.slice(app.indexOf('function messageHTML('),app.indexOf('function turnHTML(')),renderer);
+  vm.runInContext(app.slice(app.indexOf('function audioPath('),app.indexOf('document.addEventListener("click", async event => {',app.indexOf('function audioPath(')))+app.slice(app.indexOf('function md('),app.indexOf('// ------------------------------------------------------------- thread meta'))+app.slice(app.indexOf('function messageHTML('),app.indexOf('function turnHTML(')),renderer);
   const html=renderer.messageHTML(heartbeat,true);
   assert.match(html,/<b>All records match\.<\/b>/);
   assert.match(html,/data-file-path="\/reports\/final report.md"/);

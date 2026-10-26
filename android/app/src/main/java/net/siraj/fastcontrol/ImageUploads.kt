@@ -145,7 +145,7 @@ class ImageUploads {
                 .header("X-File-Name", URLEncoder.encode(name, "UTF-8"))
                 .post(file.asRequestBody(mime.toMediaType())).build()
             try {
-                client.newCall(request).execute().use { response ->
+                RelayTLS.client(server, client).newCall(request).execute().use { response ->
                     if (response.code >= 500) throw IOException("The Computer Could Not Receive The File (HTTP ${response.code})")
                     check(response.isSuccessful) {
                         if (response.code == 401) "Reconnect To This Computer And Try Again"

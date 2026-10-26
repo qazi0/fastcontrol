@@ -61,6 +61,9 @@ class MainActivity : Activity() {
 
     private lateinit var container: FrameLayout
     private lateinit var webView: WebView
+    private val relayTransport by lazy { RelayTransport(this) { event ->
+        if (!isDestroyed) webView.evaluateJavascript("window.onRelaySocket && window.onRelaySocket($event)", null)
+    } }
     private var fileCallback: ValueCallback<Array<Uri>>? = null
     private var awaitingMic = false
     @Volatile private var pendingVoice: String? = null
@@ -220,6 +223,7 @@ class MainActivity : Activity() {
         if (VoiceCaptureService.observer === voiceObserver) VoiceCaptureService.observer = null
         if (ImageUploads.observer === uploadObserver) ImageUploads.observer = null
         pendingImage?.delete(); pendingImage = null
+        relayTransport.dispose()
         webView.destroy()
         super.onDestroy()
     }
@@ -278,6 +282,7 @@ class MainActivity : Activity() {
                 .put("type", "pair")
                 .put("url", url)
                 .put("token", data.getQueryParameter("t") ?: "")
+                .put("pin", data.getQueryParameter("pin") ?: "")
                 .put("name", data.getQueryParameter("name") ?: "")
                 .toString()
         }
@@ -394,7 +399,7 @@ class MainActivity : Activity() {
             view: WebView, request: WebResourceRequest
         ): WebResourceResponse? {
             val url = request.url
-            if (url.host != ASSET_HOST) return null
+            if (url.host != ASSET_HOST) return relayTransport.intercept(request)
             if (url.scheme == "https" && url.path == "/relay-audio") return audioStreams.serve(request)
             return serveAsset(url.path ?: "/")
         }
@@ -589,7 +594,7 @@ class MainActivity : Activity() {
         fun downloadFile(serverId: String, base: String, path: String) {
             val server = Store.servers(ctx).firstOrNull { it.id == serverId && base.trimEnd('/') in it.urls.map { u -> u.trimEnd('/') } } ?: return
             val url = base.trimEnd('/') + "/file?path=" + java.net.URLEncoder.encode(path, "UTF-8")
-            downloads.download(url, server.token, path.replace('\\', '/').substringAfterLast('/'))
+            downloads.download(url, server.token, path.replace('\\', '/').substringAfterLast('/'), server)
         }
 
         @JavascriptInterface
@@ -598,13 +603,24 @@ class MainActivity : Activity() {
         }
 
         @JavascriptInterface
+        fun prepareRelayPairing(url: String, token: String, pin: String): Boolean = relayTransport.preparePairing(url, token, pin)
+        @JavascriptInterface
+        fun clearRelayPairing() = relayTransport.clearPairing()
+        @JavascriptInterface
+        fun openRelaySocket(id: String, server: String, base: String) { relayTransport.open(id, server, base) }
+        @JavascriptInterface
+        fun sendRelaySocket(id: String, text: String) { relayTransport.send(id, text) }
+        @JavascriptInterface
+        fun closeRelaySocket(id: String) { relayTransport.close(id) }
+
+        @JavascriptInterface
         fun getServers(): String = Store.serversJson(ctx)
 
         @JavascriptInterface
         fun downloadImage(serverId: String, base: String, path: String) {
             val server = Store.servers(ctx).firstOrNull { it.id == serverId && base.trimEnd('/') in it.urls.map { u -> u.trimEnd('/') } } ?: return
             val url = base.trimEnd('/') + "/image?path=" + java.net.URLEncoder.encode(path, "UTF-8")
-            downloads.download(url, server.token)
+            downloads.download(url, server.token, server = server)
         }
 
         @JavascriptInterface

@@ -4,9 +4,9 @@ import android.content.Context
 import org.json.JSONArray
 
 /** One paired relay, as handed over by the web UI through `CodexAndroid.setServers`. */
-data class Server(val id: String, val name: String, val url: String, val token: String, val alts: List<String> = emptyList()) {
+data class Server(val id: String, val name: String, val url: String, val token: String, val alts: List<String> = emptyList(), val pin: String = "") {
     /** The paired address first, then the other addresses the relay advertised. */
-    val urls: List<String> get() = (listOf(url) + alts).distinct()
+    val urls: List<String> get() = (listOf(url) + alts).distinct().filter { !url.startsWith("https://") || it.startsWith("https://") }
 }
 
 /** Persistent settings shared by the activity, the bridge and the watch service. */
@@ -21,6 +21,7 @@ object Store {
 
     fun setServersJson(ctx: Context, json: String) {
         prefs(ctx).edit().putString(KEY_SERVERS, json).apply()
+        RelayTLS.reset()
     }
 
     fun servers(ctx: Context): List<Server> = parseServers(serversJson(ctx))
@@ -35,7 +36,9 @@ object Store {
             val id = o.optString("id").ifEmpty { url }
             val alts = o.optJSONArray("alts")
             val altList = if (alts == null) emptyList() else (0 until alts.length()).map { alts.optString(it) }.filter { it.isNotEmpty() }
-            out += Server(id, o.optString("name").ifEmpty { url }, url, o.optString("token"), altList)
+            val pin = o.optString("pin")
+            if (pin.isNotEmpty() && (!RelayTLS.validPin(pin) || !url.startsWith("https://"))) continue
+            out += Server(id, o.optString("name").ifEmpty { url }, url, o.optString("token"), altList, pin)
         }
         return out
     }

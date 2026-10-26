@@ -164,7 +164,7 @@ class VoiceRecorder(
         val request = Request.Builder().url(s.base.trimEnd('/') + "/transcribe")
             .header("Authorization", "Bearer " + server.token)
             .post(file.asRequestBody((if (s.compressed) "audio/mp4" else "audio/wav").toMediaType())).build()
-        val call = client.newCall(request); s.call = call
+        val call = RelayTLS.client(server, client).newCall(request); s.call = call
         if (s.cancelled) {call.cancel();return}
         call.execute().use { response ->
             val body = response.body?.string() ?: ""

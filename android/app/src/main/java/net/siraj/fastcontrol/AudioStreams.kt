@@ -33,7 +33,7 @@ class AudioStreams(private val context: Context) {
                     builder.header(name, it.value)
                 }
             }
-            val response = client.newCall(builder.build()).execute()
+            val response = RelayTLS.client(server, client).newCall(builder.build()).execute()
             val body = response.body
             val mime = body?.contentType()?.toString()?.substringBefore(';') ?: ""
             if (response.code !in setOf(200, 206) || !mime.startsWith("audio/") || body == null) {

@@ -29,8 +29,8 @@ android {
         applicationId = "net.siraj.fastcontrol"
         minSdk = 26
         targetSdk = 36
-        versionCode = 120
-        versionName = "0.2.9"
+        versionCode = 121
+        versionName = "0.2.10"
     }
 
     signingConfigs {
