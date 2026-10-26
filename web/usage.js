@@ -1,6 +1,6 @@
 "use strict";
 
-const usageCache = new Map();
+const usageCache = new Map(), weeklyUsageCache = new Map();
 const usageRequests = new Map();
 let usageServer = "", usageRenderedServer = "";
 const usageViewState = new Map();
@@ -29,16 +29,22 @@ function usageCost(total) {
 function usageProvider(provider) {
   const name = provider.provider === 'claude' ? 'Claude Code' : 'Codex';
   const plan = provider.plan ? provider.plan.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()) : '';
-  const today = provider.today, month = provider.days30;
+  const today = provider.today || {}, month = provider.days30 || {};
+  const windows=provider.windows || [],models=provider.models || [];
+  const localPending=provider.localLoading && !provider.localAt;
+  const quotaPending=provider.quotaLoading;
+  const pending='<span class="voice-spinner" aria-label="Loading"></span>';
+  const localTokens=value=>localPending ? pending : tokens(value);
+  const localCost=total=>localPending ? pending : esc(usageCost(total));
   const tokens = (value) => `<span title="${Number(value || 0).toLocaleString()} Tokens" aria-label="${Number(value || 0).toLocaleString()} Tokens">${usageNumber(value)}</span>`;
   const extras = [];
   if (provider.resetCredits != null) extras.push(`<div class="usage-extra"><span>Available Resets</span><b>${provider.resetCredits}</b></div>`);
   if (provider.credits != null && provider.credits > 0) extras.push(`<div class="usage-extra"><span>Credits Remaining</span><b>${Number(provider.credits).toLocaleString()}</b></div>`);
   return `<section class="usage-provider" aria-label="${name} Usage"><header class="usage-provider-head">${usageLogo(provider.provider)}<h2>${name}</h2>${plan ? `<span class="usage-plan">${esc(plan)}</span>` : ''}</header>`+
-    `<div class="usage-limits">${provider.windows.length ? provider.windows.map(usageWindow).join('') : `<p class="usage-unavailable">${esc(provider.quotaError || 'Subscription Limits Unavailable')}</p>`}</div>${extras.join('')}`+
-    `<table class="usage-totals"><caption>Local Activity</caption><thead><tr><td></td><th scope="col">Today</th><th scope="col">30 Days</th></tr></thead><tbody><tr><th scope="row">Tokens</th><td>${tokens(today.tokens)}</td><td>${tokens(month.tokens)}</td></tr><tr><th scope="row">Est. API Cost</th><td>${esc(usageCost(today))}</td><td>${esc(usageCost(month))}</td></tr></tbody></table><p class="usage-cost-note">API-equivalent estimate. Subscription charges are separate.</p>`+
+    `<div class="usage-limits">${windows.length ? windows.map(usageWindow).join('') : quotaPending ? `<p class="usage-pending" role="status">${pending} Checking limits</p>` : `<p class="usage-unavailable">${esc(provider.quotaError || 'Subscription Limits Unavailable')}</p>`}${quotaPending && windows.length ? `<p class="usage-pending" role="status">${pending} Updating limits</p>` : ''}</div>${extras.join('')}`+
+    `<table class="usage-totals"><caption>Local Activity</caption><thead><tr><td></td><th scope="col">Today</th><th scope="col">30 Days</th></tr></thead><tbody><tr><th scope="row">Tokens</th><td>${localTokens(today.tokens)}</td><td>${localTokens(month.tokens)}</td></tr><tr><th scope="row">Est. API Cost</th><td>${localCost(today)}</td><td>${localCost(month)}</td></tr></tbody></table><p class="usage-cost-note">API-equivalent estimate. Subscription charges are separate.</p>${provider.localLoading ? `<p class="usage-pending" role="status">${pending} Reading local activity</p>` : ''}`+
     (provider.localError || provider.skipped || month.unpricedTokens ? `<p class="usage-coverage">${esc(provider.localError || (provider.skipped ? 'Some large log entries were skipped.' : ''))}${month.unpricedTokens ? `${provider.localError || provider.skipped ? ' ' : ''}${usageNumber(month.unpricedTokens)} tokens have no published rate. Their cost is excluded.` : ''}</p>` : '')+
-    (provider.models.length ? `<details class="usage-models" data-usage-provider="${esc(provider.provider)}"><summary>30-Day Breakdown ${I.down}</summary><table><thead><tr><th scope="col">Model</th><th scope="col">Tokens</th><th scope="col">Cost</th></tr></thead><tbody>${provider.models.map(model=>`<tr><th scope="row">${esc(model.model || 'Model Unrecorded')}</th><td>${tokens(model.tokens)}</td><td>${esc(usageCost(model))}</td></tr>`).join('')}</tbody></table><div class="usage-token-types"><span>Input <b>${usageNumber(month.input)}</b></span><span>Cached <b>${usageNumber(month.cached)}</b></span><span>Cache Writes <b>${usageNumber(month.writes)}</b></span><span>Output <b>${usageNumber(month.output)}</b></span></div></details>` : '')+
+    (models.length ? `<details class="usage-models" data-usage-provider="${esc(provider.provider)}"><summary>30-Day Breakdown ${I.down}</summary><table><thead><tr><th scope="col">Model</th><th scope="col">Tokens</th><th scope="col">Cost</th></tr></thead><tbody>${models.map(model=>`<tr><th scope="row">${esc(model.model || 'Model Unrecorded')}</th><td>${tokens(model.tokens)}</td><td>${esc(usageCost(model))}</td></tr>`).join('')}</tbody></table><div class="usage-token-types"><span>Input <b>${usageNumber(month.input)}</b></span><span>Cached <b>${usageNumber(month.cached)}</b></span><span>Cache Writes <b>${usageNumber(month.writes)}</b></span><span>Output <b>${usageNumber(month.output)}</b></span></div></details>` : '')+
     `</section>`;
 }
 function renderUsage() {
@@ -48,31 +54,38 @@ function renderUsage() {
   if(previousBody && usageRenderedServer) usageViewState.set(usageRenderedServer,{scroll:previousBody.scrollTop,expanded:[...sh.querySelectorAll('.usage-models[open]')].map(node=>node.dataset.usageProvider)});
   usageRenderedServer=usageServer;
 
-  const loading = usageRequests.has(usageServer);
+  const loading = usageRequests.has(usageServer+':full') || cached?.report?.refreshing;
   sh.innerHTML = `<header class="usage-head"><button class="icon-btn" data-usage="close" aria-label="Back">${svg('<path d="M15 5l-7 7 7 7"/>')}</button><div class="head-text"><h1>Usage</h1><div class="h-sub">${esc(serverName(usageServer))}</div></div><button class="icon-btn${loading ? ' loading' : ''}" data-usage="refresh" aria-label="Refresh Usage" ${loading ? 'disabled' : ''}>${loading ? '<span class="voice-spinner"></span>' : svg('<path d="M20 8a8 8 0 10.2 7M20 3v5h-5"/>')}</button></header>`+
     `<nav class="chips usage-machines" aria-label="Usage Computer">${S.servers.map(server=>`<button class="chip${server.id === usageServer ? ' on' : ''}" data-usage-server="${esc(server.id)}" aria-pressed="${server.id === usageServer}"><span class="dot${conns.get(server.id)?.ok ? ' on' : ' off'}"></span>${esc(serverName(server.id))}</button>`).join('')}</nav>`+
-    `<main class="usage-body scroll">${cached?.report ? `<p class="usage-scope">Subscription limits follow the account on this computer.</p><div class="usage-providers">${cached.report.providers.map(usageProvider).join('')}</div><footer class="usage-foot"><p>Tokens and costs reflect local coding activity. Costs estimate the API value of that activity; subscription charges are separate.</p><div><span>Today · ${esc(cached.report.day)} ${esc(cached.report.zone)}</span><span>Updated ${esc(new Date(cached.report.updatedAt*1000).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}))}</span></div></footer>` : loading ? '<div class="usage-loading" role="status"><span class="voice-spinner"></span><p>Reading Usage</p><span>Checking limits and local activity.</span></div>' : ''}${cached?.error ? `<div class="usage-error" role="status"><p>${esc(cached.error)}</p><button class="btn" data-usage="refresh">Try Again</button></div>` : ''}${!connection?.ok ? '<p class="usage-offline">This computer is offline. Showing the last available reading.</p>' : ''}</main>`;
+    `<main class="usage-body scroll">${cached?.report ? `<p class="usage-scope">Subscription limits follow the account on this computer.</p><div class="usage-providers">${cached.report.providers.map(usageProvider).join('')}</div><footer class="usage-foot"><p>Tokens and costs reflect local coding activity. Costs estimate the API value of that activity; subscription charges are separate.</p><div><span>Today · ${esc(cached.report.day)} ${esc(cached.report.zone)}</span><span>${cached.report.updatedAt ? 'Updated '+esc(new Date(cached.report.updatedAt*1000).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})) : 'Reading usage'}</span></div></footer>` : loading ? '<div class="usage-loading" role="status"><span class="voice-spinner"></span><p>Reading Usage</p><span>Checking limits and local activity.</span></div>' : ''}${cached?.error ? `<div class="usage-error" role="status"><p>${esc(cached.error)}</p><button class="btn" data-usage="refresh">Try Again</button></div>` : ''}${!connection?.ok ? '<p class="usage-offline">This computer is offline.</p>' : ''}</main>`;
   const state=usageViewState.get(usageServer);
   if(state){for(const details of sh.querySelectorAll('.usage-models'))details.open=state.expanded.includes(details.dataset.usageProvider);sh.querySelector('.usage-body').scrollTop=state.scroll;}
 }
-async function readUsage(sid, refresh = false) {
+function contextUsage(sid,provider) {
+  const weekly=weeklyUsageCache.get(sid+':'+provider),full=usageCache.get(sid);
+  const latest=entry=>entry?.report?.providers?.find(p=>p.provider===provider)?.quotaAt || 0;
+  return latest(full)>latest(weekly) ? full : weekly || full;
+}
+async function readUsage(sid, refresh = false, provider = '') {
+  const cache=provider ? weeklyUsageCache : usageCache,key=provider ? sid+':'+provider : sid;
+  const requestKey=provider ? key : sid+':full';
   const connection = conns.get(sid);
-  if (!connection?.ok) return {...usageCache.get(sid),error:'Connect to this computer to read its usage.'};
-  if (usageRequests.has(sid)) return usageRequests.get(sid);
-  const cached = usageCache.get(sid);
-  if (!refresh && cached?.report && Date.now() - cached.at < 60000) return cached;
+  if (!connection?.ok) return {...(provider ? contextUsage(sid,provider) : cache.get(key)),error:'Connect to this computer to read its usage.'};
+  if (usageRequests.has(requestKey)) return usageRequests.get(requestKey);
+  const cached = provider ? contextUsage(sid,provider) : cache.get(key);
+  if (!refresh && cached?.report && Date.now() - cached.at < (cached.report.refreshing ? 1000 : 60000)) return cached;
   const request = (async()=>{
     try {
-      const response = await fetch(connection.base+'/usage'+(refresh?'?refresh=1':''),{headers:{Authorization:'Bearer '+connection.s.token},signal:AbortSignal.timeout(40000)});
+      const response = await fetch(connection.base+'/usage?live=1'+(provider?'&provider='+encodeURIComponent(provider):'')+(refresh?'&refresh=1':''),{headers:{Authorization:'Bearer '+connection.s.token},signal:AbortSignal.timeout(40000)});
       if (!response.ok) throw Error(response.status===404 ? 'Update fastcontrol on this computer to enable usage.' : 'Could not read usage. Check the computer connection and try again.');
       const report = await response.json();
       if (!Array.isArray(report.providers)) throw Error('This computer returned an invalid usage reading.');
-      usageCache.set(sid,{report,at:Date.now()});
-    } catch(error) {usageCache.set(sid,{...usageCache.get(sid),error:error.name==='TimeoutError'?'Usage took too long to refresh. Try again.':error.message});}
-    return usageCache.get(sid);
+      cache.set(key,{report,at:Date.now()});
+    } catch(error) {cache.set(key,{...cached,error:error.name==='TimeoutError'?'Usage took too long to refresh. Try again.':error.message});}
+    return cache.get(key);
   })();
-  usageRequests.set(sid,request);
-  try {return await request;} finally {if(usageRequests.get(sid)===request)usageRequests.delete(sid);}
+  usageRequests.set(requestKey,request);
+  try {return await request;} finally {if(usageRequests.get(requestKey)===request)usageRequests.delete(requestKey);}
 }
 async function loadUsage(refresh = false) {
   const sid=usageServer, request=readUsage(sid,refresh);
@@ -97,15 +110,16 @@ async function showContextWeekly(sheet, sid, provider) {
     const quota=weeklyQuota(cached?.report,provider);
     target.className='context-weekly'+(quota.tone?' '+quota.tone:'');
     target.innerHTML=`<div class="context-weekly-head"><h3>Weekly Usage</h3>${quota.window ? `<strong>${new Intl.NumberFormat(undefined,{maximumFractionDigits:1}).format(quota.remaining)}% Left</strong>` : ''}</div>`+
-      (quota.window ? `<div class="usage-track" role="meter" aria-label="Weekly Usage Used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${quota.used}" aria-valuetext="${quota.remaining}% remaining"><span style="width:${quota.used}%"></span></div><p ${quota.window.resetAt ? `data-reset-at="${quota.window.resetAt}"` : ''}>${quota.window.resetAt ? esc(usageReset(quota.window.resetAt)):'Reset Time Unavailable'}</p>` : `<p>${esc(cached?.error || quota.account?.quotaError || 'Weekly usage is unavailable for this account.')}</p>`)+
+      (quota.window ? `<div class="usage-track" role="meter" aria-label="Weekly Usage Used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${quota.used}" aria-valuetext="${quota.remaining}% remaining"><span style="width:${quota.used}%"></span></div><p ${quota.window.resetAt ? `data-reset-at="${quota.window.resetAt}"` : ''}>${quota.window.resetAt ? esc(usageReset(quota.window.resetAt)):'Reset Time Unavailable'}</p>` : `<p>${quota.account?.quotaLoading ? '<span class="voice-spinner"></span> Checking limits' : esc(cached?.error || quota.account?.quotaError || 'Weekly usage is unavailable for this account.')}</p>`)+
+      (quota.account?.quotaLoading && quota.window ? '<p class="usage-pending"><span class="voice-spinner"></span> Updating limits</p>' : '') +
       (cached?.error && quota.window ? `<p>${conns.get(sid)?.ok ? "Couldn't refresh usage" : 'Offline'}${quota.account?.quotaAt || cached.at ? ` · Updated ${esc(new Date(quota.account?.quotaAt ? quota.account.quotaAt*1000 : cached.at).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}))}` : ''}</p>` : '') +
       `<button class="context-weekly-link">Usage And Limits ${I.chev}</button>`;
     target.querySelector('button').onclick=()=>openUsage(sid);
   };
-  const cached=usageCache.get(sid);
+  const cached=contextUsage(sid,provider);
   if(cached?.report)paint(cached);
   else target.innerHTML='<div class="context-weekly-loading" role="status"><span class="voice-spinner"></span><span>Reading Weekly Usage</span></div>';
-  paint(await readUsage(sid));
+  paint(await readUsage(sid,false,provider));
 }
 
 function openUsage(sid) {
@@ -126,6 +140,9 @@ $('usage-open').onclick = () => openUsage();
 setInterval(()=>{
   if(!['usage','context'].includes(S.sheet)||document.hidden)return;
   for(const label of $('sheet').querySelectorAll('[data-reset-at]'))label.textContent=usageReset(Number(label.dataset.resetAt));
-  if(S.sheet==='context'){if(Date.now()-(usageCache.get(S.sid)?.at||0)>=60000)showContextWeekly($('sheet'),S.sid,S.provider);}
-  else if(Date.now() - (usageCache.get(usageServer)?.at || 0) >= 60000)loadUsage();
-},30000);
+  const sid=S.sheet==='context' ? S.sid : usageServer,cached=S.sheet==='context' ? contextUsage(sid,S.provider) : usageCache.get(sid);
+  const pending=S.sheet==='context' ? weeklyQuota(cached?.report,S.provider).account?.quotaLoading : cached?.report?.refreshing;
+  if(Date.now()-(cached?.at || 0)>=(pending ? 1500 : 60000)) {
+    if(S.sheet==='context')showContextWeekly($('sheet'),S.sid,S.provider);else loadUsage();
+  }
+},1500);

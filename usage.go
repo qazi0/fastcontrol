@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -42,6 +41,9 @@ type UsageModel struct {
 }
 type ProviderUsage struct {
 	Provider     string        `json:"provider"`
+	QuotaLoading bool          `json:"quotaLoading,omitempty"`
+	LocalLoading bool          `json:"localLoading,omitempty"`
+	LocalAt      int64         `json:"localAt,omitempty"`
 	Plan         string        `json:"plan,omitempty"`
 	Windows      []UsageWindow `json:"windows"`
 	QuotaError   string        `json:"quotaError,omitempty"`
@@ -56,11 +58,12 @@ type ProviderUsage struct {
 	Skipped      int           `json:"skipped,omitempty"`
 }
 type UsageReport struct {
-	Host      string          `json:"host"`
-	Day       string          `json:"day"`
-	Zone      string          `json:"zone"`
-	UpdatedAt int64           `json:"updatedAt"`
-	Providers []ProviderUsage `json:"providers"`
+	Refreshing bool            `json:"refreshing,omitempty"`
+	Host       string          `json:"host"`
+	Day        string          `json:"day"`
+	Zone       string          `json:"zone"`
+	UpdatedAt  int64           `json:"updatedAt"`
+	Providers  []ProviderUsage `json:"providers"`
 }
 type usageTokens struct{ Input, Cached, Write, Write1h, Output, Reasoning int64 }
 type usageRow struct {
@@ -80,55 +83,33 @@ type UsageManager struct {
 	mu       sync.Mutex
 	cached   []byte
 	cachedAt time.Time
-	job      chan struct{}
+	job      *usageCollection
+	quotas   map[string]*usageQuotaEntry // guarded by mu; independent of local scans
 	// Only the single snapshot worker reads or writes this file index.
 	files map[string]usageFile
 	quota func(string, *ProviderUsage)
 }
 
-func newUsageManager(home string) *UsageManager {
-	return &UsageManager{home: home, files: map[string]usageFile{}, quota: fetchProviderQuota}
-}
-func (m *UsageManager) get(ctx context.Context, refresh bool) ([]byte, error) {
-	m.mu.Lock()
-	if !refresh && len(m.cached) > 0 && time.Since(m.cachedAt) < time.Minute {
-		b := m.cached
-		m.mu.Unlock()
-		return b, nil
-	}
-	if m.job == nil {
-		m.job = make(chan struct{})
-		done := m.job
-		go func() {
-			report := m.collect(time.Now())
-			data := mustJSON(report)
-			m.mu.Lock()
-			m.cached = data
-			m.cachedAt = time.Now()
-			m.job = nil
-			close(done)
-			m.mu.Unlock()
-		}()
-	}
-	done := m.job
-	m.mu.Unlock()
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-done:
-		m.mu.Lock()
-		b := m.cached
-		m.mu.Unlock()
-		return b, nil
-	}
-}
 func (m *UsageManager) serve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
 		http.Error(w, "Use GET", 405)
 		return
 	}
-	b, err := m.get(r.Context(), r.URL.Query().Get("refresh") == "1")
+	var b []byte
+	var err error
+	provider := r.URL.Query().Get("provider")
+	if provider != "" && provider != "codex" && provider != "claude" {
+		http.Error(w, "Unknown Provider", 400)
+		return
+	}
+	if provider != "" {
+		b, err = m.contextQuota(r.Context(), provider, r.URL.Query().Get("refresh") == "1")
+	} else if r.URL.Query().Get("live") == "1" {
+		b = m.live(r.URL.Query().Get("refresh") == "1")
+	} else {
+		b, err = m.get(r.Context(), r.URL.Query().Get("refresh") == "1")
+	}
 	if err != nil {
 		http.Error(w, "Usage Refresh Timed Out", 504)
 		return
@@ -148,15 +129,9 @@ func usageRoot(home, provider string) string {
 	}
 	return filepath.Join(home, fallback)
 }
-func (m *UsageManager) collect(now time.Time) UsageReport {
+func (m *UsageManager) collectLocal(now time.Time) UsageReport {
 	zone, _ := now.Zone()
 	report := UsageReport{Host: hostName(), Day: now.Format("2006-01-02"), Zone: zone, UpdatedAt: now.Unix(), Providers: []ProviderUsage{{Provider: "codex"}, {Provider: "claude"}}}
-	var quotas sync.WaitGroup
-	for i := range report.Providers {
-		quotas.Add(1)
-		go func(i int) { defer quotas.Done(); m.quota(m.home, &report.Providers[i]) }(i)
-	}
-	// Quota workers mutate separate structs; local aggregation uses separate values.
 	locals := map[string]ProviderUsage{"codex": {Provider: "codex"}, "claude": {Provider: "claude"}}
 	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	since := midnight.AddDate(0, 0, -29)
@@ -239,10 +214,10 @@ func (m *UsageManager) collect(now time.Time) UsageReport {
 		model.UsageTotals.add(row, provider)
 		locals[provider] = local
 	}
-	quotas.Wait()
 	for i := range report.Providers {
 		p := &report.Providers[i]
 		local := locals[p.Provider]
+		p.LocalAt = now.Unix()
 		p.Today = local.Today
 		p.Days30 = local.Days30
 		p.LocalError = local.LocalError

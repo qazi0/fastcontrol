@@ -216,7 +216,11 @@ class Conn {
         store.set("threads:" + this.s.id, this.threads.filter((t) => !t.subagent).slice(0, 200));
         scheduleRender();
         break;
-      case "open": if (here) { mark("thread:" + m.meta.mode); S.meta = m.meta; S.turns = m.turns; renderThread(m.more); } break;
+      case "open": if (here) {
+        mark("thread:" + m.meta.mode);
+        if(S.firstSnapshot && !m.more)S.stick=!S.sheet;
+        S.firstSnapshot=false;S.meta = m.meta; S.turns = m.turns; renderThread(m.more);
+      } break;
       case "meta": if (here) { S.meta = m.meta; renderMeta(); } break;
       case "turn":
         if (!here) break;
@@ -580,6 +584,7 @@ function openThread(sidv, id, push) {
   clearImageCache();
   const previousVoiceDraft = S.sid === sidv && S.id === id;
   S.sid = sidv; S.id = id; S.meta = null; S.turns = []; S.stick = true; S.readingOutput = false;
+  S.firstSnapshot = true;
   restoreThreadAttachments();
   show("thread");
   renderThreadHeader();
@@ -685,20 +690,39 @@ function bindTranscriptScroll(root, state, changed = () => {}) {
 }
 function captureReadingPlace(root) {
   const viewport=root.getBoundingClientRect(),top=viewport.top;
+  const bottom=Math.max(0,root.scrollHeight-root.clientHeight-root.scrollTop);
   const visible=node=>{const rect=node.getBoundingClientRect();return rect.bottom>top+2 && rect.top<viewport.bottom-2 && node.getClientRects().length;};
   const node=[...root.querySelectorAll('.prose-line,.output-line,pre,li,.image-preview')].find(visible) ||
     [...root.querySelectorAll('[data-entry],[data-response],.turn[data-key]')].find(visible);
   const owner=node?.closest('[data-entry],[data-response],.turn[data-key]');
-  if(!owner)return {top:root.scrollTop};
+  if(!owner)return {top:root.scrollTop,bottom};
   const selector=node.matches('.prose-line') ? '.prose-line' : node.matches('.output-line') ? '.output-line' : node.matches('.image-preview') ? '.image-preview' : node.tagName.toLowerCase();
-  return {top:root.scrollTop,key:owner.dataset.entry || owner.dataset.response || owner.dataset.key,turn:!!owner.dataset.key,selector,
-    index:[...owner.querySelectorAll(selector)].indexOf(node),offset:node.getBoundingClientRect().top-top};
+  return {top:root.scrollTop,bottom,key:owner.dataset.entry || owner.dataset.response || owner.dataset.key,turn:!!owner.dataset.key,selector,
+    identity:readingIdentity(node),index:[...owner.querySelectorAll(selector)].indexOf(node),offset:node.getBoundingClientRect().top-top};
+}
+function readingIdentity(node) {
+  const image=node.matches('.image-preview') && node.querySelector('img');
+  return image ? 'image:'+(image.dataset.relayImage || image.getAttribute('src') || '') : node.textContent.trim().slice(0,180).replace(/\s+/g,' ');
 }
 function restoreReadingPlace(root,place) {
   if(!place)return;
   const owner=[...root.querySelectorAll(place.turn ? '.turn[data-key]' : '[data-entry],[data-response]')].find(node=>(place.turn ? node.dataset.key : node.dataset.entry || node.dataset.response)===place.key);
-  const node=place.index<0 ? owner : owner?.querySelectorAll(place.selector)[place.index];
-  root.scrollTop=node ? root.scrollTop+node.getBoundingClientRect().top-root.getBoundingClientRect().top-place.offset : place.top;
+  let node=place.index<0 ? owner : owner?.querySelectorAll(place.selector)[place.index];
+  const matches=node=>node && (!place.identity || readingIdentity(node).startsWith(place.identity));
+  if(!matches(node)) {
+    node=null;
+    // Tail and desktop snapshots can number the same messages differently.
+    // Match visible content before falling back to distance from the end.
+    if(place.identity && place.selector) {
+      let nearest=Infinity;
+      for(const candidate of root.querySelectorAll(place.selector)) {
+        if(!matches(candidate))continue;
+        const distance=Math.abs((root.scrollHeight-root.scrollTop-candidate.getBoundingClientRect().top+root.getBoundingClientRect().top)-(place.bottom+root.clientHeight-place.offset));
+        if(distance<nearest){node=candidate;nearest=distance;}
+      }
+    }
+  }
+  root.scrollTop=node ? root.scrollTop+node.getBoundingClientRect().top-root.getBoundingClientRect().top-place.offset : place.bottom!=null ? Math.max(0,root.scrollHeight-root.clientHeight-place.bottom) : place.top;
 }
 
 bindTranscriptScroll(feed, S, () => $("jump").classList.toggle("hidden", S.stick));
@@ -712,16 +736,22 @@ function renderThread(keepPlace) {
   if (S.meta?.hasOlder) {
     const earlier = document.createElement('button');earlier.className='load-earlier';earlier.id='earlier';earlier.textContent='Load Earlier';nodes.push(earlier);
   }
-  resetResponses();
+  const unfinished = new Set([...responses.values()].filter(response=>response.shown!==response.target).map(response=>response.el?.closest('.turn')?.dataset.key));
+  cancelAnimationFrame(responseFrame);responseFrame=0;dirty.clear();
   for (const t of S.turns) {
     const el = existing.get(t.key) || document.createElement("div");
     el.className = "turn"; el.dataset.key = t.key;
-    renderTurn(el, t, false);nodes.push(el);
+    const snapshot=JSON.stringify(t);
+    if(el.transcriptSnapshot!==snapshot || unfinished.has(t.key))renderTurn(el,t,false);
+    el.transcriptSnapshot=snapshot;nodes.push(el);
   }
   // Desktop resyncs must retain unsent optimistic bubbles and their motion.
   for (const node of feed.querySelectorAll(':scope>.u.pending')) nodes.push(node);
   if (!nodes.length) {const empty=document.createElement('div');empty.className='empty';empty.textContent='No Messages Yet';nodes.push(empty);}
   reconcileChildren(feed,nodes);
+  queueImages(feed);
+  for(const [key,response] of responses)if(!key.startsWith('agent:') && !feed.contains(response.el))responses.delete(key);
+  if([...responses.values()].some(response=>response.shown!==response.target))responseFrame=requestAnimationFrame(revealResponses);
   renderMeta();
   if (place) restoreReadingPlace(feed, place);
   else if (S.stick) feed.scrollTop = feed.scrollHeight;
@@ -871,7 +901,7 @@ function enterTranscript(node, distance = 8) {
 }
 function patchTranscriptNode(old, next, animate = false) {
  if (next.liveImage || next.liveAudio) return next.liveImage || next.liveAudio;
- if (old === next) return old;
+ if (old === next || old?.isEqualNode(next)) return old;
  if (!old || old.nodeType !== next.nodeType || (old.nodeType === 1 && old.tagName !== next.tagName)) {
   if (animate && next.nodeType === 1 && next.matches('.prose-line,li,.dl,.output-line')) next.dataset.enter="5";
   return next;
@@ -896,6 +926,7 @@ function reconcileChildren(parent,nodes) {
  for(const node of parent.querySelectorAll('[data-enter]')) {const distance=Number(node.dataset.enter);delete node.dataset.enter;enterTranscript(node,distance);}
 }
 function renderTurn(el, t, animate) {
+ delete el.transcriptSnapshot;
  rememberTranscriptScroll(el);
  const old = new Map([...el.querySelectorAll('[data-response],[data-entry]')].map(node=>[node.dataset.response||node.dataset.entry,node]));
  const template=document.createElement('template');template.innerHTML=turnHTML(t,animate);
@@ -906,7 +937,7 @@ function renderTurn(el, t, animate) {
   const key=next.dataset.response||next.dataset.entry;
   let existing=key&&old.get(key);
   if(!existing&&next.classList.contains('u')&&feed.contains(el)) {
-   existing=[...feed.querySelectorAll(':scope > .u.pending')].find(node=>node.dataset.text && next.textContent.startsWith(node.dataset.text));
+   existing=[...feed.querySelectorAll(':scope > .u.pending')].find(node=>node.dataset.text && next.textContent.startsWith(node.dataset.preview || node.dataset.text));
    if(existing)delete existing.dataset.text;
   }
   if(next.dataset.response) {
@@ -931,6 +962,8 @@ const waitingHTML = () => '<div class="reply-wait" role="status"><span class="th
 
 function transcriptClick(e) {
   const t = e.target;
+  const retry=t.closest('.image-preview.image-error');
+  if(retry) {retry.classList.remove('image-error');retry.querySelector('.image-state')?.remove();const image=retry.querySelector('img');image.hidden=false;retry.disabled=true;loadRelayImage(image);return;}
   const image = t.closest("[data-image]");
   if (image) { const img = image.querySelector("img"); openSheet("image", { src: image.dataset.image, path: img?.dataset.relayImage, server: img?.dataset.server }); return; }
   if (t.id === "earlier") { t.innerHTML = loadingHTML("Loading Earlier Messages"); t.disabled = true; conn().send({ op: "more", id: S.id }); return; }
@@ -945,6 +978,13 @@ function transcriptClick(e) {
       if (box.classList.contains("open")) S.open.delete(k + ":collapsed"); else S.open.add(k + ":collapsed");
     }
     restoreTranscriptScroll(box);
+    const turn=box.closest('.turn');
+    if (turn && box.classList.contains('open') && !box.querySelector('.step-b,.steps-body')?.childNodes.length) {
+      const root=turn.closest('.feed'),place=root && captureReadingPlace(root);
+      if(turn.closest('.agent-feed'))window.refreshAgentTranscript?.();
+      else {const data=S.turns.find(value=>value.key===turn.dataset.key);if(data)renderTurn(turn,data,false);}
+      if(root)restoreReadingPlace(root,place);
+    }
     return;
   }
   const d = t.closest("[data-diff]");
@@ -996,7 +1036,7 @@ function stepHTML(s, t, key, active = false) {
     default: return audioHTMLs(s.audio);
   }
   const tog = body ? ` data-tog="${esc(key)}"` : "";
-  return `<div class="step${open}"><button class="step-h"${tog}>${icon}<span class="lbl${running || active ? " step-progress" : ""}">${label}</span>${x}</button>${body ? `<div class="step-b">${body}</div>` : ""}${imagesHTML(s.images)}${audioHTMLs(s.audio)}</div>`;
+  return `<div class="step${open}"><button class="step-h"${tog}>${icon}<span class="lbl${running || active ? " step-progress" : ""}">${label}</span>${x}</button>${body ? `<div class="step-b">${open ? body : ""}</div>` : ""}${imagesHTML(s.images)}${audioHTMLs(s.audio)}</div>`;
 }
 
 function hiddenTool(it) { return it?.k === "tool" && (it.title || "").replace(/__/g, ".").endsWith("cua_repl.js"); }
@@ -1018,15 +1058,15 @@ function turnHTML(t, animate = false) {
   let run = [], ri = 0, userSeen = false;
   const flush = () => {
     if (!run.length) return;
-    const rows = run.map(([s, i]) => entryHTML(stepHTML(s, t, t.key + ":" + (s.id || i), running && i === activeIndex && items.at(-1)?.k !== "assistant"),t.key+":"+(s.id||i))).join("");
+    const rows = () => run.map(([s, i]) => entryHTML(stepHTML(s, t, t.key + ":" + (s.id || i), running && i === activeIndex && items.at(-1)?.k !== "assistant"),t.key+":"+(s.id||i))).join("");
     const n = run.filter(([s]) => s.k !== "reasoning" || s.text).length;
     if (!running && n > 3) {
       const k = t.key + ":group:" + (run[0][0].id || ri);
       const cmds = run.filter(([s]) => s.k === "cmd").length, edits = run.filter(([s]) => s.k === "file").length;
       const parts = [cmds && `${cmds} ${cmds === 1 ? "Command" : "Commands"}`, edits && `${edits} ${edits === 1 ? "Edit" : "Edits"}`].filter(Boolean);
       const expanded = S.open.has(k) || (!S.open.has(k + ":collapsed") && run.some(([s,i]) => S.open.has(t.key + ":" + (s.id || i))));
-      out += `<div class="steps${expanded ? " open" : ""}"><button class="steps-sum" data-tog="${esc(k)}">${I.chev}${n} Steps${parts.length ? ", " + parts.join(", ") : ""}</button><div class="steps-body">${rows}</div></div>`;
-    } else out += rows;
+      out += `<div class="steps${expanded ? " open" : ""}"><button class="steps-sum" data-tog="${esc(k)}">${I.chev}${n} Steps${parts.length ? ", " + parts.join(", ") : ""}</button><div class="steps-body">${expanded ? rows() : ""}</div></div>`;
+    } else out += rows();
     run = []; ri++;
   };
   items.forEach((it, i) => {
@@ -1062,17 +1102,17 @@ function diffLines(text) {
   }).join("");
 }
 
-function imageSrc(path) {
+function imageSrc(path, server = S.sid) {
   if (/^https?:\/\//i.test(path)) return path;
-  const c = conn();
+  const c = conns.get(server);
   if (!c || !/^\//.test(path)) return "";
   return c.base + "/image?path=" + encodeURIComponent(path);
 }
-function imageHTML(path, alt = "Image") {
+function imageHTML(path, alt = "Image", server = S.sid) {
   path = path.replace(/^<|>$/g, "");
-  const src = imageSrc(path);
+  const src = imageSrc(path, server);
   if (!src) return esc(alt);
-  if (path.startsWith("/")) return `<button type="button" class="image-preview" disabled aria-label="Open Image"><img data-relay-image="${esc(path)}" data-server="${esc(S.sid)}" alt="${esc(alt)}" decoding="async"></button>`;
+  if (path.startsWith("/")) return `<button type="button" class="image-preview" disabled aria-label="Open Image"><img data-relay-image="${esc(path)}" data-server="${esc(server)}" alt="${esc(alt)}" decoding="async"></button>`;
   return `<button type="button" class="image-preview" data-image="${esc(src)}" aria-label="Open Image"><img src="${esc(src)}" alt="${esc(alt)}" loading="lazy" decoding="async" referrerpolicy="no-referrer"></button>`;
 }
 function imagesHTML(paths) { return paths?.length ? `<div class="chat-images">${paths.map((p) => imageHTML(p)).join("")}</div>` : ""; }
@@ -1180,31 +1220,54 @@ function queueImages(root) {
   }
 }
 async function loadRelayImage(img) {
+  if(img.imageLoading)return;
+  img.imageLoading=true;
   const generation = imageGeneration, server = img.dataset.server, path = img.dataset.relayImage;
   const key = server + ":" + path, c = conns.get(server);
-  if (!c) return;
+  if (!c) {img.imageLoading=false;imageFailed(img);return;}
   let entry = imageCache.get(key);
   if (!entry) {
     entry = { controller: new AbortController(), url: "" };
     imageCache.set(key, entry);
     entry.promise = (async () => {
-      const response = await fetch(c.base + "/image?path=" + encodeURIComponent(path), { headers: { Authorization: "Bearer " + c.s.token }, signal: entry.controller.signal });
-      if (!response.ok) throw Error("Image Unavailable");
-      const blob = await response.blob();
-      if (generation !== imageGeneration) throw Error("Left Thread");
-      entry.url = URL.createObjectURL(blob); return entry.url;
+      for(let attempt=0;attempt<2;attempt++) {
+        const request=new AbortController(),cancel=()=>request.abort();
+        entry.controller.signal.addEventListener('abort',cancel,{once:true});
+        const timer=setTimeout(cancel,15000);
+        try {
+          const current=conns.get(server);
+          if(!current || entry.controller.signal.aborted)throw Error('Left chat');
+          const response = await fetch(current.base + "/image?path=" + encodeURIComponent(path), { headers: { Authorization: "Bearer " + current.s.token }, signal: request.signal });
+          if (!response.ok) throw Error("Image Unavailable");
+          const blob = await response.blob();
+          if (generation !== imageGeneration || entry.controller.signal.aborted) throw Error("Left Thread");
+          entry.url = URL.createObjectURL(blob); return entry.url;
+        } catch(error) {
+          if(attempt || entry.controller.signal.aborted || generation!==imageGeneration)throw error;
+          await new Promise(resolve=>setTimeout(resolve,300));
+        } finally {clearTimeout(timer);entry.controller.signal.removeEventListener('abort',cancel);}
+      }
     })();
   }
   try {
     const url = await entry.promise;
     if (generation !== imageGeneration || !img.isConnected) return;
     img.src = url;
-    const button = img.closest(".image-preview"); button.dataset.image = url; button.disabled = false;
+    await img.decode();
+    if (generation !== imageGeneration || !img.isConnected) return;
+    const button = img.closest(".image-preview");button.classList.remove('image-error');button.querySelector('.image-state')?.remove();
+    img.hidden=false;button.dataset.image = url; button.disabled = false;button.setAttribute('aria-label','Open Image');
   } catch {
     if (generation !== imageGeneration || !img.isConnected) return;
-    const button = img.closest(".image-preview"); button.textContent = "Image Unavailable";
-    imageCache.delete(key);
-  }
+    imageFailed(img);
+    if(imageCache.get(key)===entry){imageCache.delete(key);entry?.controller.abort();if(entry?.url)URL.revokeObjectURL(entry.url);}
+  } finally {img.imageLoading=false;}
+}
+function imageFailed(img) {
+  const button=img.closest('.image-preview');if(!button)return;
+  img.hidden=true;button.classList.add('image-error');button.disabled=false;delete button.dataset.image;
+  button.setAttribute('aria-label','Could not load image. Tap to retry');
+  if(!button.querySelector('.image-state')) {const state=document.createElement('span');state.className='image-state';state.textContent='Could not load image. Tap to retry';button.append(state);}
 }
 feed.addEventListener("load", (e) => { if (e.target.tagName === "IMG" && S.stick) feed.scrollTop = feed.scrollHeight; }, true);
 feed.addEventListener("error", (e) => {
@@ -1291,12 +1354,16 @@ function renderActivity() {
   const running = !!S.meta?.running || S.turns.at(-1)?.status === "inProgress" || pending;
   $("activity").classList.toggle("hidden", !running || !!S.meta?.requests?.length);
 }
+let renderedMeta = "";
 function renderMeta() {
   const m = S.meta;
   if (!m) return;
-  renderThreadHeader();
   window.refreshThreadAgents?.();
-  renderStatus();
+  renderStatus();renderCards();
+  const key=JSON.stringify([S.sid,S.id,S.provider,m,conn()?.state,serverName(S.sid)]);
+  if(key===renderedMeta && $('t-ring').childNodes.length)return;
+  renderedMeta=key;
+  renderThreadHeader();
   const ring = $("t-ring");
   const known = m.ctxMax > 0 && m.ctxUsed != null;
   const f = known ? Math.max(0, Math.min(1, m.ctxUsed / m.ctxMax)) : 0, c = 2 * Math.PI * 17;
@@ -1308,6 +1375,8 @@ function renderMeta() {
   if (m.exec) {
     b.innerHTML = "<span>Starting Headless, Replies Queue</span>";
     b.classList.remove("hidden");
+  } else if(m.connecting && !m.readOnly) {
+    b.innerHTML=loadingHTML('Connecting to chat');b.classList.remove('hidden');
   } else if (m.mode !== "live" && !(S.provider === "codex" && m.running && !m.readOnly)) {
     b.innerHTML = `<span>${m.mode==='external'?'Managed On Computer':'Read Only'}</span><button class="btn" id="wake">${S.provider==='claude'?(m.mode==='external'?'Take Over':'Resume'):'Open On Computer'}</button>`;
     b.classList.remove("hidden");
@@ -1320,7 +1389,6 @@ function renderMeta() {
   } else b.classList.add("hidden");
   const earlier = $("earlier");
   if (earlier && !m.hasOlder) earlier.remove();
-  renderCards();
   renderComposer();
 }
 
@@ -2046,6 +2114,10 @@ function showDiff(m) {
 
 let sheetGeneration = 0;
 function openSheet(name, opts = {}) {
+  if(!S.sheet && S.view==='thread' && S.id) {
+    S.sheetReading={server:S.sid,id:S.id,provider:S.provider,follow:S.stick};
+    S.stick=false;
+  }
   if (S.sheet === "agent" && name !== "agent") window.disposeAgentViewer?.();
   sheetGeneration++;
   if (!S.sheet) history.pushState({ ...(history.state || {}), sheet: name }, "");
@@ -2071,6 +2143,11 @@ function closeSheet(fromPop) {
   }
   if (S.sheet === "agent") window.disposeAgentViewer?.();
   S.sheet = null; S.redraw = null;
+  const reading=S.sheetReading;S.sheetReading=null;
+  if(reading && reading.server===S.sid && reading.id===S.id && reading.provider===S.provider) {
+    S.stick=reading.follow && feed.scrollHeight-feed.clientHeight-feed.scrollTop<=4;
+    $('jump').classList.toggle('hidden',S.stick);
+  }
   const generation = ++sheetGeneration, sh = $("sheet"), scrim = $("scrim");
   sh.inert = true; scrim.style.pointerEvents = "none";
   const hide = () => { if (generation === sheetGeneration) { sh.classList.add("hidden"); scrim.classList.add("hidden"); } };

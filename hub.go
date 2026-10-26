@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -62,8 +63,9 @@ type Hub struct {
 	ipc      *IPCClient
 	db       string
 
-	listMu sync.Mutex // serializes refreshList
-	addrs  []string   // http://ip:port for every non-loopback listener, sent in hello
+	listMu      sync.Mutex  // serializes refreshList
+	listRefresh atomic.Bool // coalesces client and session refresh requests
+	addrs       []string    // http://ip:port for every non-loopback listener, sent in hello
 
 	mu       sync.Mutex
 	clients  map[*Client]bool
@@ -185,6 +187,15 @@ func (h *Hub) RunList(ctx context.Context) {
 	}
 }
 
+// A slow database refresh must not hold the socket reader ahead of open, stop
+// or answer operations. The existing list is sent when the client connects.
+func (h *Hub) requestListRefresh() {
+	if !h.listRefresh.CompareAndSwap(false, true) {
+		return
+	}
+	go func() { defer h.listRefresh.Store(false); h.refreshList() }()
+}
+
 func (h *Hub) refreshList() {
 	h.listMu.Lock()
 	defer h.listMu.Unlock()
@@ -206,7 +217,10 @@ func (h *Hub) refreshList() {
 		t := &ts[i]
 		if s := h.sessions[t.ID]; s != nil {
 			st := s.listState()
-			t.Live, t.Running, t.Attention = st.live, st.running, st.attention
+			t.Live = st.live
+			if st.known {
+				t.Running, t.Attention = st.running, st.attention
+			}
 			if st.hasTurn {
 				t.TurnAt = st.turnAt
 			}
@@ -386,7 +400,7 @@ func (h *Hub) handle(c *Client, raw []byte) {
 	}
 	switch m.Op {
 	case "threads":
-		h.refreshList()
+		h.requestListRefresh()
 	case "open":
 		s := sess()
 		if s == nil {
@@ -535,14 +549,15 @@ type Session struct {
 	cmds      chan func()
 	resync    chan struct{}
 
-	mu      sync.Mutex // guards subs, the list-state fields and watch, which other goroutines read
-	subs    map[*Client]bool
-	live    bool
-	run_    bool
-	attn    bool   // waiting on an approval or a question
-	attnMsg string // what it is waiting on, for notifications
-	turnAt  int64
-	watch   bool // kept following for notifications even with no viewer
+	mu        sync.Mutex // guards subs, the list-state fields and watch, which other goroutines read
+	subs      map[*Client]bool
+	live      bool
+	metaKnown bool
+	run_      bool
+	attn      bool   // waiting on an approval or a question
+	attnMsg   string // what it is waiting on, for notifications
+	turnAt    int64
+	watch     bool // kept following for notifications even with no viewer
 
 	// Owned by the run goroutine.
 	owner               string
@@ -560,6 +575,7 @@ type Session struct {
 	rv                  *rolloutView
 	following           bool
 	awaitingSnapshot    bool
+	connecting          bool
 	snapshotMinRevision int64
 	followAt            time.Time
 	lastTry             time.Time
@@ -573,20 +589,20 @@ func newSession(h *Hub, info ThreadInfo) *Session {
 		hub: h, id: info.ID, title: info.Title, rollout: info.Rollout, info: info, window: windowTurns,
 		inbox: make(chan *ipcFrame, 4096), ownerGone: make(chan string, 8),
 		cmds: make(chan func(), 64), resync: make(chan struct{}, 1),
-		subs: map[*Client]bool{},
+		subs: map[*Client]bool{}, connecting: true,
 	}
 }
 
 type sessionState struct {
-	live, running, attention, hasTurn bool
-	turnAt                            int64
-	attnMsg                           string
+	live, running, attention, hasTurn, known bool
+	turnAt                                   int64
+	attnMsg                                  string
 }
 
 func (s *Session) listState() sessionState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return sessionState{live: s.live, running: s.run_, attention: s.attn, hasTurn: s.turnAt != 0, turnAt: s.turnAt, attnMsg: s.attnMsg}
+	return sessionState{live: s.live, running: s.run_, attention: s.attn, hasTurn: s.turnAt != 0, turnAt: s.turnAt, attnMsg: s.attnMsg, known: s.metaKnown}
 }
 
 // publishMeta records the list-visible parts of meta and refreshes the list
@@ -604,6 +620,7 @@ func (s *Session) publishMeta(m Meta) {
 		}
 	}
 	s.mu.Lock()
+	s.metaKnown = true
 	changed := s.run_ != m.Running || s.attn != attn || (m.TurnAt != 0 && s.turnAt != m.TurnAt)
 	s.run_, s.attn, s.attnMsg = m.Running, attn, msg
 	if m.TurnAt != 0 {
@@ -611,7 +628,7 @@ func (s *Session) publishMeta(m Meta) {
 	}
 	s.mu.Unlock()
 	if changed {
-		go s.hub.refreshList()
+		s.hub.requestListRefresh()
 	}
 }
 
@@ -678,7 +695,7 @@ func (s *Session) setLive(live bool) {
 		s.waiters = nil
 	}
 	if changed {
-		go s.hub.refreshList()
+		s.hub.requestListRefresh()
 	}
 }
 
@@ -698,6 +715,7 @@ func (s *Session) meta() Meta {
 	} else {
 		i := s.info
 		m = Meta{Mode: "tail", Title: s.title, Cwd: i.Cwd, Branch: i.Branch, Model: i.Model, Effort: i.Effort, Approval: i.Approval, Sandbox: i.Sandbox}
+		m.Connecting = s.connecting || s.awaitingSnapshot
 		if s.rv != nil {
 			m.Running = s.rv.running()
 			m.CtxUsed, m.CtxMax = s.rv.ctxUsed, s.rv.ctxMax
@@ -838,6 +856,12 @@ func (s *Session) tryFollow() {
 	s.cmds <- func() { s.lastTry = time.Now() }
 	r, err := s.hub.ipc.Request("thread-owner-discovery", map[string]string{"hostId": "local", "conversationId": s.id}, "", 1500*time.Millisecond, nil)
 	if err != nil || r.HandledBy == "" {
+		s.cmds <- func() {
+			if s.connecting {
+				s.connecting = false
+				s.sendMeta()
+			}
+		}
 		return
 	}
 	owner := r.HandledBy
@@ -864,6 +888,7 @@ func (s *Session) follow(owner string, resync bool) {
 		s.setLive(false)
 	}
 	s.owner = owner
+	s.connecting = false
 	s.following = true
 	s.awaitingSnapshot = true
 	s.followAt = time.Now()
@@ -875,6 +900,7 @@ func (s *Session) follow(owner string, resync bool) {
 		s.awaitingSnapshot = false
 		log.Printf("session %s: follow: %v", s.id, err)
 	}
+	s.sendMeta()
 }
 
 func (s *Session) unfollow() {

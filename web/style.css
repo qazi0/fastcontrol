@@ -189,6 +189,9 @@ html.page-hidden .badge.run .dot { animation-play-state: paused; }
 .image-preview { display: inline-block; max-width: 100%; overflow: hidden; border-radius: 12px; background: var(--surface); color: var(--muted); vertical-align: middle; }
 .image-preview img { display: block; max-width: 100%; max-height: 320px; object-fit: contain; }
 .image-preview:disabled { min-width: 160px; min-height: 96px; }
+.image-preview.image-error { min-width: 160px; min-height: 96px; padding: 16px; max-width: 320px; }
+.image-preview img[hidden] { display: none; }
+.image-state { display: block; font-size: 13px; line-height: 1.5; }
 .image-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; touch-action: none; user-select: none; }
 .image-stage img { max-width: 100%; max-height: 100%; object-fit: contain; transform-origin: center; pointer-events: none; }
 .image-zoom { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 10px 12px calc(env(safe-area-inset-bottom) + 14px); }
@@ -586,3 +589,6 @@ textarea, input { caret-color: var(--ink); }
 .context-weekly .context-weekly-link { display:inline-flex; align-items:center; gap:8px; min-height:48px; margin-top:4px; font-size:14px; font-weight:500; }
 .context-weekly-link .ico { width:16px; height:16px; }
 .context-weekly-loading { display:flex; align-items:center; gap:10px; color:var(--muted); }
+
+.usage-pending { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+.usage-pending .voice-spinner, .usage-totals .voice-spinner { display: inline-block; width: 14px; height: 14px; flex: none; }

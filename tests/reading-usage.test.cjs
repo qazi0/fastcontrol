@@ -12,7 +12,7 @@ test('only reader gestures change following, including a drag close to the botto
  handlers.pointerdown(event);assert.equal(state.stick,false);
  handlers.pointermove({...event,clientY:105});root.scrollTop=695;handlers.scroll();handlers.pointercancel();
  assert.equal(state.stick,false,'even five pixels away is a deliberate reading position');
- root.scrollTop=700;handlers.scroll();
+ root.scrollTop=700;handlers.scroll();assert.equal(state.stick,false,"layout reaching the bottom cannot override an upward reading gesture");
  // A resize during the same gesture may reach the end. After the gesture's
  // intent expires, layout scrolls must never resume following.
  state.stick=false;context.Date={now:()=>Date.now()+5000};handlers.scroll();assert.equal(state.stick,false);
@@ -56,4 +56,16 @@ test('closing or switching a context panel cannot paint an old quota response in
  current={innerHTML:'New panel'};
  requests[0].resolve({ok:true,json:async()=>({providers:[{provider:'codex',windows:[{label:'Weekly',used:80}]}]})});
  await pending;assert.equal(current.innerHTML,'New panel');assert.match(old.innerHTML,/Reading Weekly Usage/);
+});
+
+test('weekly context requests only its provider while a full reading is pending',async()=>{
+ const {context:c,requests}=usageFixture();
+ const full=c.readUsage('a'),weekly=c.readUsage('a',false,'codex');
+ assert.equal(requests.length,2);
+ assert.match(requests[1].url,/provider=codex/);
+ requests[1].resolve({ok:true,json:async()=>({providers:[{provider:'codex',windows:[{label:'Weekly',used:30}]}]})});
+ assert.equal((await weekly).report.providers[0].windows[0].used,30);
+ requests[0].resolve({ok:true,json:async()=>({providers:[{provider:'codex',localLoading:true,windows:[]},{provider:'claude',quotaLoading:true,windows:[]}]})});
+ await full;
+ assert.equal(c.contextUsage('a','codex').report.providers[0].windows[0].used,30);
 });

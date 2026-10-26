@@ -95,6 +95,7 @@ type Request struct {
 }
 
 type Meta struct {
+	Connecting     bool      `json:"connecting,omitempty"`
 	Provider       string    `json:"provider,omitempty"`
 	PermissionMode string    `json:"permissionMode,omitempty"`
 	Title          string    `json:"title"`

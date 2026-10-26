@@ -150,9 +150,9 @@ func queryThreads(db, query string) ([]ThreadInfo, error) {
 			t.ParentID, t.AgentPath, t.AgentName = source.Subagent.Spawn.Parent, source.Subagent.Spawn.Path, source.Subagent.Spawn.Name
 			t.Subagent = t.Subagent || t.ParentID != ""
 		}
-		if st, err := os.Stat(r.Rollout); err == nil && now.Sub(st.ModTime()) < 15*time.Minute {
-			t.Active = true
+		if st, err := os.Stat(r.Rollout); err == nil {
 			rs := tailStatus(r.Rollout, st)
+			t.Active = rs.running || now.Sub(st.ModTime()) < 15*time.Minute
 			t.Running, t.LastMsg, t.LastErr, t.TurnAt = rs.running, rs.lastMsg, rs.lastErr, rs.turnAt
 			if t.Subagent {
 				t.Activity = rs.activity
@@ -166,6 +166,7 @@ func queryThreads(db, query string) ([]ThreadInfo, error) {
 // ---- running state from rollout tails ----
 
 type rolloutStatus struct {
+	file     os.FileInfo
 	size     int64
 	mod      time.Time
 	running  bool
@@ -186,10 +187,10 @@ func tailStatus(path string, st os.FileInfo) rolloutStatus {
 	statusMu.Lock()
 	c, ok := statusCache[path]
 	statusMu.Unlock()
-	if ok && c.size == st.Size() && c.mod.Equal(st.ModTime()) {
+	if ok && c.file != nil && os.SameFile(c.file, st) && c.size == st.Size() && c.mod.Equal(st.ModTime()) {
 		return c
 	}
-	rs := rolloutStatus{size: st.Size(), mod: st.ModTime()}
+	rs := rolloutStatus{file: st, size: st.Size(), mod: st.ModTime()}
 	f, err := os.Open(path)
 	if err != nil {
 		return rs

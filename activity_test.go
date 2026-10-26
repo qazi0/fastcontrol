@@ -60,3 +60,56 @@ func TestTurnMarkerIgnoresQuotedProtocol(t *testing.T) {
 		t.Fatalf("wrong marker %s", marker)
 	}
 }
+
+func TestTurnMarkerBeyondOldScanLimitAndIncrementalAppend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "large.jsonl")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	started := `{"type":"event_msg","payload":{"type":"task_started","turn_id":"long","started_at":456}}` + "\n"
+	if _, err = f.WriteString(started); err != nil {
+		t.Fatal(err)
+	}
+	// A sparse gap avoids a large fixture while placing the marker beyond 64 MB.
+	if _, err = f.Seek(70<<20, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.WriteString("\n" + `{"type":"event_msg","payload":{"type":"agent_message","message":"Working"}}` + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := f.Stat()
+	if !tailStatus(path, st).running {
+		t.Fatal("long active turn was reported idle")
+	}
+	view := newRolloutView(path)
+	if err = view.load(); err != nil || !view.running() {
+		t.Fatal("tail lost the active turn", err)
+	}
+	if _, err = f.WriteString(`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"long"}}` + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	st, _ = f.Stat()
+	if tailStatus(path, st).running {
+		t.Fatal("incremental completion remained active")
+	}
+	marker := previousTurnMarker(f, int64(len(started)))
+	if !strings.Contains(string(marker), "task_started") {
+		t.Fatal("historical query reused a future marker")
+	}
+	if err = f.Truncate(0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.WriteString(`{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"replacement"}}` + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	st, _ = f.Stat()
+	marker = previousTurnMarker(f, st.Size())
+	if !strings.Contains(string(marker), "replacement") {
+		t.Fatal("truncated transcript kept an old marker")
+	}
+}

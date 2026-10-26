@@ -78,7 +78,7 @@ document.addEventListener("click", async event => {
   else openSheet("agents",listOpts);
 });
 
-function paintAgentViewer(more = false) {
+function paintAgentViewer(more = false, animate = true) {
   const view = agentView, root = $("agent-feed");
   if (!view || !root || S.sheet !== "agent") return;
   const place = (!view.stick || more) ? captureReadingPlace(root) : null;
@@ -91,7 +91,7 @@ function paintAgentViewer(more = false) {
   for (const turn of view.turns) {
     const el = existing.get(turn.key) || document.createElement("div"); el.className = "turn"; el.dataset.key = turn.key;
     const items = (turn.items || []).map(item=>item?.asks?.length ? {...item,text:[item.text,...item.asks.map(ask=>`**${ask.title}**\n\n${(ask.options || []).map((option,i)=>`- ${option}${ask.descriptions?.[i] ? ": "+ask.descriptions[i] : ""}`).join("\n")}`)].filter(Boolean).join("\n\n")} : item);
-    renderTurn(el,{...turn,items,key:"agent:"+view.id+":"+turn.key,originalKey:turn.key,agentParent:view.id},!!view.loaded && !more); nodes.push(el);
+    renderTurn(el,{...turn,items,key:"agent:"+view.id+":"+turn.key,originalKey:turn.key,agentParent:view.id},animate && !!view.loaded && !more); nodes.push(el);
   }
   for (const request of view.meta?.requests || []) {
     const block = document.createElement("aside");block.className="agent-request";block.dataset.entry="agent:"+view.id+":request:"+request.id;
@@ -112,6 +112,7 @@ function paintAgentViewer(more = false) {
   view.loaded = true;
 }
 window.agentIsFollowing = () => !!agentView?.stick;
+window.refreshAgentTranscript = () => paintAgentViewer(false,false);
 window.followAgentResponses = () => { const root=$("agent-feed");if(root && agentView?.stick)root.scrollTop=root.scrollHeight; };
 function dirtyAgentViewer() {
   if (!agentFrame) agentFrame = requestAnimationFrame(()=>{ agentFrame=0;paintAgentViewer(); });
