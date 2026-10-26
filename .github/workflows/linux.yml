@@ -8,6 +8,9 @@ on:
     paths: ['*.go', 'go.*', 'web/**', 'licenses/**', 'install.sh', 'scripts/package-linux.sh', 'scripts/test-linux.sh', 'contrib/fastcontrol.service', '.github/workflows/linux.yml']
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
     strategy:
