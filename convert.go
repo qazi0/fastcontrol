@@ -26,6 +26,7 @@ type Item struct {
 	Audio     []string `json:"audio,omitempty"`
 	AgentPath string   `json:"agentPath,omitempty"`
 	AgentID   string   `json:"agentId,omitempty"`
+	AgentKind string   `json:"agentKind,omitempty"`
 	// Questions the assistant asked without blocking the turn; the answer is the next message.
 	Asks []Ask `json:"asks,omitempty"`
 }
@@ -115,6 +116,7 @@ type Meta struct {
 	Running        bool      `json:"running"`
 	Runtime        string    `json:"runtime,omitempty"`
 	ReadOnly       bool      `json:"readOnly,omitempty"`
+	AgentState     string    `json:"agentState,omitempty"`
 	Requests       []Request `json:"requests,omitempty"`
 }
 

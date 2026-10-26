@@ -54,6 +54,10 @@ type ClaudeManager struct {
 	refreshMu                  sync.Mutex
 	refreshJob                 atomic.Bool
 	modelsMu                   sync.Mutex
+	workMu                     sync.Mutex // index lookup only; each index owns its append cursor
+	workIndexes                map[string]*claudeWorkIndex
+	workSummaries              map[string]claudeWorkSummary           // immutable values guarded by workMu
+	workWatch                  map[*Client]map[string]claudeWorkWatch // guarded by mu
 }
 
 func claudeBinary() string {
@@ -303,6 +307,7 @@ func (m *ClaudeManager) refreshActive() {
 	}
 }
 func (m *ClaudeManager) run(ctx context.Context) {
+	go m.followWork(ctx)
 	m.refresh()
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
@@ -354,7 +359,12 @@ func (m *ClaudeManager) run(ctx context.Context) {
 		}
 	}
 }
-func (m *ClaudeManager) removeClient(c *Client) { m.mu.Lock(); delete(m.watch, c); m.mu.Unlock() }
+func (m *ClaudeManager) removeClient(c *Client) {
+	m.mu.Lock()
+	delete(m.watch, c)
+	delete(m.workWatch, c)
+	m.mu.Unlock()
+}
 func (m *ClaudeManager) open(c *Client, id string, more bool) error {
 	m.hub.mu.Lock()
 	if !m.hub.clients[c] {

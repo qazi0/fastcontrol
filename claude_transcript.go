@@ -20,6 +20,7 @@ type claudeTranscript struct {
 	Diffs    map[string]string
 	cur      int
 	tools    map[string][2]int
+	agent    bool
 }
 
 func newClaudeTranscript() *claudeTranscript {
@@ -90,7 +91,7 @@ func (v *claudeTranscript) upsert(it Item) {
 }
 
 func (v *claudeTranscript) apply(r map[string]any) {
-	if side, _ := r["isSidechain"].(bool); side {
+	if side, _ := r["isSidechain"].(bool); side && !v.agent {
 		return
 	}
 	if parent := str(mapValue(r["forkedFrom"]), "sessionId"); parent != "" && parent != str(r, "sessionId") {
@@ -160,6 +161,18 @@ func (v *claudeTranscript) apply(r map[string]any) {
 				continue
 			}
 			item := &v.Turns[position[0]].Items[position[1]]
+			result := mapValue(r["toolUseResult"])
+			if agent := str(result, "agentId"); agent != "" && item.K == "agent" {
+				item.AgentID = agent
+			}
+			if task := str(result, "backgroundTaskId"); task != "" && item.K == "cmd" {
+				item.K, item.AgentID = "agent", task
+				item.AgentKind = "command"
+			}
+			if task := str(result, "taskId"); task != "" && (str(result, "taskType") == "workflow" || str(result, "taskType") == "local_workflow") {
+				item.K, item.AgentID = "agent", task
+				item.AgentKind = "workflow"
+			}
 			item.Status = "completed"
 			if item.K != "file" {
 				item.Body = clipTail(claudeText(b["content"]), maxOutput)
@@ -254,6 +267,10 @@ func claudeBlock(b map[string]any, id string) Item {
 		case "Agent", "Task":
 			it.K = "agent"
 			it.Title = str(input, "description")
+			it.AgentID = str(input, "resume")
+			if it.AgentID == "" {
+				it.AgentID = it.ID
+			}
 		case "WebSearch":
 			it.K = "search"
 			it.Title = str(input, "query")
@@ -287,6 +304,9 @@ func collectClaudeImages(v any) []string {
 }
 
 func readClaudeTranscript(path string, window int, tailBytes int64) (*claudeTranscript, error) {
+	return readClaudeTranscriptMode(path, window, tailBytes, false)
+}
+func readClaudeTranscriptMode(path string, window int, tailBytes int64, agent bool) (*claudeTranscript, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -301,6 +321,7 @@ func readClaudeTranscript(path string, window int, tailBytes int64) (*claudeTran
 		start = 0
 	}
 	v := newClaudeTranscript()
+	v.agent = agent
 	v.More = start > 0
 	if start > 0 {
 		head := make([]byte, 64<<10)
