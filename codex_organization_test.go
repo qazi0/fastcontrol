@@ -90,6 +90,31 @@ func TestOrganizationCodexNativeNamesGroupsAndRelations(t *testing.T) {
 	}
 }
 
+func TestOrganizationCodexPendingMembershipMigration(t *testing.T) {
+	home, path := organizationCodexFixture(t)
+	organizationExecSQL(t, path, `UPDATE threads SET project_id='' WHERE id='delegated';`)
+	legacy := filepath.Join(home, ".codex/.codex-global-state.json")
+	host := "local:" + filepath.Dir(path)
+	state := map[string]any{
+		"app-server-project-id-by-legacy-project-id-by-host": map[string]any{host: map[string]string{"old-project": "project-1"}},
+		"app-server-projects-migration-by-host":              map[string]any{host: map[string]bool{"threadAssignmentsMigrated": false}},
+		"thread-project-assignments":                         map[string]any{"delegated": map[string]string{"projectKind": "local", "projectId": "old-project"}},
+		"thread-project-membership-host-ids":                 map[string]string{"delegated": "local"},
+	}
+	organizationJSON(t, legacy, state)
+	r := NewOrganizationReader(home)
+	s, err := r.Codex(path, []string{"parent", "delegated"})
+	if err != nil || s.Placements["delegated"].ProjectID != "codex:project:project-1" {
+		t.Fatal("pending assignment was dropped", err)
+	}
+	state["app-server-projects-migration-by-host"] = map[string]any{host: map[string]bool{"threadAssignmentsMigrated": true}}
+	organizationJSON(t, legacy, state)
+	s, err = r.Codex(path, []string{"parent", "delegated"})
+	if err != nil || s.Placements["delegated"].ProjectID != "" {
+		t.Fatal("finished migration resurrected stale membership", err)
+	}
+}
+
 func TestOrganizationCodexSchemaFallbackAndDeletion(t *testing.T) {
 	home, path := organizationCodexFixture(t)
 	legacy := filepath.Join(home, ".codex", ".codex-global-state.json")

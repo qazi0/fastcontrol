@@ -283,8 +283,63 @@ func loadCodexOrganization(db, legacy string, known map[string]bool) (Organizati
 		if err := loadLegacyCodexProjects(legacy, eligible, &s); err != nil {
 			return s, err
 		}
+	} else if err := loadCodexMigratingAssignments(legacy, db, known, &s); err != nil {
+		return s, err
 	}
 	return s, nil
+}
+
+// Project definitions can migrate before membership. The native desktop keeps
+// explicit pending assignments and their old-to-new ID map during that phase.
+func loadCodexMigratingAssignments(path, db string, known map[string]bool, s *OrganizationSnapshot) error {
+	data, err := organizationReadFile(path, organizationFileLimit)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var state struct {
+		Mappings  map[string]map[string]string `json:"app-server-project-id-by-legacy-project-id-by-host"`
+		Migration map[string]struct {
+			AssignmentsDone *bool `json:"threadAssignmentsMigrated"`
+		} `json:"app-server-projects-migration-by-host"`
+		Assignments map[string]struct {
+			Kind string `json:"projectKind"`
+			ID   string `json:"projectId"`
+		} `json:"thread-project-assignments"`
+		Hosts map[string]string `json:"thread-project-membership-host-ids"`
+	}
+	if json.Unmarshal(data, &state) != nil {
+		return errors.New("invalid Codex project migration metadata")
+	}
+	host := "local:" + filepath.Clean(filepath.Dir(db))
+	migration, ok := state.Migration[host]
+	if !ok || migration.AssignmentsDone == nil || *migration.AssignmentsDone {
+		return nil
+	}
+	groups := map[string]bool{}
+	for _, group := range s.Groups {
+		groups[group.ID] = true
+	}
+	for id, a := range state.Assignments {
+		if !known[id] || a.Kind != "local" || (state.Hosts[id] != "" && state.Hosts[id] != "local") {
+			continue
+		}
+		p, exists := s.Placements[id]
+		if !exists || p.Archived || p.ProjectID != "" {
+			continue
+		}
+		mapped := state.Mappings[host][a.ID]
+		gid := "codex:project:" + mapped
+		if mapped == "" || !groups[gid] {
+			continue
+		}
+		p.ProjectID = gid
+		p.GroupIDs = append(p.GroupIDs, gid)
+		s.Placements[id] = p
+	}
+	return nil
 }
 
 func loadLegacyCodexProjects(path string, known map[string]bool, s *OrganizationSnapshot) error {
