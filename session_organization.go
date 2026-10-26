@@ -141,7 +141,7 @@ func organizationStamps(paths []string) ([]organizationStamp, error) {
 	sort.Strings(paths)
 	stamps := make([]organizationStamp, 0, len(paths))
 	for _, path := range paths {
-		info, err := os.Lstat(path)
+		info, err := organizationSourceInfo(path)
 		if err != nil && !os.IsNotExist(err) {
 			return nil, err
 		}
@@ -151,6 +151,31 @@ func organizationStamps(paths []string) ([]organizationStamp, error) {
 		stamps = append(stamps, organizationStamp{path, info})
 	}
 	return stamps, nil
+}
+
+// Windows path metadata may defer loading its file ID until SameFile is called.
+// Capture it from an open handle before caching, while this path still names it.
+func organizationSourceInfo(path string) (os.FileInfo, error) {
+	info, err := os.Lstat(path)
+	if err != nil || runtime.GOOS != "windows" || info.Mode()&os.ModeSymlink != 0 {
+		return info, err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	captured, err := f.Stat()
+	closeErr := f.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	if info.Size() != captured.Size() || !info.ModTime().Equal(captured.ModTime()) || !os.SameFile(info, captured) {
+		return nil, errors.New("organization source changed while capturing its identity")
+	}
+	return captured, nil
 }
 
 func (r *OrganizationReader) cached(key, ids string, stamps []organizationStamp) (OrganizationSnapshot, bool) {
@@ -223,7 +248,7 @@ func organizationText(value string) string {
 }
 
 func organizationReadFile(path string, limit int64) ([]byte, error) {
-	before, err := os.Lstat(path)
+	before, err := organizationSourceInfo(path)
 	if err != nil {
 		return nil, err
 	}
@@ -243,7 +268,7 @@ func organizationReadFile(path string, limit int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	after, err := os.Lstat(path)
+	after, err := organizationSourceInfo(path)
 	if err != nil || len(b) > int(limit) || !sameOrganizationStamps([]organizationStamp{{path, before}}, []organizationStamp{{path, after}}) {
 		return nil, errors.New("organization source changed while reading")
 	}
