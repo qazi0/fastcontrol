@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -123,6 +124,17 @@ func TestClaudeAgentTranscriptLifecycleAndReadOnlyControls(t *testing.T) {
 func TestClaudeWorkIndexRetriesPartialLinesAndInvalidatesReplacement(t *testing.T) {
 	m, root, parent, _ := claudeWorkFixture(t)
 	m.listWork(root)
+	before, _ := os.Stat(parent)
+	original, _ := os.ReadFile(parent)
+	rewritten := bytes.ReplaceAll(original, []byte(`"worker"`), []byte(`"second"`))
+	os.WriteFile(parent, rewritten, 0600)
+	os.Chtimes(parent, before.ModTime(), before.ModTime())
+	changed, _, e := m.workIndex(parent)
+	if e != nil || changed["worker"].ID != "" || changed["second"].ID != "second" {
+		t.Fatal("same-size rewrite retained stale tasks", e)
+	}
+	os.WriteFile(parent, original, 0600)
+	m.workIndex(parent)
 	row := mustJSON(map[string]any{"type": "user", "message": map[string]any{"content": "<task-notification><task-id>worker</task-id><status>failed</status></task-notification>"}})
 	f, err := os.OpenFile(parent, os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {

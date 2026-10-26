@@ -23,6 +23,7 @@ type claudeWorkSummary struct {
 type claudeWorkIndex struct {
 	mu          sync.Mutex
 	file        os.FileInfo
+	checkpoint  [32]byte
 	offset      int64
 	refs, tools map[string]claudeWorkRef
 }
@@ -170,7 +171,8 @@ func (m *ClaudeManager) workIndex(path string) (map[string]claudeWorkRef, map[st
 	if err != nil {
 		return nil, nil, err
 	}
-	if idx.file == nil || !os.SameFile(idx.file, st) || st.Size() < idx.file.Size() || (st.Size() == idx.file.Size() && !st.ModTime().Equal(idx.file.ModTime())) {
+	checkpoint, checkpointOK := markerCheckpoint(f, idx.offset)
+	if idx.file == nil || !checkpointOK || checkpoint != idx.checkpoint || !os.SameFile(idx.file, st) || st.Size() < idx.file.Size() || (st.Size() == idx.file.Size() && !st.ModTime().Equal(idx.file.ModTime())) {
 		idx.offset = 0
 		idx.refs = map[string]claudeWorkRef{}
 		idx.tools = map[string]claudeWorkRef{}
@@ -195,6 +197,7 @@ func (m *ClaudeManager) workIndex(path string) (map[string]claudeWorkRef, map[st
 		}
 	}
 	idx.file = st
+	idx.checkpoint, _ = markerCheckpoint(f, idx.offset)
 	refs, tools := map[string]claudeWorkRef{}, map[string]claudeWorkRef{}
 	for id, ref := range idx.refs {
 		refs[id] = ref
