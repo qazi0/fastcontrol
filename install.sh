@@ -85,7 +85,7 @@ if [[ "$platform" == Linux ]]; then
    fi
   fi
   cd "$HOME"
-  nohup "$dir/fastcontrol" -no-qr >> "$dir/relay.log" 2>&1 < /dev/null &
+  nohup "$dir/fastcontrol" -no-qr -tls >> "$dir/relay.log" 2>&1 < /dev/null &
   relay_pid=$!
   echo "$relay_pid" > "$pidfile"
   sleep 1
@@ -97,6 +97,10 @@ if [[ "$platform" == Linux ]]; then
 fi
 if [[ ! -f "$HOME/Library/LaunchAgents/com.fastcontrol.plist" ]]; then
   sed -e "s#__BIN__#$dir/fastcontrol#" -e "s#__HOME__#$HOME#g" com.fastcontrol.plist > "$HOME/Library/LaunchAgents/com.fastcontrol.plist"
+fi
+plist="$HOME/Library/LaunchAgents/com.fastcontrol.plist"
+if [[ "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments' "$plist")" != *"-tls"* ]]; then
+  /usr/libexec/PlistBuddy -c 'Add :ProgramArguments: string -tls' "$plist"
 fi
 label="gui/$(id -u)/com.fastcontrol"
 if launchctl print "$label" >/dev/null 2>&1; then

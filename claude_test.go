@@ -64,6 +64,7 @@ func TestClaudeHistoryKeepsActualModelWhenSavedChoiceIsAlias(t *testing.T) {
 	m.models = nil
 	m.entries = map[string]claudeEntry{"test": {Path: path, Meta: Meta{Model: "claude-haiku-5-5"}}}
 	c := &Client{out: make(chan []byte, 4)}
+	h.addClient(c)
 	if err := m.open(c, "test", false); err != nil {
 		t.Fatal(err)
 	}

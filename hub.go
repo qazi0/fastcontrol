@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,6 +36,7 @@ type Client struct {
 	// else: no thread lists, which are large and change often.
 	eventsOnly bool
 	done       chan struct{}
+	doneOnce   sync.Once
 }
 
 func (c *Client) push(b []byte) {
@@ -42,11 +44,7 @@ func (c *Client) push(b []byte) {
 	case c.out <- b:
 	default:
 		// Slow consumer; the reader side will notice the closed channel.
-		select {
-		case <-c.done:
-		default:
-			close(c.done)
-		}
+		c.doneOnce.Do(func() { close(c.done) })
 	}
 }
 
@@ -58,10 +56,12 @@ func mustJSON(v any) []byte {
 // ---- hub ----
 
 type Hub struct {
-	claude   *ClaudeManager
-	headless *HeadlessCodex
-	ipc      *IPCClient
-	db       string
+	organization *OrganizationReader
+	links        *sessionLinks
+	claude       *ClaudeManager
+	headless     *HeadlessCodex
+	ipc          *IPCClient
+	db           string
 
 	listMu      sync.Mutex  // serializes refreshList
 	listRefresh atomic.Bool // coalesces client and session refresh requests
@@ -72,12 +72,14 @@ type Hub struct {
 	sessions map[string]*Session
 	execs    map[string]*execRun
 	threads  []ThreadInfo
+	orgState OrganizationSnapshot // complete immutable snapshot, guarded by mu
 	listJSON []byte
 	prev     map[string]threadState // last state per thread, for events
 }
 
 func NewHub(ipc *IPCClient, db string) *Hub {
-	h := &Hub{ipc: ipc, db: db, clients: map[*Client]bool{}, sessions: map[string]*Session{}, execs: map[string]*execRun{}}
+	home, _ := os.UserHomeDir()
+	h := &Hub{organization: NewOrganizationReader(home), links: newSessionLinks(filepath.Join(home, ".fastcontrol/codex-forks.json")), ipc: ipc, db: db, clients: map[*Client]bool{}, sessions: map[string]*Session{}, execs: map[string]*execRun{}}
 	ipc.OnBroadcast = h.onBroadcast
 	ipc.OnReset = h.onReset
 	return h
@@ -212,6 +214,13 @@ func (h *Hub) refreshList() {
 		log.Printf("thread list: %v", err)
 		return
 	}
+	organization := emptyOrganization()
+	if h.organization != nil && h.db != "" && len(ts) > 0 {
+		ids := codexOrganizationIDs(h.db, ts)
+		organization, _ = h.organization.Codex(h.db, ids)
+		h.links.apply(&organization)
+		ts = applyThreadOrganization(ts, organization)
+	}
 	h.mu.Lock()
 	for i := range ts {
 		t := &ts[i]
@@ -234,9 +243,10 @@ func (h *Hub) refreshList() {
 			}
 		}
 	}
-	b := mustJSON(map[string]any{"t": "threads", "threads": ts})
+	b := mustJSON(map[string]any{"t": "threads", "threads": ts, "groups": organization.Groups})
 	changed := !bytes.Equal(b, h.listJSON)
 	h.threads = ts
+	h.orgState = organization
 	h.listJSON = b
 	var cs []*Client
 	if changed {
@@ -440,6 +450,8 @@ func (h *Hub) handle(c *Client, raw []byte) {
 			home, _ := os.UserHomeDir()
 			c.push(mustJSON(map[string]any{"t": "projects", "projects": ps, "home": home}))
 		}()
+	case "group":
+		go func() { threads, err := h.organizationGroup(m.ID); ack(err, map[string]any{"threads": threads}) }()
 	case "project":
 		go func() {
 			ts, err := listProjectThreads(h.db, m.Cwd)
@@ -473,6 +485,10 @@ func (h *Hub) handle(c *Client, raw []byte) {
 			id, err := h.newThread(m.Cwd, m.Text, deref(m.Model), deref(m.Effort), m.Images)
 			ack(err, map[string]any{"thread": id})
 		}()
+	case "rename":
+		go func() { ack(h.renameSession(m.ID, m.Text), map[string]any{"title": m.Text}) }()
+	case "fork":
+		go func() { id, err := h.forkSession(m.ID); ack(err, map[string]any{"thread": id}) }()
 	case "send":
 		if x := h.execFor(m.ID); x != nil && x.queue(m.Text, m.Images) {
 			ack(nil, map[string]any{"queued": true})

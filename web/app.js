@@ -77,15 +77,28 @@ function saveServers() {
   store.set("servers", S.servers);
   if (Native) try { Native.setServers(JSON.stringify(S.servers)); } catch {}
 }
-function addServer({ url, token, name, custom }) {
-  url = url.replace(/\/+$/, "");
-  let s = S.servers.find((x) => x.url === url);
-  if (s) { s.token = token; if (name) { s.name = name; s.custom = !!custom; } }
-  else { s = { id: sid(), url, token, name: name || hostOf(url), custom: !!(custom && name) }; S.servers.push(s); }
-  saveServers();
-  syncConns();
-  return s;
+function sameRelayPairing(existing,url,token,pin) {
+  if(existing.url===url)return true;
+  if(!pin)return false;
+  if(typeof existing.pin==='string' && existing.pin)return existing.pin.toLowerCase()===pin;
+  if(existing.token!==token)return false;
+  const address=value=>{try{const u=new URL(value);return u.hostname+':'+(u.port || (u.protocol==='https:'?'443':'80'));}catch{return '';}};
+  const next=address(url);
+  return !!next && [existing.url,...(existing.alts||[])].some(value=>address(value)===next);
 }
+function addServer({ url, token, name, custom, pin = "" }) {
+  url = url.replace(/\/+$/, "");
+  pin=pin.toLowerCase();
+  if (pin && (!/^https:\/\//.test(url) || !/^[a-f0-9]{64}$/.test(pin))) throw Error('Invalid secure pairing link');
+  const index = S.servers.findIndex(x => sameRelayPairing(x,url,token,pin));
+  const previous = S.servers[index];
+  const s = {...previous,id:previous?.id || sid(),url,token,pin:pin || (previous?.url===url ? previous.pin || '' : ''),
+    name:name || previous?.name || hostOf(url),custom:name ? !!custom : !!previous?.custom};
+  s.alts=(s.alts || []).filter(value => !url.startsWith('https://') || value.startsWith('https://'));
+  if(index>=0)S.servers[index]=s;else S.servers.push(s);
+  saveServers();syncConns();return s;
+}
+
 const serverName = (id) => { const s = S.servers.find((x) => x.id === id); return s ? s.name || hostOf(s.url) : "Mac"; };
 
 function adoptPairingLink() {
@@ -95,13 +108,32 @@ function adoptPairingLink() {
   let legacy = null;
   try { legacy = localStorage.getItem("token"); legacy = legacy && legacy.replace(/"/g, ""); } catch {}
   if (fromRelay && (m || (legacy && !S.servers.length))) {
-    addServer({ url: location.origin, token: m ? m[1] : legacy, name: "" });
+    addServer({ url: location.origin, token: m ? m[1] : legacy, name: "", pin: Native ? new URLSearchParams(location.hash.slice(1)).get("pin") || "" : "" });
     if (m) history.replaceState(null, "", location.pathname);
   }
 }
 
 // ------------------------------------------------------------- connection --
 
+// Pinned certificates use OkHttp for both HTTPS resources and WebSockets.
+// The WebView keeps its normal certificate verification enabled.
+const relaySockets = new Map();
+let relaySocketID = 0;
+class PinnedRelaySocket {
+  constructor(server, base) {
+    this.id='relay-'+(++relaySocketID);this.readyState=0;relaySockets.set(this.id,this);
+    Native.openRelaySocket(this.id,server.id,base);
+  }
+  send(text) {if(this.readyState===1)Native.sendRelaySocket(this.id,text);}
+  close() {this.readyState=3;relaySockets.delete(this.id);Native.closeRelaySocket(this.id);}
+}
+window.onRelaySocket = event => {
+  const socket=relaySockets.get(event.id);if(!socket)return;
+  if(event.event==='open'){socket.readyState=1;socket.onopen?.();}
+  else if(event.event==='message')socket.onmessage?.({data:event.text});
+  else if(event.event==='chunk'){(socket.chunks ||= []).push(event.text);if(event.last){const data=socket.chunks.join('');socket.chunks=null;socket.onmessage?.({data});}}
+  else if(event.event==='close'){socket.readyState=3;relaySockets.delete(event.id);socket.onclose?.();}
+};
 class Conn {
   constructor(server) {
     this.s = server;
@@ -110,6 +142,7 @@ class Conn {
     this.backoff = 300; this.timer = 0; this.nonce = 0; this.pending = {};
     this.models = null; this.projects = null; this.home = ""; this.projAt = 0;
     this.base = server.url; // the address that last worked; alternates come from hello
+    this.groups=store.get("groups:"+server.id+":"+S.provider,[]);
     this.byCwd = {}; // full thread lists of opened projects
     this.dead = false;
     this.byProvider = {};
@@ -124,12 +157,12 @@ class Conn {
     clearTimeout(this.timer);
     if (this.dead) return;
     if (this.ws) { this.ws.onclose = null; try { this.ws.close(); } catch {} this.ws = null; }
-    const urls = [this.base, this.s.url, ...(this.s.alts || [])].filter((u, i, a) => u && a.indexOf(u) === i);
+    const urls = [this.base, this.s.url, ...(this.s.alts || [])].filter((u, i, a) => u && a.indexOf(u) === i && (!this.s.url.startsWith("https://") || u.startsWith("https://")));
     const my = (this.attempt = (this.attempt || 0) + 1);
     let winner = null, failed = 0;
     const sockets = urls.map((u) => {
       let w;
-      try { w = new WebSocket(u.replace(/^http/, "ws") + "/ws?t=" + encodeURIComponent(this.s.token)); }
+      try { w = Native?.openRelaySocket && this.s.pin ? new PinnedRelaySocket(this.s,u) : new WebSocket(u.replace(/^http/, "ws") + "/ws?t=" + encodeURIComponent(this.s.token)); }
       catch { failed++; return null; }
       w.onopen = () => {
         if (winner || my !== this.attempt || this.dead) { w.onclose = null; w.close(); return; }
@@ -146,7 +179,7 @@ class Conn {
   attach(ws) {
     mark("open:" + this.s.id);
     this.ws = ws; this.ok = true; this.backoff = 300;
-    ws.onmessage = (e) => this.onMessage(JSON.parse(e.data));
+    ws.onmessage = (e) => this.onMessage(JSON.parse(e.data),e.data);
     ws.onclose = () => {
       this.ok = false; this.ws = null;
       if (this.dead || this.paused) return;
@@ -189,16 +222,17 @@ class Conn {
       setTimeout(() => { if (this.pending[nonce]) { delete this.pending[nonce]; res({ ok: false, msg: "No Response From The Computer" }); } }, timeout);
     });
   }
-  onMessage(m) {
+  onMessage(m,raw) {
     const provider = m.provider || "codex";
     if (["threads", "projects", "models"].includes(m.t)) {
       const cached = this.byProvider[provider] || (this.byProvider[provider] = {});
-      if (m.t === "threads") { cached.threads = m.threads || []; store.set("threads:" + this.s.id + ":" + provider, cached.threads.slice(0,200)); }
+      if (m.t === "threads") { cached.groups=m.groups || [];store.set("groups:"+this.s.id+":"+provider,cached.groups);cached.threads = m.threads || []; store.set("threads:" + this.s.id + ":" + provider, cached.threads.slice(0,200)); }
       if (m.t === "projects") { cached.projects = m.projects || []; cached.home = m.home; }
       if (m.t === "models") cached.models = m;
       if (provider !== S.provider) return;
     }
     const here = provider === S.provider && S.view === "thread" && S.sid === this.s.id && m.id === S.id;
+    if(here)window.cacheTranscriptMessage?.(this.s.id,provider,m,raw);
     if (window.onAgentMessage?.(this, m, provider)) return;
     switch (m.t) {
       case "hello":
@@ -212,7 +246,7 @@ class Conn {
         break;
       case "threads":
         mark("threads:" + this.s.id);
-        this.threads = m.threads || [];
+        this.threads = m.threads || [];this.groups=m.groups || [];
         store.set("threads:" + this.s.id, this.threads.filter((t) => !t.subagent).slice(0, 200));
         scheduleRender();
         break;
@@ -253,7 +287,7 @@ function syncConns() {
   for (const s of S.servers) {
     const c = conns.get(s.id);
     if (!c) conns.set(s.id, new Conn(s));
-    else if (c.s.url !== s.url || c.s.token !== s.token) { c.close(); conns.set(s.id, new Conn(s)); }
+    else if (c.s.url !== s.url || c.s.token !== s.token || c.s.pin !== s.pin) { if(c.s.token!==s.token || c.s.pin!==s.pin)window.forgetComputerTranscripts?.(s.id);c.close(); conns.set(s.id, new Conn(s)); }
     else c.s = s;
   }
   if (S.machine !== "all" && !conns.has(S.machine)) S.machine = "all";
@@ -359,7 +393,7 @@ window.addEventListener("popstate", (e) => {
   if (st.provider && st.provider !== S.provider) selectProvider(st.provider,false);
   if (S.sheet && !st.sheet) closeSheet(true);
   if (st.view === "thread") { if (S.id !== st.id || S.view !== "thread") openThread(st.sid, st.id, false); }
-  else if (st.view === "project") { leaveThread(); openProject(st.cwd, false); }
+  else if (st.view === "project") { leaveThread(); if(st.group && window.openNativeGroup)openNativeGroup(st.group.server,st.group.id,false);else openProject(st.cwd, false); }
   else if (!st.sheet) { leaveThread(); show("home"); renderHome(); }
 });
 function selectProvider(provider, push = true) {
@@ -371,7 +405,7 @@ function selectProvider(provider, push = true) {
  $('ask').querySelector('span').textContent=provider==='claude'?'Ask Claude':'Ask Codex';
   for (const c of conns.values()) {
     const cache=c.byProvider[provider] || {};
-    c.threads=cache.threads || store.get('threads:'+c.s.id+':'+provider,[]);c.projects=cache.projects || null;c.models=cache.models || null;c.home=cache.home || '';c.byCwd={};
+    c.threads=cache.threads || store.get('threads:'+c.s.id+':'+provider,[]);c.groups=cache.groups || store.get('groups:'+c.s.id+':'+provider,[]);c.projects=cache.projects || null;c.models=cache.models || null;c.home=cache.home || '';c.byCwd={};
     c.send({op:'threads'});c.refreshProjects(true);c.send({op:'models'});
   }
   if(push)history.pushState({view:'home',provider},'');
@@ -399,7 +433,7 @@ function allThreads() {
   const out = [];
   for (const [id, c] of conns) {
     if (S.machine !== "all" && S.machine !== id) continue;
-    for (const t of c.threads) if (!t.subagent) { t.sid = id; out.push(t); }
+    for (const t of c.threads) if (!t.subagent) { out.push({...t,sid:id}); }
   }
   return out;
 }
@@ -449,14 +483,14 @@ function threadRow(t, { project = true } = {}) {
   if (project) bits.push(`<span>${esc(base(t.cwd))}</span>`);
   if (multi) bits.push(`<span class="badge mac">${esc(serverName(t.sid))}</span>`);
   const msg = t.lastErr ? `<span class="msg err">${esc(t.lastErr)}</span>` : t.lastMsg ? `<span class="msg">${esc(t.lastMsg)}</span>` : "";
-  return `<button class="row" data-sid="${t.sid}" data-id="${esc(t.id)}"><div class="main"><div class="t">${esc(t.title || t.preview || "Untitled")}</div>` +
+  return `<button class="row" data-sid="${t.sid}" data-id="${esc(t.id)}"><div class="main"><div class="t">${esc(t.displayTitle || t.title || t.preview || "Untitled")}</div>` +
     `<div class="s">${bits.join("")}${msg}</div></div><div class="when">${ago(t.recency)}</div></button>`;
 }
-function projectsOf(threads, withDB) {
+function projectsOf(threads, withDB, excluded = new Set()) {
   const by = new Map();
   if (withDB) {
     for (const [id, c] of conns) {
-      if (S.machine !== "all" && S.machine !== id) continue;
+      if (excluded.has(id) || S.machine !== "all" && S.machine !== id) continue;
       for (const p of c.projects || []) {
         const q = by.get(p.cwd) || { cwd: p.cwd, n: 0, recency: 0, running: 0, attention: 0, db: true };
         q.n += p.threads; q.recency = Math.max(q.recency, p.recency);
@@ -465,6 +499,7 @@ function projectsOf(threads, withDB) {
     }
   }
   for (const t of threads) {
+    if(excluded.has(t.sid))continue;
     const k = t.cwd || "";
     let p = by.get(k);
     if (!p) { p = { cwd: k, n: 0, recency: 0, running: 0, attention: 0 }; by.set(k, p); }
@@ -495,23 +530,27 @@ function renderHome() {
   const running = threads.filter((t) => t.running && !t.attention).sort((a, b) => (b.turnAt || 0) - (a.turnAt || 0));
   const pinned = threads.filter((t) => t.pinned);
   const recent = threads.filter((t) => !t.running && !t.attention).sort((a, b) => b.recency - a.recency);
-  const projects = projectsOf(threads, true);
-  const shownProjects = S.showAllProjects ? projects : projects.slice(0, 6);
+  const nativeGroups=window.nativeGroupsFor?.() || [];
+  const nativeProjects=nativeGroups.filter(group=>group.kind==='project');
+  const nativeManual=nativeGroups.filter(group=>group.kind!=='project');
+  const projects = projectsOf(threads,true,new Set(nativeProjects.map(group=>group.server)));
+  const projectCards=[...nativeProjects.map(native=>({native})),...projects];
+  const shownProjects = S.showAllProjects ? projectCards : projectCards.slice(0, 6);
   let h = "";
-  if (attention.length) h += `<div class="sec">Needs You<span class="n">${attention.length}</span></div><div class="group">${attention.map((t) => threadRow(t)).join("")}</div>`;
-  if (running.length) h += `<div class="sec">Running<span class="n">${running.length}</span></div><div class="group">${running.map((t) => threadRow(t)).join("")}</div>`;
-  if (projects.length) {
-    h += `<div class="sec">Projects<span class="n">${projects.length}</span></div><div class="group">` +
-      shownProjects.map((p) => `<button class="row proj" data-cwd="${esc(p.cwd)}">${I.folder}<div class="main"><div class="t">${esc(base(p.cwd) || "Home")}</div>` +
-        `<div class="s">${p.attention ? '<span class="badge need"><span class="dot"></span>Needs You</span>' : p.running ? `<span class="badge run"><span class="dot"></span>${p.running} Running</span>` : ""}<span>${p.n} ${p.n === 1 ? "Chat" : "Chats"}</span></div></div><div class="when">${ago(p.recency)}</div></button>`).join("") +
-      (projects.length > 6 ? `<button class="show-more" data-x="projects">${S.showAllProjects ? "Show Fewer" : `Show All ${projects.length} Projects`}</button>` : "") + "</div>";
+  if (attention.length) h += `<div class="sec">Needs You<span class="n">${attention.length}</span></div><div class="group">${window.sessionTreeRows ? sessionTreeRows(attention,threads) : attention.map(t=>threadRow(t)).join("")}</div>`;
+  if (running.length) h += `<div class="sec">Running<span class="n">${running.length}</span></div><div class="group">${window.sessionTreeRows ? sessionTreeRows(running,threads) : running.map(t=>threadRow(t)).join("")}</div>`;
+  if(nativeManual.length)h+=`<div class="sec">Groups</div><div class="group">${nativeManual.map(group=>nativeGroupRow(group)).join('')}</div>`;
+  if(projectCards.length) {
+    h+=`<div class="sec">Projects<span class="n">${projectCards.length}</span></div><div class="group">`+
+      shownProjects.map(p=>p.native ? nativeGroupRow(p.native) : `<button class="row proj" data-cwd="${esc(p.cwd)}">${I.folder}<div class="main"><div class="t">${esc(base(p.cwd)||'Home')}</div><div class="s">${p.attention ? '<span class="badge need"><span class="dot"></span>Needs You</span>' : p.running ? `<span class="badge run"><span class="dot"></span>${p.running} Running</span>` : ''}<span>${p.n} ${p.n===1?'Chat':'Chats'}</span></div></div><div class="when">${ago(p.recency)}</div></button>`).join('')+
+      (projectCards.length>6 ? `<button class="show-more" data-x="projects">${S.showAllProjects ? 'Show Fewer' : `Show All ${projectCards.length} Projects`}</button>` : '')+'</div>';
   }
   if (pinned.length) {
     h += `<button class="sec ${S.pinnedClosed ? "closed" : ""}" data-x="pinned">Pinned<span class="n">${pinned.length}</span>${I.down}</button>`;
     if (!S.pinnedClosed) h += `<div class="group">${pinned.map((t) => threadRow(t)).join("")}</div>`;
   }
   if (recent.length) {
-    h += `<div class="sec">Recent<span class="n">${recent.length}</span></div><div class="group">${recent.slice(0, S.recentLimit).map((t) => threadRow(t)).join("")}` +
+    h += `<div class="sec">Recent<span class="n">${recent.length}</span></div><div class="group">${window.sessionTreeRows ? sessionTreeRows(recent.slice(0,S.recentLimit),threads) : recent.slice(0,S.recentLimit).map(t=>threadRow(t)).join("")}` +
       (recent.length > S.recentLimit ? `<button class="show-more" data-x="recent">Show More</button>` : "") + "</div>";
   }
   if (!threads.length) {
@@ -521,6 +560,8 @@ function renderHome() {
   list.innerHTML = h;
 }
 $("home-list").addEventListener("click", (e) => {
+  const native=e.target.closest('[data-native-group]');
+  if(native){openNativeGroup(native.dataset.server,native.dataset.nativeGroup,true);return;}
   const r = e.target.closest("[data-id]");
   if (r) { openThread(r.dataset.sid, r.dataset.id, true); return; }
   const p = e.target.closest("[data-cwd]");
@@ -537,6 +578,7 @@ setInterval(() => { if (S.view !== "thread" && document.visibilityState === "vis
 // ---------------------------------------------------------------- project --
 
 function openProject(cwd, push) {
+  S.group=null;
   if (push) history.pushState({ view: "project", cwd, provider:S.provider }, "");
   S.cwd = cwd;
   $("p-search").value = "";
@@ -546,6 +588,7 @@ function openProject(cwd, push) {
   $("project-list").scrollTop = 0;
 }
 function renderProject() {
+  if(S.group && window.renderNativeProject){renderNativeProject();return;}
   // Full list from the database when it has arrived, with live state from the recent list.
   const byId = new Map(allThreads().filter((t) => t.cwd === S.cwd).map((t) => [t.sid + t.id, t]));
   for (const [id, c] of conns) {
@@ -558,7 +601,7 @@ function renderProject() {
   $("p-sub").innerHTML = sids.map((s) => { const c = conns.get(s); return `<span><span class="dot ${c && c.ok ? "on" : "off"}"></span> ${esc(serverName(s))}</span>`; }).join("") + `<span class="mono">${esc(S.cwd)}</span>`;
   const q = $("p-search").value.toLowerCase().trim();
   const rows = q ? threads.filter((t) => `${t.title} ${t.preview} ${t.lastMsg || ""}`.toLowerCase().includes(q)) : threads;
-  $("project-list").innerHTML = rows.length ? `<div class="sec">Chats<span class="n">${rows.length}</span></div><div class="group">${rows.map((t) => threadRow(t, { project: false })).join("")}</div>`
+  $("project-list").innerHTML = rows.length ? `<div class="sec">Chats<span class="n">${rows.length}</span></div><div class="group">${window.sessionTreeRows ? sessionTreeRows(rows,threads,{project:false}) : rows.map(t=>threadRow(t,{project:false})).join("")}</div>`
     : `<div class="empty"><b>No Chats Here</b>Start one with New Chat.</div>`;
 }
 $("p-search").addEventListener("input", renderProject);
@@ -567,6 +610,7 @@ $("project-list").addEventListener("click", (e) => {
   if (r) openThread(r.dataset.sid, r.dataset.id, true);
 });
 $("p-new").onclick = () => {
+  if(S.group){openSheet('new',{cwd:S.cwd,sid:S.group.server});return;}
   const t = allThreads().find((x) => x.cwd === S.cwd);
   openSheet("new", { cwd: S.cwd, sid: t ? t.sid : undefined });
 };
@@ -585,12 +629,19 @@ function openThread(sidv, id, push) {
   const previousVoiceDraft = S.sid === sidv && S.id === id;
   S.sid = sidv; S.id = id; S.meta = null; S.turns = []; S.stick = true; S.readingOutput = false;
   S.firstSnapshot = true;
+  const epoch=S.openEpoch=(S.openEpoch||0)+1,provider=S.provider;
+  $("t-title").setAttribute('aria-expanded','false');
+  $("t-title").closest('.thread-bar').classList.remove('title-expanded');
   restoreThreadAttachments();
   show("thread");
   renderThreadHeader();
   $("t-status").className = "status hidden";
   $("t-ring").innerHTML = "";
   $("feed").innerHTML = `<div class="empty">${loadingHTML("Loading Chat")}</div>`;
+  window.cachedChatTranscript?.(sidv,provider,id).then(record=>{
+    if(!record || !S.firstSnapshot || S.openEpoch!==epoch || S.sid!==sidv || S.id!==id || S.provider!==provider || !S.servers.some(s=>s.id===sidv))return;
+    S.meta={...record.meta,requests:[],cached:true,connecting:true,running:false};S.turns=record.turns;S.firstSnapshot=false;S.stick=true;renderThread();
+  });
   rememberAnswers();
   $('composer').prepend($('voice-panel'));
   lastCards = '';
@@ -598,11 +649,13 @@ function openThread(sidv, id, push) {
   $("banner").classList.add("hidden");
   renderComposer();
   const voiceDraft = store.get(voiceDraftKey(), null);
-  if (!previousVoiceDraft && voiceDraft && !input.value) {input.value=voiceDraft.text || "";autosize();}
+  if (!previousVoiceDraft) {input.value=voiceDraft?.text || "";autosize();}
   conn().send({ op: "open", id });
   if (Native) try { Native.setActiveThread(sidv, id, S.provider); } catch {}
 }
 function leaveThread() {
+  window.rememberChatTranscript?.();
+  if(S.id){const key=voiceDraftKey(),previous=store.get(key,null);store.set(key,{id:previous?.id || '',text:input.value});}
   if(voiceState.phase==='retry') {voiceState.phase='idle';voiceState.id='';voiceState.target='';renderVoice();}
   else cancelVoice();
   store.set('attachment-return',null);
@@ -617,12 +670,17 @@ function leaveThread() {
 function renderThreadHeader() {
   const t = findThread(S.sid, S.id) || {};
   const m = S.meta || {};
-  $("t-title").textContent = m.title || t.title || t.preview || "Thread";
+  $("t-title").textContent = t.displayTitle || m.title || t.title || t.preview || "Thread";
   const c = conn();
   const cwd = m.cwd || t.cwd;
   const mac = S.servers.length > 1 ? `<span><span class="dot ${c && c.ok ? "on" : "off"}"></span> ${esc(serverName(S.sid))}</span>` : c && !c.ok ? '<span><span class="dot off"></span> Offline</span>' : "";
   $("t-sub").innerHTML = (cwd ? `<span>${esc(base(cwd))}</span>` : "") + ((m.branch || t.branch) ? `<span class="mono">${esc(m.branch || t.branch)}</span>` : "") + mac;
 }
+$("t-title").onclick = () => {
+  const title=$("t-title"),expanded=title.getAttribute('aria-expanded')!=='true';
+  title.setAttribute('aria-expanded',String(expanded));
+  title.closest('.thread-bar').classList.toggle('title-expanded',expanded);
+};
 $("menu-btn").onclick = () => openSheet("menu");
 
 const feed = $("feed");
@@ -1125,15 +1183,18 @@ function audioPath(path) {
   return path;
 }
 function isAudioPath(path) { return /\.(mp3|wav|m4a|aac|ogg|opus|flac|aiff?)(?:[?#].*)?$/i.test(audioPath(path)); }
-function fileHTML(path, label, iconOnly = false) {
+function fileHTML(path, label, iconOnly = false, server = S.sid) {
   path = audioPath(path);
   const name = base(path.split(/[?#]/)[0]) || "File";
-  return `<button type="button" class="file-download${iconOnly ? " icon-btn" : ""}" data-file-path="${esc(path)}" data-file-server="${esc(S.sid)}" title="${esc(path)}" aria-label="Download ${esc(label || name)}">${I.download}${iconOnly ? "" : `<span>${esc(label || name)}</span>`}</button>`;
+  return `<button type="button" class="file-download${iconOnly ? " icon-btn" : ""}" data-file-path="${esc(path)}" data-file-server="${esc(server)}" title="${esc(path)}" aria-label="${!iconOnly && /\.(md|markdown)$/i.test(path) ? "Open" : "Download"} ${esc(label || name)}">${I.download}${iconOnly ? "" : `<span>${esc(label || name)}</span>`}</button>`;
 }
 document.addEventListener("click", async event => {
   const button = event.target.closest("[data-file-path]");
   if (!button) return;
   const path = button.dataset.filePath, local = /^(\/|[a-z]:[\\/])/i.test(path);
+  if (/\.(md|markdown)$/i.test(path) && !button.hasAttribute('data-file-download') && !button.classList.contains('icon-btn') && window.openMarkdownDocument) {
+    openMarkdownDocument(button.dataset.fileServer,path);return;
+  }
   const c = conns.get(button.dataset.fileServer);
   if (local && !c) { toast("Reconnect To This Computer And Try Again"); return; }
   if (local && Native?.downloadFile) { toast("Downloading File"); Native.downloadFile(c.s.id, c.base, path); return; }
@@ -1148,15 +1209,15 @@ document.addEventListener("click", async event => {
   } catch { toast("Could Not Download File. Check The Computer Connection And Try Again"); }
   finally { button.disabled = false; }
 });
-function audioHTML(path, label = "") {
+function audioHTML(path, label = "", server = S.sid) {
   path = audioPath(path);
-  const local = /^(\/|[a-z]:[\\/])/i.test(path), c = conn();
+  const local = /^(\/|[a-z]:[\\/])/i.test(path), c = conns.get(server);
   if ((!local && !/^https?:\/\//i.test(path)) || (local && !c)) return esc(label || "Audio");
   const name = label && label.toLowerCase() !== "audio" ? label : isAudioPath(path) ? base(path.split(/[?#]/)[0]) : "Audio";
-  const key = (local ? S.sid : "remote") + ":" + path;
+  const key = (local ? server : "remote") + ":" + path;
   const native = local && Native && typeof Native.audioStreamVersion === "function";
-  const source = native ? "https://appassets.androidplatform.net/relay-audio?" + new URLSearchParams({ server:S.sid, base:c.base, path }) : local ? "" : path;
-  return `<span class="chat-audio" data-audio-key="${esc(key)}"${local ? ` data-server="${esc(S.sid)}" data-path="${esc(path)}"` : ""} role="group" aria-label="${esc(name)}"><span class="audio-heading"><span class="audio-name">${esc(name)}</span>${fileHTML(path,name,true)}</span><audio controls preload="none" aria-label="${esc(name)}"${source ? ` src="${esc(source)}"` : ' class="hidden"'}></audio><button type="button" class="audio-load"${source ? ' hidden' : ''}>Play Audio</button><span class="audio-error" role="status" hidden>Could Not Play Audio. Check The Computer Connection And Try Again. <button type="button" data-audio-retry>Retry</button></span></span>`;
+  const source = native ? "https://appassets.androidplatform.net/relay-audio?" + new URLSearchParams({ server, base:c.base, path }) : local ? "" : path;
+  return `<span class="chat-audio" data-audio-key="${esc(key)}"${local ? ` data-server="${esc(server)}" data-path="${esc(path)}"` : ""} role="group" aria-label="${esc(name)}"><span class="audio-heading"><span class="audio-name">${esc(name)}</span>${fileHTML(path,name,true,server)}</span><audio controls preload="none" aria-label="${esc(name)}"${source ? ` src="${esc(source)}"` : ' class="hidden"'}></audio><button type="button" class="audio-load"${source ? ' hidden' : ''}>Play Audio</button><span class="audio-error" role="status" hidden>Could Not Play Audio. Check The Computer Connection And Try Again. <button type="button" data-audio-retry>Retry</button></span></span>`;
 }
 function audioHTMLs(paths) { return (paths || []).map(path => audioHTML(path)).join(""); }
 const audioLoads = new Map();
@@ -1275,20 +1336,23 @@ feed.addEventListener("error", (e) => {
 }, true);
 
 // Markdown: fenced code, inline code, bold, italics, links, headings, lists, quotes, tables.
-function md(src) {
+function md(src, context = {}) {
+  const server=context.server || S.sid;
+  const resolve=path=>context.directory && window.resolveDocumentPath ? resolveDocumentPath(context.directory,path) : path;
   const blocks = [];
   src = src.replace(/```[^\n]*\n([\s\S]*?)(```|$)/g, (_, code) => { blocks.push(code.replace(/\n$/, "")); return `\u0000${blocks.length - 1}\u0000`; });
   const inline = (s) => {
     const images = [];
     s = MessageContent.renderFileCitations(s, ({path, label}) => {
-      images.push(fileHTML(path, label));
+      images.push(fileHTML(resolve(path), label, false, server));
       return `\u0001${images.length - 1}\u0001`;
     });
     s = s.replace(/`[^`\n]+`|(!?)\[([^\]]*)\]\(([^)\n]+)\)/g, (match, image, alt, path) => {
       if (match.startsWith("`")) return match;
-      if (isAudioPath(path)) images.push(audioHTML(path, alt));
-      else if (image) images.push(imageHTML(path.trim(), alt || "Image"));
-      else if (/^(\/|[a-z]:[\\/])/i.test(audioPath(path))) images.push(fileHTML(path,alt));
+      path=resolve(path);
+      if (isAudioPath(path)) images.push(audioHTML(path, alt, server));
+      else if (image) images.push(imageHTML(path.trim(), alt || "Image", server));
+      else if (/^(\/|[a-z]:[\\/])/i.test(audioPath(path))) images.push(fileHTML(path,alt,false,server));
       else return match;
       return `\u0001${images.length - 1}\u0001`;
     });
@@ -1350,6 +1414,7 @@ function renderStatus() {
   $("t-ring").classList.toggle("need", need);
 }
 function renderActivity() {
+  if(S.meta?.cached){$("activity").classList.add("hidden");return;}
   const pending = !!feed.querySelector(":scope > .u.pending");
   const running = !!S.meta?.running || S.turns.at(-1)?.status === "inProgress" || pending;
   $("activity").classList.toggle("hidden", !running || !!S.meta?.requests?.length);
@@ -1377,8 +1442,10 @@ function renderMeta() {
     b.classList.remove("hidden");
   } else if(m.connecting && !m.readOnly) {
     b.innerHTML=loadingHTML('Connecting to chat');b.classList.remove('hidden');
+  } else if(m.readOnly) {
+    b.innerHTML='<span>Read-only subagent</span>';b.classList.remove('hidden');
   } else if (m.mode !== "live" && !(S.provider === "codex" && m.running && !m.readOnly)) {
-    b.innerHTML = `<span>${m.mode==='external'?'Managed On Computer':'Read Only'}</span><button class="btn" id="wake">${S.provider==='claude'?(m.mode==='external'?'Take Over':'Resume'):'Open On Computer'}</button>`;
+    b.innerHTML = `<span>${m.mode==='external'?'Managed On Computer':'Saved chat'}</span><button class="btn" id="wake">${S.provider==='claude'?(m.mode==='external'?'Take Over':'Resume'):'Open On Computer'}</button>`;
     b.classList.remove("hidden");
     $("wake").onclick = async (e) => {
       e.target.disabled = true; e.target.textContent = "Opening";
@@ -1398,6 +1465,7 @@ function renderMeta() {
 // pendingAsk returns the question the assistant asked in the newest turn, if
 // the user has not answered it yet (these questions do not block the turn).
 function pendingAsk() {
+  if(S.meta?.cached)return null;
   const t = S.turns[S.turns.length - 1];
   if (!t) return null;
   const items = (t.items || []).filter(Boolean);
@@ -1407,6 +1475,12 @@ function pendingAsk() {
     if (it.k === "assistant" && it.asks && it.asks.length) return { item: it, key: t.key + ":" + it.id };
   }
   return null;
+}
+
+function asyncQuestionReply(itemID, answers) {
+  return '<send_user_message_question_reply>\n'+JSON.stringify(answers.map(({index,question,answer})=>({
+    questionItemId:JSON.stringify(['request_user_input_async',itemID,index]),question,answer
+  })))+'\n</send_user_message_question_reply>';
 }
 
 function cardHTML(key, title, sub, body) {
@@ -1499,13 +1573,16 @@ $("dockcards").addEventListener("click", async (e) => {
   }
   if(t.closest('[data-async-answer]')) {
     if (voiceState.phase !== 'idle') return;
-    const parts=[];
+    const ask=pendingAsk();if(!ask?.item.id)return;
+    const answers=[];
     for(const question of t.closest('.card').querySelectorAll('.qq')) {
       const value=question.querySelector('[data-other]').value.trim()||question.dataset.value;
       if(!value){toast('Answer Each Question');question.querySelector('[data-other]').focus();return;}
-      parts.push(question.dataset.title+'\n'+value);
+      answers.push({index:Number(question.dataset.async),question:question.dataset.title,answer:value});
     }
-    sendText(parts.join('\n\n'));return;
+    const button=t.closest('[data-async-answer]');button.disabled=true;
+    await sendText(asyncQuestionReply(ask.item.id,answers),{questionReply:true});
+    if(button.isConnected)button.disabled=false;return;
   }
   const card = t.closest(".card");
   const q = card && ((S.meta && S.meta.requests) || []).find((r) => "r:" + r.id === card.dataset.card);
@@ -1612,7 +1689,7 @@ function keepVoiceDraft(event) {
   if (!S.id) return;
   const field=voiceInput(); if (!field || (event && event.target !== field)) return;
   const key = currentVoiceDraftKey(), previous = store.get(key, null);
-  if (voiceState.phase !== "idle" || (previous && event?.type === "input")) store.set(key, { id:previous?.id || "", text:field.value });
+  if (!voiceState.target || voiceState.phase !== "idle" || (previous && event?.type === "input")) store.set(key, { id:previous?.id || "", text:field.value });
   if (voiceState.id && Native?.updateVoiceDraft) Native.updateVoiceDraft(voiceState.id, field.value);
 }
 input.addEventListener("input", e => {
@@ -1822,14 +1899,15 @@ function gauge(f) {
     `<path d="M12 13L${(12 + 5 * Math.cos(a)).toFixed(2)} ${(13 + 5 * Math.sin(a)).toFixed(2)}"/></svg>`;
 }
 
-async function sendText(text) {
+async function sendText(text, options = {}) {
   if (voiceState.phase !== "idle") return;
   if (!S.id) return;
-  if (S.attach.some((a) => a.uploading)) { toast("Waiting For Files To Upload"); return; }
-  const images = S.attach.filter(a => a.kind !== "file").map(a => a.path);
-  const files = S.attach.filter(a => a.kind === "file").map(a => a.path);
+  const attachments=options.questionReply ? [] : S.attach;
+  if (attachments.some((a) => a.uploading)) { toast("Waiting For Files To Upload"); return; }
+  const images = attachments.filter(a => a.kind !== "file").map(a => a.path);
+  const files = attachments.filter(a => a.kind === "file").map(a => a.path);
   if (!text && !images.length && !files.length) return;
-  const sent={sid:S.sid,id:S.id,provider:S.provider,list:S.attach,voiceKey:voiceDraftKey()};
+  const sent={sid:S.sid,id:S.id,provider:S.provider,list:attachments,voiceKey:voiceDraftKey()};
   const sameChat=()=>S.sid===sent.sid&&S.id===sent.id&&S.provider===sent.provider;
   const steering = S.meta && S.meta.running;
   const place = !S.stick ? captureReadingPlace(feed) : null;
@@ -1837,7 +1915,8 @@ async function sendText(text) {
   // Show the message right away; the real one replaces it when the Mac echoes it.
   const pending = document.createElement("div");
   pending.className = "u pending" + (steering ? " steer" : "");
-  pending.textContent = text + S.attach.map(a => "\n[" + (a.kind === "file" ? a.name : "Image") + "]").join("");
+  pending.innerHTML = messageHTML(text) + esc(attachments.map(a => "\n[" + (a.kind === "file" ? a.name : "Image") + "]").join(""));
+  pending.dataset.preview = pending.textContent;
   pending.dataset.text = text;
   const empty = feed.querySelector(":scope > .empty");
   if (empty) empty.remove();
@@ -1845,7 +1924,7 @@ async function sendText(text) {
   const waiting = null;
   renderActivity();
   $("send").disabled = true;
-  const fromInput = input.value.trim() === text;
+  const fromInput = !options.questionReply && input.value.trim() === text;
   const keep = input.value, savedVoiceDraft = store.get(voiceDraftKey(), null);
   if (fromInput) { input.value = ""; store.set(voiceDraftKey(), null); autosize(); }
   if (place) restoreReadingPlace(feed, place);
@@ -2119,6 +2198,7 @@ function openSheet(name, opts = {}) {
     S.stick=false;
   }
   if (S.sheet === "agent" && name !== "agent") window.disposeAgentViewer?.();
+  if (S.sheet === "document") window.disposeDocumentViewer?.();
   sheetGeneration++;
   if (!S.sheet) history.pushState({ ...(history.state || {}), sheet: name }, "");
   else history.replaceState({ ...(history.state || {}), sheet: name }, "");
@@ -2127,7 +2207,7 @@ function openSheet(name, opts = {}) {
   for (const animation of sh.getAnimations()) animation.cancel();
   sh.inert = false;
   $("scrim").style.pointerEvents = "";
-  sh.className = "sheet" + (["diff","image","usage","agents","agent"].includes(name) ? " full" : name === "effort" ? " effort" : "");
+  sh.className = "sheet" + (["diff","image","usage","agents","agent","document"].includes(name) ? " full" : name === "effort" ? " effort" : "");
   sh.style.bottom = name === "effort" ? `${$("composer").offsetHeight + 24}px` : "";
   sh.onclick = null;
   $("scrim").classList.toggle("dark", name === "effort");
@@ -2142,6 +2222,7 @@ function closeSheet(fromPop) {
    if(['available','ready','downloading','installing'].includes(appUpdate.phase))Native?.deferAppUpdate?.();
   }
   if (S.sheet === "agent") window.disposeAgentViewer?.();
+  if (S.sheet === "document") window.disposeDocumentViewer?.();
   S.sheet = null; S.redraw = null;
   const reading=S.sheetReading;S.sheetReading=null;
   if(reading && reading.server===S.sid && reading.id===S.id && reading.provider===S.provider) {
@@ -2285,6 +2366,7 @@ const SHEETS = {
     const m = S.meta || {};
     const t = findThread(S.sid, S.id);
     sh.innerHTML = `<div class="grip"></div>` +
+      (!m.readOnly ? mi('rename',I.edit,'Rename chat')+mi('fork',I.copy,'Fork chat') : '')+
       mi("diff", I.diff, "View Latest Changes") +
       mi("compact", I.squash, "Compact Context", m.ctxMax ? `${Math.round((m.ctxUsed || 0) / m.ctxMax * 100)}% Used` : "") +
       (m.mode !== "live" ? mi("wake", I.mac, S.provider==='claude' ? (m.mode==='external'?'Take Over':'Resume') : "Open On Computer") : "") +
@@ -2295,6 +2377,24 @@ const SHEETS = {
       const b = e.target.closest("[data-act]");
       if (!b) return;
       const act = b.dataset.act, c = conn();
+      if(act==='rename'){openSheet('rename');return;}
+      if(act==='fork'){
+        if(voiceState.phase!=='idle'){toast('Finish recording before opening a fork');return;}
+        const source={server:S.sid,id:S.id,provider:S.provider};
+        b.disabled=true;b.innerHTML=loadingHTML('Creating fork');
+        const result=await c.call({op:'fork',id:source.id,provider:source.provider},90000);
+        if(!result.ok){if(b.isConnected){b.disabled=false;b.innerHTML=`${I.copy}<span class="txt">Fork chat</span>`;}toast(nice(result.msg));return;}
+        c.send({op:'threads',provider:source.provider});
+        const open=()=>{
+          if(voiceState.phase!=='idle'){toast('Finish recording before opening this chat');return;}
+          const reuse=!!S.sheet;if(reuse)closeSheet(true);
+          if(S.provider!==source.provider)selectProvider(source.provider,false);
+          if(reuse)history.replaceState({view:'thread',sid:source.server,id:result.thread,provider:source.provider},'');
+          openThread(source.server,result.thread,!reuse);
+        };
+        if(S.sheet==='menu' && S.id===source.id && S.sid===source.server && S.provider===source.provider)open();else toast('Fork created',open);
+        return;
+      }
       if (act === "diff") { openSheet("diff", {}); c.send({ op: "diff", id: S.id, key: "" }); return; }
       closeSheet();
       if (act === "copy") copyText(S.id);
@@ -2312,6 +2412,26 @@ const SHEETS = {
         if (op === "archive") history.back();
       }
     };
+  },
+
+  rename(sh) {
+    const source={server:S.sid,id:S.id,provider:S.provider};
+    const t=findThread(source.server,source.id) || {};
+    const title=t.displayTitle || S.meta?.title || t.title || '';
+    sh.innerHTML=`<div class="grip"></div><h2>Rename chat</h2><div class="field"><label for="chat-title">Title</label><input id="chat-title" value="${esc(title)}" autocomplete="off"></div><p class="rename-error" role="status"></p><div class="sheet-actions"><button class="btn" data-rename-cancel>Cancel</button><span class="grow"></span><button class="btn primary" data-rename-save>Save</button></div>`;
+    const field=sh.querySelector('input'),save=sh.querySelector('[data-rename-save]');
+    const submit=async()=>{
+      const name=field.value.trim();if(!name){field.focus();return;}
+      save.disabled=true;save.innerHTML=loadingHTML('Saving');
+      const c=conns.get(source.server),result=c ? await c.call({op:'rename',id:source.id,provider:source.provider,text:name},70000) : {ok:false,msg:'This computer is no longer paired'};
+      if(S.sheet!=='rename' || S.sid!==source.server || S.id!==source.id || S.provider!==source.provider)return;
+      save.disabled=false;save.textContent='Save';
+      if(!result.ok){sh.querySelector('.rename-error').textContent=nice(result.msg);return;}
+      const current=findThread(source.server,source.id);if(current)current.displayTitle=name;
+      if(S.meta)S.meta.title=name;renderThreadHeader();closeSheet();
+    };
+    sh.onclick=e=>{if(e.target.closest('[data-rename-cancel]'))closeSheet();if(e.target.closest('[data-rename-save]'))submit();};
+    field.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();if(!save.disabled)submit();}};
   },
 
   perms(sh) {
@@ -2493,7 +2613,7 @@ const SHEETS = {
       sh.innerHTML = `<div class="grip"></div><h2>Computers</h2>` +
         S.servers.map((s) => {
           const c = conns.get(s.id);
-          const link = `fastcontrol://pair?url=${encodeURIComponent(s.url)}&t=${encodeURIComponent(s.token)}&name=${encodeURIComponent(s.name || "")}`;
+          const link = `fastcontrol://pair?url=${encodeURIComponent(s.url)}&t=${encodeURIComponent(s.token)}&name=${encodeURIComponent(s.name || "")}${s.pin ? "&pin="+s.pin : ""}`;
           return `<div class="mi"><span class="dot ${c && c.state === "on" ? "on" : c && c.state === "nodesk" ? "wait" : "off"}"></span><span class="txt">${esc(s.name || hostOf(s.url))}<span class="d">${esc(s.url)}, ${stateText[c ? c.state : "wait"]}</span></span>` +
             (!Native ? `<a class="btn" style="text-decoration:none;font-size:13px;padding:7px 10px" href="${esc(link)}">Open In App</a>` : "") +
             `<button class="chip" data-usage="${esc(s.id)}">Usage</button><button class="icon-btn" data-del="${s.id}" aria-label="Remove Mac">${I.trash}</button></div>`;
@@ -2506,10 +2626,11 @@ const SHEETS = {
         `<div class="sheet-actions"><span class="grow"></span><button class="btn primary" data-x="add">Add Computer</button></div>`;
       const u = sh.querySelector("#sv-url");
       u.oninput = () => {
+        u.dataset.pin="";
         const m = u.value.match(/^(https?:\/\/[^/#?\s]+)\/?#t=([0-9a-f]+)/) || u.value.match(/^fastcontrol:\/\/pair\?(.*)$/);
         if (!m) return;
-        if (m[2]) { u.value = m[1]; sh.querySelector("#sv-token").value = m[2]; }
-        else { const p = new URLSearchParams(m[1]); u.value = p.get("url") || ""; sh.querySelector("#sv-token").value = p.get("t") || ""; sh.querySelector("#sv-name").value = p.get("name") || ""; }
+        if (m[2]) { const hash=new URL(u.value).hash;u.dataset.pin=new URLSearchParams(hash.slice(1)).get("pin") || "";u.value = m[1]; sh.querySelector("#sv-token").value = m[2]; }
+        else { const p = new URLSearchParams(m[1]); u.dataset.pin=p.get("pin") || ""; u.value = p.get("url") || ""; sh.querySelector("#sv-token").value = p.get("t") || ""; sh.querySelector("#sv-name").value = p.get("name") || ""; }
       };
     };
     draw();
@@ -2521,6 +2642,7 @@ const SHEETS = {
       if (del) {
         const x = S.servers.find((s) => s.id === del.dataset.del);
         if (!x || !confirm(`Remove ${x.name || x.url}?`)) return;
+        window.forgetComputerTranscripts?.(x.id);
         S.servers = S.servers.filter((s) => s !== x);
         saveServers(); syncConns(); draw(); renderHome();
         return;
@@ -2535,18 +2657,21 @@ const SHEETS = {
       if (x === "add") {
         let url = sh.querySelector("#sv-url").value.trim();
         const token = sh.querySelector("#sv-token").value.trim();
+        const pin=sh.querySelector("#sv-url").dataset.pin || "";
         const name = sh.querySelector("#sv-name").value.trim();
         if (!url || !token) { toast("Enter The Address And Token"); return; }
         if (!/^https?:\/\//.test(url)) url = "http://" + url;
         url = url.replace(/\/+$/, "");
         if (url.startsWith("http://") && !/:\d+$/.test(url)) url += ":8787";
+        if(pin && (!Native?.prepareRelayPairing || !Native.prepareRelayPairing(url,token,pin))){toast('Open this secure pairing link in the latest Android app');return;}
         e.target.disabled = true; e.target.textContent = "Checking";
         let ok = false, msg = "";
         try { const r = await fetch(url + "/auth?t=" + encodeURIComponent(token)); ok = r.ok; msg = r.status === 401 ? "Wrong Token" : "Relay Error " + r.status; }
         catch { msg = "Cannot Reach " + url; }
         e.target.disabled = false; e.target.textContent = "Add Computer";
-        if (!ok) { toast(msg); return; }
-        const s = addServer({ url, token, name, custom: !!name });
+        if (!ok) { Native?.clearRelayPairing?.();toast(msg); return; }
+        const s = addServer({ url, token, name, custom: !!name, pin });
+        Native?.clearRelayPairing?.();
         S.machine = s.id; store.set("machine", s.id);
         closeSheet(); renderHome();
       }
@@ -2561,7 +2686,7 @@ window.onAndroidIntent = function () {
   let it;
   try { const j = Native.consumeLaunchIntent(); if (!j) return; it = JSON.parse(j); } catch { return; }
   if (it.type === "pair" && it.url && it.token) {
-    const s = addServer({ url: it.url, token: it.token, name: it.name || "" });
+    const s = addServer({ url: it.url, token: it.token, name: it.name || "", pin: it.pin || "" });
     S.machine = s.id; store.set("machine", s.id);
     toast("Paired With " + (s.name || s.url));
     if (S.view === "home") renderHome();

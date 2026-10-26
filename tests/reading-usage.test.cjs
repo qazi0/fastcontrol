@@ -69,3 +69,14 @@ test('weekly context requests only its provider while a full reading is pending'
  await full;
  assert.equal(c.contextUsage('a','codex').report.providers[0].windows[0].used,30);
 });
+
+test('nonblocking answers preserve desktop question IDs and render as ordinary answers',()=>{
+ const source=fs.readFileSync('web/app.js','utf8'),context=vm.createContext({});
+ vm.runInContext(fs.readFileSync('web/messages.js','utf8'),context);
+ vm.runInContext(source.slice(source.indexOf('function asyncQuestionReply('),source.indexOf('function cardHTML(')),context);
+ const wire=context.asyncQuestionReply('call-7',[{index:0,question:'Choose a host',answer:'This Mac'},{index:2,question:'Other option?',answer:'A "quoted" answer\nwith a second line'}]);
+ const payload=JSON.parse(wire.slice(wire.indexOf('\n')+1,wire.lastIndexOf('\n')));
+ assert.deepEqual(payload.map(reply=>JSON.parse(reply.questionItemId)),[['request_user_input_async','call-7',0],['request_user_input_async','call-7',2]]);
+ const parts=vm.runInContext('MessageContent.parse('+JSON.stringify(wire)+')',context);
+ assert.equal(parts.length,2);assert.equal(parts[0].kind,'reply');assert.equal(parts[1].answer,'A "quoted" answer\nwith a second line');
+});

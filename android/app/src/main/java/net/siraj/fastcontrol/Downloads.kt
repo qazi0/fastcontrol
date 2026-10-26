@@ -17,7 +17,7 @@ class Downloads(private val context: Context, private val emit: (JSONObject) -> 
         .readTimeout(30, TimeUnit.SECONDS).build()
     private val pairedClient = client.newBuilder().followRedirects(false).followSslRedirects(false).build()
 
-    fun download(url: String, token: String? = null, fileName: String? = null) {
+    fun download(url: String, token: String? = null, fileName: String? = null, server: Server? = null) {
         Thread({
             val label = if (fileName == null) "Image" else "File"
             var temporary: File? = null
@@ -25,7 +25,7 @@ class Downloads(private val context: Context, private val emit: (JSONObject) -> 
             try {
                 val builder = Request.Builder().url(url)
                 if (token != null) builder.header("Authorization", "Bearer $token")
-                (if (token == null) client else pairedClient).newCall(builder.build()).execute().use { response ->
+                (if (token == null) client else RelayTLS.client(server, pairedClient)).newCall(builder.build()).execute().use { response ->
                     check(response.isSuccessful) { "$label Is Unavailable" }
                     val body = response.body ?: error("$label Is Unavailable")
                     val mime = body.contentType()?.toString()?.substringBefore(';') ?: "application/octet-stream"

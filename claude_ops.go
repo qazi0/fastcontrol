@@ -132,11 +132,13 @@ func (m *ClaudeManager) handle(c *Client, raw []byte) {
 	}
 	switch op {
 	case "threads":
-		m.refresh()
+		m.requestRefresh()
 		m.mu.Lock()
 		b := append([]byte(nil), m.lastList...)
 		m.mu.Unlock()
-		c.push(b)
+		if len(b) > 0 {
+			c.push(b)
+		}
 	case "open", "more":
 		ack(m.open(c, id, op == "more"), nil)
 	case "close":
@@ -147,6 +149,12 @@ func (m *ClaudeManager) handle(c *Client, raw []byte) {
 		m.projects(c, "")
 	case "project":
 		m.projects(c, str(v, "cwd"))
+	case "group":
+		go func() {
+			m.refresh()
+			threads, err := m.organizationGroup(id)
+			ack(err, map[string]any{"threads": threads})
+		}()
 	case "models":
 		go func() {
 			err := m.discoverModels()
@@ -177,6 +185,10 @@ func (m *ClaudeManager) handle(c *Client, raw []byte) {
 			ack(err, map[string]any{"thread": sid})
 			m.refresh()
 		}()
+	case "rename":
+		go func() { ack(m.renameSession(id, str(v, "text")), nil) }()
+	case "fork":
+		go func() { child, err := m.forkSession(id); ack(err, map[string]any{"thread": child}) }()
 	case "wake", "send", "compact":
 		go func() {
 			run, err := m.getRun(id, op == "wake")
@@ -243,6 +255,12 @@ func (m *ClaudeManager) handle(c *Client, raw []byte) {
 		}()
 	case "settings":
 		go func() {
+			unlock, err := m.lockPreference(id)
+			if err != nil {
+				ack(err, nil)
+				return
+			}
+			defer unlock()
 			p := m.preference(id)
 			if model := str(v, "model"); model != "" {
 				p.Model = model
@@ -320,25 +338,34 @@ func (m *ClaudeManager) handle(c *Client, raw []byte) {
 			_ = m.open(c, id, false)
 		}()
 	case "archive", "unarchive":
-		m.mu.Lock()
-		run := m.runs[id]
-		active := m.active[id]
-		m.mu.Unlock()
-		if active.ID != "" {
-			ack(errors.New("Stop This Session Before Archiving"), nil)
-			return
-		}
-		if run != nil {
-			meta, _ := run.snapshot()
-			if meta.Running {
+		go func() {
+			unlock, err := m.lockPreference(id)
+			if err != nil {
+				ack(err, nil)
+				return
+			}
+			defer unlock()
+			m.mu.Lock()
+			run := m.runs[id]
+			active := m.active[id]
+			m.mu.Unlock()
+			if active.ID != "" {
 				ack(errors.New("Stop This Session Before Archiving"), nil)
 				return
 			}
-		}
-		p := m.preference(id)
-		p.Archived = op == "archive"
-		ack(m.setPreference(id, p), nil)
-		m.refresh()
+			if run != nil {
+				meta, _ := run.snapshot()
+				if meta.Running {
+					ack(errors.New("Stop This Session Before Archiving"), nil)
+					return
+				}
+			}
+			p := m.preference(id)
+			p.Archived = op == "archive"
+			ack(m.setPreference(id, p), nil)
+			m.refresh()
+
+		}()
 	case "diff":
 		m.mu.Lock()
 		run := m.runs[id]

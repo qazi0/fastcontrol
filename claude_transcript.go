@@ -12,13 +12,14 @@ import (
 )
 
 type claudeTranscript struct {
-	Meta  Meta
-	Turns []Turn
-	First string
-	More  bool
-	Diffs map[string]string
-	cur   int
-	tools map[string][2]int
+	Meta     Meta
+	Turns    []Turn
+	First    string
+	ParentID string
+	More     bool
+	Diffs    map[string]string
+	cur      int
+	tools    map[string][2]int
 }
 
 func newClaudeTranscript() *claudeTranscript {
@@ -91,6 +92,9 @@ func (v *claudeTranscript) upsert(it Item) {
 func (v *claudeTranscript) apply(r map[string]any) {
 	if side, _ := r["isSidechain"].(bool); side {
 		return
+	}
+	if parent := str(mapValue(r["forkedFrom"]), "sessionId"); parent != "" && parent != str(r, "sessionId") {
+		v.ParentID = parent
 	}
 	if cwd := str(r, "cwd"); cwd != "" {
 		v.Meta.Cwd = cwd

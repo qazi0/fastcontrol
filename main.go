@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"crypto/tls"
 	"embed"
 	"encoding/hex"
 	"flag"
@@ -85,6 +86,7 @@ func main() {
 	installSpeech := flag.Bool("install-speech", false, "download and prepare the local speech model")
 	speechStatus := flag.Bool("speech-status", false, "print local speech model availability and exit")
 	usageJSON := flag.Bool("usage-json", false, "print this computer usage and limits as JSON, then exit")
+	secure := flag.Bool("tls", false, "encrypt network connections; pair Android with the printed certificate fingerprint")
 	noQR := flag.Bool("no-qr", false, "do not print the pairing QR code")
 	flag.Parse()
 	if *installSpeech {
@@ -250,10 +252,24 @@ func main() {
 		addrs = strings.Split(*bind, ",")
 		preferred = addrs[len(addrs)-1]
 	}
+	scheme, pin := "http", ""
+	var tlsConfig *tls.Config
+	if *secure {
+		var err error
+		names := append(append([]string(nil), addrs...), "localhost", "127.0.0.1", "::1")
+		for i := range names {
+			names[i] = strings.TrimSpace(names[i])
+		}
+		tlsConfig, pin, err = newRelayTLS(filepath.Join(home, ".fastcontrol", "tls"), names)
+		if err != nil {
+			log.Fatalf("TLS identity: %v", err)
+		}
+		scheme = "https"
+	}
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	for _, a := range addrs {
 		if a = strings.TrimSpace(a); a != "127.0.0.1" && a != "::1" {
-			hub.addrs = append(hub.addrs, fmt.Sprintf("http://%s", net.JoinHostPort(a, fmt.Sprint(*port))))
+			hub.addrs = append(hub.addrs, fmt.Sprintf("%s://%s", scheme, net.JoinHostPort(a, fmt.Sprint(*port))))
 		}
 	}
 	for _, a := range addrs {
@@ -262,16 +278,34 @@ func main() {
 			log.Printf("listen %s: %v", a, err)
 			continue
 		}
-		log.Printf("listening on http://%s", ln.Addr())
+		listenerScheme := scheme
+		// Loopback remains HTTP for an SSH tunnel and local desktop tooling.
+		if ip := net.ParseIP(strings.TrimSpace(a)); *secure && (ip == nil || !ip.IsLoopback()) {
+			ln = tls.NewListener(ln, tlsConfig)
+		} else {
+			listenerScheme = "http"
+		}
+		log.Printf("listening on %s://%s", listenerScheme, ln.Addr())
 		go func() { log.Println(srv.Serve(ln)) }()
 	}
 
-	base := fmt.Sprintf("http://%s:%d", preferred, *port)
+	if ip := net.ParseIP(preferred); ip != nil && ip.IsLoopback() {
+		scheme = "http"
+	}
+	base := fmt.Sprintf("%s://%s", scheme, net.JoinHostPort(preferred, fmt.Sprint(*port)))
 	url := fmt.Sprintf("%s/#t=%s", base, token)
 	app := fmt.Sprintf("fastcontrol://pair?url=%s&t=%s&name=%s", neturl.QueryEscape(base), token, neturl.QueryEscape(hostName()))
+	if pin != "" {
+		url += "&pin=" + pin
+		app += "&pin=" + pin
+	}
 	fmt.Printf("\nOpen on your phone:\n  %s\n\nPair the Android app:\n  %s\n\n", url, app)
 	if !*noQR {
-		qrterminal.GenerateHalfBlock(url, qrterminal.L, os.Stdout)
+		qrURL := url
+		if *secure {
+			qrURL = app
+		}
+		qrterminal.GenerateHalfBlock(qrURL, qrterminal.L, os.Stdout)
 	}
 	select {}
 }

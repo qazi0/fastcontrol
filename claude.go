@@ -12,10 +12,13 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type claudePreference struct {
+	Title      string `json:"title,omitempty"`
+	ParentID   string `json:"parentId,omitempty"`
 	Model      string `json:"model,omitempty"`
 	Effort     string `json:"effort,omitempty"`
 	Permission string `json:"permission,omitempty"`
@@ -42,11 +45,14 @@ type ClaudeManager struct {
 	runs                       map[string]*ClaudeRun
 	watch                      map[*Client]map[string]int
 	prefs                      map[string]claudePreference
+	prefGates                  map[string]*claudePreferenceGate // guarded by mu
 	models                     []Model
 	active                     map[string]claudeActive
 	lastList                   []byte
+	orgState                   OrganizationSnapshot // immutable after publication under mu
 	watchedMod                 map[string]time.Time
 	refreshMu                  sync.Mutex
+	refreshJob                 atomic.Bool
 	modelsMu                   sync.Mutex
 }
 
@@ -160,6 +166,9 @@ func (m *ClaudeManager) refresh() {
 			continue
 		}
 		info := ThreadInfo{ID: id, Provider: "claude", Title: clipPlain(v.Meta.Title, 120), Preview: clipPlain(v.First, 160), Cwd: v.Meta.Cwd, Model: v.Meta.Model, Effort: v.Meta.Effort, Recency: st.ModTime().UnixMilli(), Branch: v.Meta.Branch, Source: "claude"}
+		if v.ParentID != "" {
+			info.ParentID, info.Relation = v.ParentID, "fork"
+		}
 		if len(v.Turns) > 0 {
 			for _, it := range v.Turns[len(v.Turns)-1].Items {
 				if it.K == "assistant" {
@@ -203,10 +212,35 @@ func (m *ClaudeManager) refresh() {
 		}
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Recency > list[j].Recency })
-	b := mustJSON(map[string]any{"t": "threads", "provider": "claude", "threads": list})
+	organization := emptyOrganization()
+	if m.hub.organization != nil && len(list) > 0 {
+		ids := make([]string, len(list))
+		for i := range list {
+			ids[i] = list[i].ID
+		}
+		organization, _ = m.hub.organization.Claude(ids)
+	}
+	for _, t := range list {
+		pref := m.preference(t.ID)
+		p, exists := organization.Placements[t.ID]
+		if pref.Title != "" {
+			p.DisplayTitle = pref.Title
+		}
+		if pref.ParentID != "" && !p.Detached {
+			p.ParentID, p.Relation = pref.ParentID, "fork"
+		} else if p.ParentID == "" && !p.Detached && t.Relation == "fork" {
+			p.ParentID, p.Relation = t.ParentID, "fork"
+		}
+		if exists || pref.Title != "" || pref.ParentID != "" || p.ParentID != "" {
+			organization.Placements[t.ID] = p
+		}
+	}
+	list = applyThreadOrganization(list, organization)
+	b := mustJSON(map[string]any{"t": "threads", "provider": "claude", "threads": list, "groups": organization.Groups})
 	m.mu.Lock()
 	changed := !bytes.Equal(b, m.lastList)
 	m.lastList = b
+	m.orgState = organization
 	m.mu.Unlock()
 	if changed {
 		m.hub.mu.Lock()
@@ -322,7 +356,22 @@ func (m *ClaudeManager) run(ctx context.Context) {
 }
 func (m *ClaudeManager) removeClient(c *Client) { m.mu.Lock(); delete(m.watch, c); m.mu.Unlock() }
 func (m *ClaudeManager) open(c *Client, id string, more bool) error {
+	m.hub.mu.Lock()
+	if !m.hub.clients[c] {
+		m.hub.mu.Unlock()
+		return nil
+	}
 	m.mu.Lock()
+	run := m.runs[id]
+	entry, exists := m.entries[id]
+	if run == nil && !exists {
+		m.mu.Unlock()
+		m.hub.mu.Unlock()
+		return errors.New("Claude Session Not Found")
+	}
+	if m.watch == nil {
+		m.watch = map[*Client]map[string]int{}
+	}
 	if m.watch[c] == nil {
 		m.watch[c] = map[string]int{}
 	}
@@ -334,10 +383,9 @@ func (m *ClaudeManager) open(c *Client, id string, more bool) error {
 		window += 15
 	}
 	m.watch[c][id] = window
-	run := m.runs[id]
-	entry, exists := m.entries[id]
 	active := m.active[id]
 	m.mu.Unlock()
+	m.hub.mu.Unlock()
 	if run != nil {
 		if more && exists {
 			size := int64(2 << 20)

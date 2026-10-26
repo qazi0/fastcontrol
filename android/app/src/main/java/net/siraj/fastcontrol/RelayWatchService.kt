@@ -259,7 +259,7 @@ class RelayWatchService : Service() {
                 return
             }
             Log.i(TAG, "connecting to ${server.name}")
-            ws = client.newWebSocket(req, object : WebSocketListener() {
+            ws = RelayTLS.client(server, client).newWebSocket(req, object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
                     webSocket.send("""{"op":"events","on":true}""")
                     main.post {

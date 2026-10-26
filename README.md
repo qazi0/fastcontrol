@@ -5,11 +5,13 @@ Instant access to your existing Codex and Claude Code sessions from Android. fas
 ## Features
 
 - Browse projects and chats across multiple computers. Send messages, stop tasks, answer questions and approve tool requests.
+- See desktop groups and child chats. Rename chats or fork them with their conversation history.
 - Choose the model, reasoning effort and permission mode for a chat.
 - Check subscription usage limits and reset times. View each computer's local token counts and estimated API costs for today and the last 30 days.
 - Record voice messages and have your computer transcribe them into an editable draft.
 - Attach images, PDFs and other local files to a chat. View chat images full-screen, zoom and download them.
 - Play generated audio in chat and download linked files to Android.
+- Read Markdown files from the connected computer inside the app.
 - Open subagent transcripts and follow their progress in a read-only view.
 - Receive notifications when tasks finish or need your attention.
 
@@ -66,6 +68,14 @@ After the first install, the app checks GitHub for updates. You can also choose 
 Open the pairing link from `~/.fastcontrol/relay.log` on Mac or Linux, or `%USERPROFILE%\.fastcontrol\relay.log` on Windows. You can also choose Add Computer in Android and enter the computer's address and token. The relay uses port 8787. Allow the relay through your firewall when prompted. Use Tailscale to connect outside your LAN.
 
 Repeat the computer installation to add another host. Each computer keeps its own coding sessions and credentials.
+
+## Encrypted connections
+
+The installer enables TLS for network connections. Android 0.2.10 or newer pairs with the computer's certificate using the `fastcontrol://pair` link in its relay log. Copy that complete link into Add Computer, or scan the QR shown when starting the relay without `-no-qr`. You do not need a domain or a public certificate.
+
+The same pairing works over LAN and Tailscale. Connections verify the paired public key, certificate dates and the target address. A secure pairing never falls back to HTTP. Keep `~/.fastcontrol/tls/key.pem` private and backed up; replacing it requires pairing devices again. Certificate renewal retains the key.
+
+After updating an older installation, install the new APK and pair again with the secure link. For manual relay startup, add `-tls`. Loopback remains HTTP for local tools and SSH tunnels. Browsers use their system certificate trust; use an SSH tunnel if you do not want to install the relay's certificate on that computer.
 
 ## Use From Another Computer
 

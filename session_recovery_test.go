@@ -5,9 +5,27 @@ import (
 	"encoding/json"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
+
+func TestConcurrentSlowClientWritersCloseOnce(t *testing.T) {
+	c := &Client{out: make(chan []byte), done: make(chan struct{})}
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	for i := 0; i < 64; i++ {
+		workers.Add(1)
+		go func() { defer workers.Done(); <-start; c.push([]byte("update")) }()
+	}
+	close(start)
+	workers.Wait()
+	select {
+	case <-c.done:
+	default:
+		t.Fatal("slow client was left connected")
+	}
+}
 
 func recoverySession(t *testing.T) (*Session, <-chan ipcFrame) {
 	t.Helper()
