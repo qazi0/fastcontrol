@@ -36,6 +36,9 @@ type ThreadInfo struct {
 	ParentID     string   `json:"parentId,omitempty"`
 	AgentPath    string   `json:"agentPath,omitempty"`
 	AgentName    string   `json:"agentName,omitempty"`
+	AgentID      string   `json:"agentId,omitempty"`
+	AgentToolID  string   `json:"toolId,omitempty"`
+	AgentState   string   `json:"agentState,omitempty"`
 	Activity     string   `json:"activity,omitempty"`
 	Pinned       bool     `json:"pinned,omitempty"`
 	Exec         bool     `json:"exec,omitempty"` // first turn running headless via codex exec

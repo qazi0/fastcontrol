@@ -130,7 +130,15 @@ func (m *ClaudeManager) handle(c *Client, raw []byte) {
 		}
 		m.emit(c, value)
 	}
+	if strings.HasPrefix(id, claudeWorkPrefix) && agentControl(op) {
+		ack(errors.New("Subagent Chats Are Read Only. Use The Parent Chat To Direct The Agent"), nil)
+		return
+	}
 	switch op {
+	case "agents":
+		go func() { agents, err := m.listWork(id); ack(err, map[string]any{"agents": agents}) }()
+	case "agentOpen":
+		ack(m.openWork(c, str(v, "parent"), id, false), nil)
 	case "threads":
 		m.requestRefresh()
 		m.mu.Lock()
@@ -140,10 +148,15 @@ func (m *ClaudeManager) handle(c *Client, raw []byte) {
 			c.push(b)
 		}
 	case "open", "more":
+		if strings.HasPrefix(id, claudeWorkPrefix) {
+			ack(m.moreWork(c, id, op == "more"), nil)
+			return
+		}
 		ack(m.open(c, id, op == "more"), nil)
 	case "close":
 		m.mu.Lock()
 		delete(m.watch[c], id)
+		delete(m.workWatch[c], id)
 		m.mu.Unlock()
 	case "projects":
 		m.projects(c, "")
@@ -372,7 +385,28 @@ func (m *ClaudeManager) handle(c *Client, raw []byte) {
 		entry := m.entries[id]
 		m.mu.Unlock()
 		var diffs map[string]string
-		if run != nil {
+		if strings.HasPrefix(id, claudeWorkPrefix) {
+			m.mu.Lock()
+			watch, known := m.workWatch[c][id]
+			m.mu.Unlock()
+			if !known {
+				ack(errors.New("Open This Subagent From Its Parent Chat"), nil)
+				return
+			}
+			work, err := m.resolveWork(watch.Parent, id)
+			if err != nil {
+				ack(err, nil)
+				return
+			}
+			if work.Info.Kind == "agent" {
+				view, err := readClaudeTranscriptMode(work.Path, watch.Window, 8<<20, true)
+				if err != nil {
+					ack(err, nil)
+					return
+				}
+				diffs = view.Diffs
+			}
+		} else if run != nil {
 			run.mu.Lock()
 			diffs = map[string]string{}
 			for k, d := range run.view.Diffs {

@@ -12,7 +12,7 @@ Instant access to your existing Codex and Claude Code sessions from Android. fas
 - Attach images, PDFs and other local files to a chat. View chat images full-screen, zoom and download them.
 - Play generated audio in chat and download linked files to Android.
 - Read Markdown files from the connected computer inside the app.
-- Open subagent transcripts and follow their progress in a read-only view.
+- Follow Codex and Claude subagent transcripts, Claude workflow workers and background command output in a read-only view.
 - Receive notifications when tasks finish or need your attention.
 
 ## Install on a Mac
