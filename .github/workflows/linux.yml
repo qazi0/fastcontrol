@@ -3,7 +3,6 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    branches: [main]
     paths: ['*.go', 'go.*', 'web/**', 'licenses/**', 'install.sh', 'scripts/package-linux.sh', 'scripts/test-linux.sh', 'contrib/fastcontrol.service', '.github/workflows/linux.yml']
   pull_request:
     paths: ['*.go', 'go.*', 'web/**', 'licenses/**', 'install.sh', 'scripts/package-linux.sh', 'scripts/test-linux.sh', 'contrib/fastcontrol.service', '.github/workflows/linux.yml']
