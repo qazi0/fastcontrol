@@ -3,6 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    branches: [main]
     paths:
       - '*.go'
       - 'go.*'
@@ -24,6 +25,9 @@ on:
       - '.github/workflows/windows.yml'
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: windows-11-arm

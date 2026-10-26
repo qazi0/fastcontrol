@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -82,7 +83,7 @@ func TestUsageProgressDoesNotWaitForTheOtherProvider(t *testing.T) {
 	if json.Unmarshal(restored.cached, &persisted) != nil || persisted.Providers[0].LocalAt == 0 || len(persisted.Providers[0].Windows) != 0 || persisted.Providers[0].QuotaAt != 0 {
 		t.Fatal("invalid persisted reading")
 	}
-	if info, err := os.Stat(m.cachePath()); err != nil || info.Mode().Perm()&0077 != 0 {
+	if info, err := os.Stat(m.cachePath()); err != nil || (runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0) {
 		t.Fatal("usage cache was not private")
 	}
 }
