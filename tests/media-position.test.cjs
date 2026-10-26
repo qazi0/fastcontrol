@@ -21,3 +21,15 @@ test('preparing an image update never detaches decoded images from the live tran
  assert.equal(live.images.length,2);assert.equal(first.parent,live);assert.equal(second.parent,live);
  assert.equal(nextFirst.liveImage,first);assert.equal(nextSecond.liveImage,second);
 });
+
+test('detached transcript construction cannot bypass lazy image loading',()=>{
+ const source=fs.readFileSync('web/app.js','utf8'),queued=[],unobserved=[];
+ const context=vm.createContext({observedImages:new Set(),imageObserver:{observe:img=>queued.push(img),unobserve:img=>unobserved.push(img)}});
+ vm.runInContext(source.slice(source.indexOf('function queueImages('),source.indexOf('async function loadRelayImage(')),context);
+ const image={isConnected:false,dataset:{}},root={querySelectorAll:()=>image.dataset.queued ? [] : [image]};
+ context.queueImages(root);assert.equal(queued.length,0);assert.equal(image.dataset.queued,undefined);
+ image.isConnected=true;context.queueImages(root);assert.equal(queued.length,1);
+ context.queueImages(root);assert.equal(queued.length,1,'one observer per image');
+ image.isConnected=false;context.queueImages(root);assert.equal(unobserved.length,1);
+ image.isConnected=true;context.queueImages(root);assert.equal(queued.length,2,'reattached pending image is observed again');
+});

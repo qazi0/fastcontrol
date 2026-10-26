@@ -1204,7 +1204,7 @@ const imageObserver = new IntersectionObserver((entries) => {
     imageObserver.unobserve(entry.target); observedImages.delete(entry.target);
     loadRelayImage(entry.target);
   }
-}, { root: feed, rootMargin: "400px" });
+}, { root: null, rootMargin: "400px" });
 function clearImageCache() {
   imageGeneration++;
   imageObserver.disconnect(); observedImages.clear();
@@ -1212,11 +1212,11 @@ function clearImageCache() {
   imageCache.clear();
 }
 function queueImages(root) {
-  for (const img of observedImages) if (!img.isConnected) { imageObserver.unobserve(img); observedImages.delete(img); }
+  for (const img of observedImages) if (!img.isConnected) { imageObserver.unobserve(img); observedImages.delete(img); delete img.dataset.queued; }
   for (const img of root.querySelectorAll("img[data-relay-image]:not([data-queued])")) {
+    if(!img.isConnected)continue;
     img.dataset.queued = "1";
-    if (!feed.contains(img)) loadRelayImage(img);
-    else { observedImages.add(img); imageObserver.observe(img); }
+    observedImages.add(img); imageObserver.observe(img);
   }
 }
 async function loadRelayImage(img) {
