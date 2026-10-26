@@ -55,12 +55,12 @@ function renderUsage() {
   const state=usageViewState.get(usageServer);
   if(state){for(const details of sh.querySelectorAll('.usage-models'))details.open=state.expanded.includes(details.dataset.usageProvider);sh.querySelector('.usage-body').scrollTop=state.scroll;}
 }
-async function loadUsage(refresh = false) {
-  const sid = usageServer, connection = conns.get(sid);
-  if (!connection?.ok) {if(!usageCache.has(sid))usageCache.set(sid,{error:'Connect to this computer to read its usage.'});renderUsage();return;}
-  if (usageRequests.has(sid)) {renderUsage();return;}
+async function readUsage(sid, refresh = false) {
+  const connection = conns.get(sid);
+  if (!connection?.ok) return {...usageCache.get(sid),error:'Connect to this computer to read its usage.'};
+  if (usageRequests.has(sid)) return usageRequests.get(sid);
   const cached = usageCache.get(sid);
-  if (!refresh && cached?.report && Date.now() - cached.at < 60000) {renderUsage();return;}
+  if (!refresh && cached?.report && Date.now() - cached.at < 60000) return cached;
   const request = (async()=>{
     try {
       const response = await fetch(connection.base+'/usage'+(refresh?'?refresh=1':''),{headers:{Authorization:'Bearer '+connection.s.token},signal:AbortSignal.timeout(40000)});
@@ -69,9 +69,45 @@ async function loadUsage(refresh = false) {
       if (!Array.isArray(report.providers)) throw Error('This computer returned an invalid usage reading.');
       usageCache.set(sid,{report,at:Date.now()});
     } catch(error) {usageCache.set(sid,{...usageCache.get(sid),error:error.name==='TimeoutError'?'Usage took too long to refresh. Try again.':error.message});}
+    return usageCache.get(sid);
   })();
-  usageRequests.set(sid,request);renderUsage();await request;usageRequests.delete(sid);if(sid===usageServer)renderUsage();
+  usageRequests.set(sid,request);
+  try {return await request;} finally {if(usageRequests.get(sid)===request)usageRequests.delete(sid);}
 }
+async function loadUsage(refresh = false) {
+  const sid=usageServer, request=readUsage(sid,refresh);
+  renderUsage();
+  const result=await request;
+  if(result && !conns.get(sid)?.ok) usageCache.set(sid,result);
+  if(sid===usageServer)renderUsage();
+}
+function weeklyQuota(report, provider) {
+  const account = report?.providers?.find(value => value.provider === provider);
+  const window = account?.windows?.find(value => /^weekly$/i.test(value.label || ''));
+  if (!window || typeof window.used !== 'number' || !Number.isFinite(window.used)) return {account};
+  const used = Math.max(0,Math.min(100,window.used));
+  return {account,window,used,remaining:100-used,tone:used>90?'critical':used>75?'caution':''};
+}
+async function showContextWeekly(sheet, sid, provider) {
+  const target=sheet.querySelector('#context-weekly');
+  if(!target)return;
+  const valid=()=>S.sheet==='context' && S.sid===sid && S.provider===provider && sheet.querySelector('#context-weekly')===target;
+  const paint=cached=>{
+    if(!valid())return;
+    const quota=weeklyQuota(cached?.report,provider);
+    target.className='context-weekly'+(quota.tone?' '+quota.tone:'');
+    target.innerHTML=`<div class="context-weekly-head"><h3>Weekly Usage</h3>${quota.window ? `<strong>${new Intl.NumberFormat(undefined,{maximumFractionDigits:1}).format(quota.remaining)}% Left</strong>` : ''}</div>`+
+      (quota.window ? `<div class="usage-track" role="meter" aria-label="Weekly Usage Used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${quota.used}" aria-valuetext="${quota.remaining}% remaining"><span style="width:${quota.used}%"></span></div><p ${quota.window.resetAt ? `data-reset-at="${quota.window.resetAt}"` : ''}>${quota.window.resetAt ? esc(usageReset(quota.window.resetAt)):'Reset Time Unavailable'}</p>` : `<p>${esc(cached?.error || quota.account?.quotaError || 'Weekly usage is unavailable for this account.')}</p>`)+
+      (cached?.error && quota.window ? `<p>${conns.get(sid)?.ok ? "Couldn't refresh usage" : 'Offline'}${quota.account?.quotaAt || cached.at ? ` · Updated ${esc(new Date(quota.account?.quotaAt ? quota.account.quotaAt*1000 : cached.at).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}))}` : ''}</p>` : '') +
+      `<button class="context-weekly-link">Usage And Limits ${I.chev}</button>`;
+    target.querySelector('button').onclick=()=>openUsage(sid);
+  };
+  const cached=usageCache.get(sid);
+  if(cached?.report)paint(cached);
+  else target.innerHTML='<div class="context-weekly-loading" role="status"><span class="voice-spinner"></span><span>Reading Weekly Usage</span></div>';
+  paint(await readUsage(sid));
+}
+
 function openUsage(sid) {
   usageServer = sid || (S.machine!=='all'&&conns.has(S.machine)?S.machine:S.sid&&conns.has(S.sid)?S.sid:S.servers.find(server=>conns.get(server.id)?.ok)?.id||S.servers[0]?.id);
   if (!usageServer) {openSheet('macs');return;}
@@ -88,7 +124,8 @@ SHEETS.usage = (sh) => {
 };
 $('usage-open').onclick = () => openUsage();
 setInterval(()=>{
-  if(S.sheet!=='usage'||document.hidden)return;
+  if(!['usage','context'].includes(S.sheet)||document.hidden)return;
   for(const label of $('sheet').querySelectorAll('[data-reset-at]'))label.textContent=usageReset(Number(label.dataset.resetAt));
-  if(Date.now() - (usageCache.get(usageServer)?.at || 0) >= 60000)loadUsage();
+  if(S.sheet==='context'){if(Date.now()-(usageCache.get(S.sid)?.at||0)>=60000)showContextWeekly($('sheet'),S.sid,S.provider);}
+  else if(Date.now() - (usageCache.get(usageServer)?.at || 0) >= 60000)loadUsage();
 },30000);

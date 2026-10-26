@@ -641,35 +641,84 @@ function restoreTranscriptScroll(root) { transcriptScrollers(root, (node, key) =
     if (node.scrollTop !== position.top) node.scrollTop = Math.round(position.top * pixels) / pixels;
   }
 }); }
-for (const event of ["pointerdown", "wheel"]) feed.addEventListener(event, e => {
-  S.readingOutput = !!e.target.closest("pre,.md-table");
-  if (!S.readingOutput) return;
-  S.stick = false; $("jump").classList.remove("hidden");
-}, { passive:true });
-feed.addEventListener("scroll", () => {
-  S.stick = !S.readingOutput && feed.scrollHeight - feed.scrollTop - feed.clientHeight < 90;
-  $("jump").classList.toggle("hidden", S.stick);
-}, { passive: true });
+// Follow only deliberate scrolling. DOM rebuilds and composer resizing also emit
+// scroll events, so proximity to the end alone cannot decide the reader's intent.
+function bindTranscriptScroll(root, state, changed = () => {}) {
+  let gesture = null, intentUntil = 0;
+  const nearEnd = () => root.scrollHeight - root.scrollTop - root.clientHeight <= 4;
+  const set = follow => { state.stick = follow; changed(); };
+  root.addEventListener("pointerdown", event => {
+    gesture = { y:event.clientY, moved:false, follow:state.stick, nested:!!event.target.closest("pre,.md-table") };
+    state.readingOutput = gesture.nested;
+    set(false);
+  }, {passive:true});
+  root.addEventListener("pointermove", event => {
+    if (!gesture || Math.abs(event.clientY - gesture.y) < 3) return;
+    gesture.moved = true; intentUntil = Date.now() + 1200;
+    if (event.clientY > gesture.y) set(false);
+  }, {passive:true});
+  const finish = () => {
+    if (!gesture) return;
+    if (!gesture.moved && !gesture.nested) set(gesture.follow);
+    gesture = null;
+  };
+  root.addEventListener("pointerup", finish, {passive:true});
+  root.addEventListener("pointercancel", finish, {passive:true});
+  root.addEventListener("wheel", event => {
+    state.readingOutput = !!event.target.closest("pre,.md-table");
+    intentUntil = Date.now() + 200;
+    if (event.deltaY < 0 || state.readingOutput) set(false);
+  }, {passive:true});
+  root.addEventListener("keydown", event => {
+    if (["ArrowUp","PageUp","Home"].includes(event.key)) set(false);
+    if (["ArrowDown","PageDown","End"," "].includes(event.key)) intentUntil = Date.now() + 300;
+  });
+  root.addEventListener("scroll", () => {
+    if (Date.now() <= intentUntil && !state.readingOutput) set(nearEnd());
+    changed();
+  }, {passive:true});
+}
+function captureReadingPlace(root) {
+  const top = root.getBoundingClientRect().top;
+  const candidates = [...root.querySelectorAll(".prose-line,.output-line,pre,li")];
+  const node = candidates.find(node => node.getBoundingClientRect().bottom > top + 2 && node.getClientRects().length) ||
+    [...root.querySelectorAll("[data-entry],[data-response]")].find(node => node.getBoundingClientRect().bottom > top + 2);
+  const owner = node?.closest("[data-entry],[data-response]");
+  if (!owner) return {top:root.scrollTop};
+  const selector = node.matches('.prose-line') ? '.prose-line' : node.matches('.output-line') ? '.output-line' : node.tagName.toLowerCase();
+  return {top:root.scrollTop, key:owner.dataset.entry || owner.dataset.response, selector,
+    index:[...owner.querySelectorAll(selector)].indexOf(node), offset:node.getBoundingClientRect().top - top};
+}
+function restoreReadingPlace(root, place) {
+  if (!place) return;
+  const owner = [...root.querySelectorAll('[data-entry],[data-response]')].find(node => (node.dataset.entry || node.dataset.response) === place.key);
+  const node = place.index < 0 ? owner : owner?.querySelectorAll(place.selector)[place.index];
+  root.scrollTop = node ? root.scrollTop + node.getBoundingClientRect().top - root.getBoundingClientRect().top - place.offset : place.top;
+}
+bindTranscriptScroll(feed, S, () => $("jump").classList.toggle("hidden", S.stick));
 $("jump-btn").onclick = () => { S.readingOutput = false; S.stick = true; feed.scrollTop = feed.scrollHeight; $("jump").classList.add("hidden"); };
 
 function renderThread(keepPlace) {
   rememberTranscriptScroll(feed);
-  const top = feed.scrollTop;
-  const fromBottom = feed.scrollHeight - feed.scrollTop;
-  let h = S.meta && S.meta.hasOlder ? '<button class="load-earlier" id="earlier">Load Earlier</button>' : "";
-  if (!S.turns.length) h += '<div class="empty">No Messages Yet</div>';
-  resetResponses();
-  feed.innerHTML = h;
-  for (const t of S.turns) {
-    const el = document.createElement("div");
-    el.className = "turn"; el.dataset.key = t.key;
-    feed.appendChild(el);
-    renderTurn(el, t, false);
+  const place = (!S.stick || keepPlace) ? captureReadingPlace(feed) : null;
+  const existing = new Map([...feed.querySelectorAll(':scope>.turn')].map(node => [node.dataset.key,node]));
+  const nodes = [];
+  if (S.meta?.hasOlder) {
+    const earlier = document.createElement('button');earlier.className='load-earlier';earlier.id='earlier';earlier.textContent='Load Earlier';nodes.push(earlier);
   }
+  resetResponses();
+  for (const t of S.turns) {
+    const el = existing.get(t.key) || document.createElement("div");
+    el.className = "turn"; el.dataset.key = t.key;
+    renderTurn(el, t, false);nodes.push(el);
+  }
+  // Desktop resyncs must retain unsent optimistic bubbles and their motion.
+  for (const node of feed.querySelectorAll(':scope>.u.pending')) nodes.push(node);
+  if (!nodes.length) {const empty=document.createElement('div');empty.className='empty';empty.textContent='No Messages Yet';nodes.push(empty);}
+  reconcileChildren(feed,nodes);
   renderMeta();
-  if (keepPlace) feed.scrollTop = feed.scrollHeight - fromBottom;
+  if (place) restoreReadingPlace(feed, place);
   else if (S.stick) feed.scrollTop = feed.scrollHeight;
-  else feed.scrollTop = top;
   restoreTranscriptScroll(feed);
 }
 
@@ -678,6 +727,7 @@ const dirty = new Set();
 let frame = 0;
 function dirtyTurn(key) { dirty.add(key); if (!frame) frame = requestAnimationFrame(flushTurns); }
 function flushTurns() {
+  const place = !S.stick ? captureReadingPlace(feed) : null;
   frame = 0;
   let cardsChanged = false;
   for (const key of dirty) {
@@ -705,7 +755,8 @@ function flushTurns() {
     }
   }
   if (cardsChanged) { renderCards(); renderStatus(); }
-  if (S.stick) feed.scrollTop = feed.scrollHeight;
+  if (place) restoreReadingPlace(feed, place);
+  else if (S.stick) feed.scrollTop = feed.scrollHeight;
 }
 
 // Only incoming responses animate. History opens immediately, and no frame
@@ -1243,7 +1294,7 @@ function renderMeta() {
   if (m.exec) {
     b.innerHTML = "<span>Starting Headless, Replies Queue</span>";
     b.classList.remove("hidden");
-  } else if (m.mode !== "live") {
+  } else if (m.mode !== "live" && !(S.provider === "codex" && m.running && !m.readOnly)) {
     b.innerHTML = `<span>${m.mode==='external'?'Managed On Computer':'Read Only'}</span><button class="btn" id="wake">${S.provider==='claude'?(m.mode==='external'?'Take Over':'Resume'):'Open On Computer'}</button>`;
     b.classList.remove("hidden");
     $("wake").onclick = async (e) => {
@@ -1699,6 +1750,7 @@ async function sendText(text) {
   const sent={sid:S.sid,id:S.id,provider:S.provider,list:S.attach,voiceKey:voiceDraftKey()};
   const sameChat=()=>S.sid===sent.sid&&S.id===sent.id&&S.provider===sent.provider;
   const steering = S.meta && S.meta.running;
+  const place = !S.stick ? captureReadingPlace(feed) : null;
   buzz();
   // Show the message right away; the real one replaces it when the Mac echoes it.
   const pending = document.createElement("div");
@@ -1708,15 +1760,20 @@ async function sendText(text) {
   const empty = feed.querySelector(":scope > .empty");
   if (empty) empty.remove();
   feed.appendChild(pending);
-  enterTranscript(pending,12);
   const waiting = null;
   renderActivity();
-  feed.scrollTop = feed.scrollHeight;
   $("send").disabled = true;
   const fromInput = input.value.trim() === text;
   const keep = input.value, savedVoiceDraft = store.get(voiceDraftKey(), null);
   if (fromInput) { input.value = ""; store.set(voiceDraftKey(), null); autosize(); }
-  S.stick = true;
+  if (place) restoreReadingPlace(feed, place);
+  else if (S.stick) {
+    feed.scrollTop = feed.scrollHeight;
+    if (!reducedMotion.matches && !document.hidden) pending.animate([
+      {opacity:0.35,transform:'translateY(36px)'},
+      {opacity:1,transform:'translateY(0)'}
+    ],{duration:240,easing:'cubic-bezier(0.16,1,0.3,1)'});
+  }
   const a = await conn().call({ op: "send", id: S.id, text, images, files }, 40000);
   $("send").disabled = voiceState.phase!=='idle';
   if (!a.ok) {
@@ -2130,7 +2187,8 @@ const SHEETS = {
     const last = S.turns[S.turns.length - 1];
     sh.innerHTML = '<div class="grip"></div><h2>Context And Activity</h2>' +
       `<div class="mi"><span class="txt">Context Used<span class="d">${known ? `${Math.round(m.ctxUsed / m.ctxMax * 100)}% (${m.ctxUsed.toLocaleString()} of ${m.ctxMax.toLocaleString()} Tokens)` : "Unavailable"}</span></span></div>` +
-      `<div class="mi"><span class="txt">${m.running ? "Running" : "Last Turn"}<span class="d">${m.running && m.turnAt ? `<span data-since="${m.turnAt}">${dur(Date.now() - m.turnAt)}</span>` : last?.durationMs ? dur(last.durationMs) : "No Duration Available"}</span></span></div>`;
+      `<div class="mi"><span class="txt">${m.running ? "Running" : "Last Turn"}<span class="d">${m.running && m.turnAt ? `<span data-since="${m.turnAt}">${dur(Date.now() - m.turnAt)}</span>` : last?.durationMs ? dur(last.durationMs) : "No Duration Available"}</span></span></div>` + '<section id="context-weekly" class="context-weekly" aria-label="Weekly Usage"></section>';
+    showContextWeekly(sh, S.sid, S.provider);
   },
   menu(sh) {
     const m = S.meta || {};

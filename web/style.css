@@ -1,5 +1,5 @@
 /* fastcontrol. Off-black and one neutral gray family, white as the only
-   action color. Status color is reserved for small dots and labels: amber
+   action color. Status color is reserved for small dots and labels: green
    running, red needs you, green finished. 8px spacing grid, 48px touch
    targets (Material 3). Ubuntu ships in web/fonts so the APK works offline.
    Motion answers navigation and incoming responses; completed chats stay idle. */
@@ -137,7 +137,10 @@ input, textarea { font: inherit; color: inherit; }
 .row .when { font-size: 12px; color: var(--faint); flex: none; font-variant-numeric: tabular-nums; align-self: flex-start; padding-top: 3px; }
 .row .folder { color: var(--faint); }
 .badge { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; font-size: 12.5px; flex: none; font-variant-numeric: tabular-nums; }
-.badge.run { color: var(--run); }
+.badge.run { color: var(--done); }
+.badge.run .dot { animation: running-pulse 1.4s ease-in-out infinite; }
+@keyframes running-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+html.page-hidden .badge.run .dot { animation-play-state: paused; }
 .badge.need { color: var(--need); }
 .badge.mac { color: var(--muted); }
 .badge .dot { width: 6px; height: 6px; background: currentColor; }
@@ -173,9 +176,8 @@ input, textarea { font: inherit; color: inherit; }
 .banner span { flex: 1; }
 
 /* transcript */
-.feed { padding: 8px 20px 20px; }
-.turn { padding: 8px 0 20px; content-visibility: auto; contain-intrinsic-size: auto 400px; }
-.turn:last-child { content-visibility: visible; }
+.feed { padding: 8px 20px 20px; overflow-anchor: none; }
+.turn { padding: 8px 0 20px; }
 .stamp { font-size: 12px; color: var(--faint); text-align: center; margin: 8px 0 14px; font-variant-numeric: tabular-nums; }
 .load-earlier { display: block; margin: 8px auto 16px; height: 40px; padding: 0 20px; border-radius: 20px; background: var(--surface); font-weight: 500; font-size: 14px; color: var(--muted); }
 .u { margin: 4px 0 18px auto; max-width: 84%; width: fit-content; padding: 10px 16px 11px; border-radius: 22px 22px 6px 22px; background: var(--user); white-space: pre-wrap; word-break: break-word; font-size: 15.5px; line-height: 23px; }
@@ -571,3 +573,16 @@ textarea, input { caret-color: var(--ink); }
 .att > span { font-size: 12px; line-height: 16px; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; }
 .att.loading > span { color: var(--muted); }
 .att .loading-state { padding: 0; gap: 6px; font-size: 12px; }
+
+.context-weekly { margin: 8px 20px 16px; padding-top: 20px; border-top: 1px solid var(--line); }
+.context-weekly-head { display:flex; align-items:baseline; justify-content:space-between; gap:12px; }
+.context-weekly-head h3 { margin:0; font-size:15px; font-weight:500; }
+.context-weekly-head strong { font-size:15px; font-weight:500; font-variant-numeric:tabular-nums; }
+.context-weekly .usage-track { height:6px; margin:12px 0 8px; }
+.context-weekly .usage-track > span { background:var(--done); }
+.context-weekly.caution .usage-track > span { background:var(--run); }
+.context-weekly.critical .usage-track > span { background:var(--bad); }
+.context-weekly p { margin:8px 0; font-size:13px; color:var(--muted); }
+.context-weekly .context-weekly-link { display:inline-flex; align-items:center; gap:8px; min-height:48px; margin-top:4px; font-size:14px; font-weight:500; }
+.context-weekly-link .ico { width:16px; height:16px; }
+.context-weekly-loading { display:flex; align-items:center; gap:10px; color:var(--muted); }

@@ -81,7 +81,7 @@ document.addEventListener("click", async event => {
 function paintAgentViewer(more = false) {
   const view = agentView, root = $("agent-feed");
   if (!view || !root || S.sheet !== "agent") return;
-  const top = root.scrollTop, fromBottom = root.scrollHeight - top;
+  const place = (!view.stick || more) ? captureReadingPlace(root) : null;
   rememberTranscriptScroll(root);
   const existing = new Map([...root.querySelectorAll(":scope > .turn")].map(node=>[node.dataset.key,node]));
   const nodes = [];
@@ -100,7 +100,8 @@ function paintAgentViewer(more = false) {
   }
   if (!nodes.length) { const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "No Messages Yet"; nodes.push(empty); }
   reconcileChildren(root,nodes);
-  root.scrollTop = more ? root.scrollHeight - fromBottom : view.stick ? root.scrollHeight : top;
+  if (place) restoreReadingPlace(root, place);
+  else if (view.stick) root.scrollTop = root.scrollHeight;
   restoreTranscriptScroll(root);
   queueImages(root);
   root.dataset.cwd = view.meta?.cwd || "";
@@ -143,8 +144,7 @@ SHEETS.agent = async (sh, opts) => {
   sh.innerHTML = `<header class="diff-head agent-head"><button class="icon-btn" data-agent-back aria-label="Back To Subagents">${svg('<path d="M15 5l-7 7 7 7"/>')}</button><div class="head-text"><h2>${esc(agentLabel(opts.agent))}</h2><div class="h-sub" id="agent-status">Read Only</div></div><button class="icon-btn" data-agent-children aria-label="View This Agent's Subagents">${I.agent}</button></header><main id="agent-feed" class="scroll feed agent-feed"><div class="empty">${loadingHTML("Loading Subagent")}</div></main><div id="agent-working" class="agent-working hidden" role="status"><span class="thinking">Thinking</span></div><footer class="agent-footer">Read Only<span>Managed By The Parent Chat</span></footer>`;
   const root = $("agent-feed");
   root.dataset.server = view.server;root.dataset.thread = view.id;
-  root.addEventListener("scroll",()=>{view.stick=!view.readingOutput&&root.scrollHeight-root.scrollTop-root.clientHeight<90;},{passive:true});
-  for (const event of ["pointerdown","wheel"]) root.addEventListener(event,e=>{view.readingOutput=!!e.target.closest("pre,.md-table");if(view.readingOutput)view.stick=false;},{passive:true});
+  bindTranscriptScroll(root, view);
   root.addEventListener("load",()=>{if(view.stick)root.scrollTop=root.scrollHeight;},true);
   root.addEventListener("click",event=>{
     if (event.target.closest("[data-agent-more]")) { event.target.closest("[data-agent-more]").innerHTML=loadingHTML("Loading Earlier Messages");conns.get(view.server)?.send({op:"more",id:view.id});return; }

@@ -205,8 +205,19 @@ func tailStatus(path string, st os.FileInfo) rolloutStatus {
 		return rs
 	}
 	lines := bytes.Split(buf, []byte("\n"))
-	for i := len(lines) - 1; i >= 0; i-- {
-		l := lines[i]
+	if start > 0 {
+		lines = lines[1:]
+	}
+	for i := len(lines) - 1; i >= -1; i-- {
+		var l []byte
+		if i < 0 {
+			if start == 0 {
+				break
+			}
+			l = previousTurnMarker(f, start)
+		} else {
+			l = lines[i]
+		}
 		if rs.activity == "" {
 			rs.activity = rolloutActivity(l)
 		}

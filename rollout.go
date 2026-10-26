@@ -66,8 +66,80 @@ func (v *rolloutView) load() error {
 		return err
 	}
 	v.offset = start
+	// A long running turn can begin before the transcript tail. Recover its
+	// lifecycle marker so opening the chat reports activity immediately.
+	if skipFirst {
+		if marker := previousTurnMarker(f, start); marker != nil {
+			ch := &rolloutChange{items: map[*Turn][]int{}, status: map[*Turn]bool{}}
+			var record rolloutLine
+			if json.Unmarshal(marker, &record) == nil {
+				var payload map[string]any
+				if json.Unmarshal(record.Payload, &payload) == nil && str(payload, "type") == "task_started" {
+					v.apply(marker, ch)
+				}
+			}
+		}
+	}
 	_, err = v.consume(f, skipFirst)
 	return err
+}
+
+// previousTurnMarker searches complete records before a tail window. It uses
+// fixed chunks and skips oversized records, keeping long tool output bounded.
+func previousTurnMarker(f *os.File, before int64) []byte {
+	const chunk = 256 << 10
+	const maxScan = 64 << 20
+	floor := before - maxScan
+	if floor < 0 {
+		floor = 0
+	}
+	end := before
+	var suffix []byte
+	for end > floor {
+		start := end - chunk
+		if start < floor {
+			start = floor
+		}
+		buf := make([]byte, end-start)
+		n, err := f.ReadAt(buf, start)
+		if err != nil && err != io.EOF {
+			return nil
+		}
+		buf = append(buf[:n], suffix...)
+		lines := bytes.Split(buf, []byte("\n"))
+		// The rightmost fragment is incomplete on the first chunk. Later
+		// chunks contain the saved prefix of the following complete line.
+		limit := len(lines) - 1
+		for i := limit - 1; i >= 0; i-- {
+			if i == 0 && start > 0 {
+				break
+			}
+			line := lines[i]
+			if !bytes.Contains(line, []byte(`"event_msg"`)) {
+				continue
+			}
+			var record rolloutLine
+			if json.Unmarshal(line, &record) != nil || record.Type != "event_msg" {
+				continue
+			}
+			var payload struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(record.Payload, &payload) == nil {
+				switch payload.Type {
+				case "task_started", "task_complete", "turn_aborted":
+					return append([]byte(nil), line...)
+				}
+			}
+		}
+		if len(lines[0]) < 1<<20 {
+			suffix = append(append([]byte(nil), lines[0]...), '\n')
+		} else {
+			suffix = nil
+		}
+		end = start
+	}
+	return nil
 }
 
 // grow widens the window so that about `turns` turns are visible, reading

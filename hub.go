@@ -833,7 +833,7 @@ func (s *Session) tryFollow() {
 	}
 	owner := r.HandledBy
 	s.cmds <- func() {
-		if s.owner == owner && s.following {
+		if s.owner == owner && s.following && s.state != nil {
 			return
 		}
 		s.follow(owner, false)
