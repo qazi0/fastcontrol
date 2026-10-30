@@ -47,6 +47,7 @@ type ClaudeManager struct {
 	prefs                      map[string]claudePreference
 	prefGates                  map[string]*claudePreferenceGate // guarded by mu
 	models                     []Model
+	modelsAt                   time.Time // model catalog publication time, guarded by mu
 	active                     map[string]claudeActive
 	lastList                   []byte
 	orgState                   OrganizationSnapshot // immutable after publication under mu

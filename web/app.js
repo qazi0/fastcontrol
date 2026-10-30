@@ -1660,7 +1660,7 @@ function renderComposer() {
   pc.setAttribute("aria-label", "Permissions: " + (p ? p.name : "Unknown"));
   $("model-chip").innerHTML = `<b>${m.model ? esc(shortModel(m.model)) : "Model"}</b>${I.down}`;
   const mm = ((conn() && conn().models && conn().models.models) || []).find((x) => x.slug === m.model || x.resolved === m.model);
-  const efforts = mm ? mm.efforts : ["low", "medium", "high", "xhigh", "max", "ultra"];
+  const efforts = mm ? mm.efforts || [] : ["low", "medium", "high", "xhigh", "max", "ultra"];
   const lvl = Math.max(0, efforts.indexOf(m.effort));
   $("effort-btn").innerHTML = gauge(efforts.length > 1 ? lvl / (efforts.length - 1) : 1);
   $("effort-btn").setAttribute("aria-label", "Intelligence: " + (m.effort ? effortName(m.effort) : "Unknown"));
@@ -2210,6 +2210,7 @@ function openSheet(name, opts = {}) {
   sh.className = "sheet" + (["diff","image","usage","agents","agent","document"].includes(name) ? " full" : name === "effort" ? " effort" : "");
   sh.style.bottom = name === "effort" ? `${$("composer").offsetHeight + 24}px` : "";
   sh.onclick = null;
+  sh.onkeydown = null;
   $("scrim").classList.toggle("dark", name === "effort");
   $("scrim").classList.remove("hidden");
   SHEETS[name](sh, opts);
@@ -2452,13 +2453,15 @@ const SHEETS = {
     const draw = () => {
       const m = S.meta || {};
       const models = (conn().models && conn().models.models) || [];
+      const selected=models.find(x=>x.slug===m.model) || models.find(x=>x.slug!=='default'&&x.resolved===m.model) || models.find(x=>x.resolved===m.model);
       sh.innerHTML = `<div class="grip"></div><h2>Model</h2>` +
-        (models.length ? models.map((x) => mi("m:" + x.slug, "", esc(x.name), esc(x.description || ""), (m.model === x.slug || m.model === x.resolved) ? I.check : "")).join("") : `<p class="hint">${loadingHTML("Loading Models")}</p>`);
+        (models.length ? models.map((x) => mi("m:" + x.slug, "", esc(sessionModelLabel(x)), esc(x.description || ""), x===selected ? I.check : "")).join("") : conn().models?.error ? `<p class="hint">Could not load models.</p><button class="btn" data-model-retry>Try again</button>` : `<p class="hint">${loadingHTML("Loading Models")}</p>`);
     };
     S.redraw = draw;
-    if (!conn().models) conn().send({ op: "models" });
+    conn().send({ op: "models" });
     draw();
     sh.onclick = (e) => {
+      if(e.target.closest('[data-model-retry]')){conn().send({op:'models'});return;}
       const b = e.target.closest("[data-act]");
       if (!b) return;
       const slug = b.dataset.act.slice(2);
@@ -2468,7 +2471,7 @@ const SHEETS = {
       const mm = ((conn().models && conn().models.models) || []).find((x) => x.slug === slug);
       const ch = { model: slug };
       // Keep the intelligence level when the new model supports it.
-      if (mm && m.effort && !mm.efforts.includes(m.effort)) ch.effort = mm.defaultEffort;
+      if (mm && m.effort && !(mm.efforts || []).includes(m.effort)) ch.effort = mm.defaultEffort;
       applySettings(ch, "Model: " + (mm ? mm.name : shortModel(slug)));
     };
   },
@@ -2479,6 +2482,7 @@ const SHEETS = {
     const m = S.meta || {};
     const mm = ((conn().models && conn().models.models) || []).find((x) => x.slug === m.model || x.resolved === m.model);
     const efforts = mm ? mm.efforts : ["low", "medium", "high", "xhigh"];
+    if(!efforts?.length){sh.innerHTML='<div class="grip"></div><h2>Intelligence</h2><p class="hint">Set automatically for this model.</p>';return;}
     let idx = Math.max(0, efforts.indexOf(m.effort));
     const start = idx;
     sh.innerHTML = `<div class="eo-label"><b id="eo-level"></b> Intelligence</div>` +
@@ -2529,80 +2533,6 @@ const SHEETS = {
       if (e.target.closest("[data-x=close]")) closeSheet();
       const f = e.target.closest("[data-f]");
       if (f) { const el = sh.querySelector("#df" + f.dataset.f); if (el) el.scrollIntoView({ block: "start" }); }
-    };
-  },
-
-  new(sh, opts) {
-    const d = S.newDraft || (S.newDraft = { cwd: "", text: "", model: "", effort: "", sid: "" });
-    if (opts.cwd) d.cwd = opts.cwd;
-    if (opts.sid) d.sid = opts.sid;
-    if (!d.sid || !conns.has(d.sid)) d.sid = S.machine !== "all" && conns.has(S.machine) ? S.machine : (S.servers[0] || {}).id;
-    const c0 = conns.get(d.sid);
-    if (!c0) { closeSheet(true); openSheet("macs"); return; }
-    if (!d.cwd) d.cwd = (c0.threads.find((t) => !t.subagent) || {}).cwd || "";
-    const draw = () => {
-      const c = conns.get(d.sid);
-      const projects = c.projects || projectsOf(c.threads, false);
-      const models = (c.models && c.models.models) || [];
-      const def = (c.models && c.models.default) || {};
-      const model = models.find((x) => x.slug === (d.model || def.model));
-      const shown = projects.slice(0, 30);
-      if (d.cwd && !shown.some((p) => p.cwd === d.cwd)) shown.unshift({ cwd: d.cwd });
-      const home = c.home || "";
-      sh.innerHTML = `<div class="grip"></div><h2>New Chat</h2>` +
-        (S.servers.length > 1 ? `<div class="field"><span class="lab">Mac</span><div class="seg">${S.servers.map((s) => `<button class="${s.id === d.sid ? "on" : ""}" data-sid="${s.id}">${esc(s.name || hostOf(s.url))}</button>`).join("")}</div></div>` : "") +
-        `<div class="field"><span class="lab">Project</span><div class="proj-pick">${shown.map((p) => `<button class="${p.cwd === d.cwd ? "on" : ""}" data-cwd="${esc(p.cwd)}"><span class="nm">${esc(base(p.cwd))}</span><span class="pa">${esc(home ? p.cwd.replace(home, "~") : p.cwd)}</span></button>`).join("")}</div>` +
-        `<input id="nt-cwd" style="margin-top:8px" placeholder="Or Type A Folder Path" value="${esc(d.cwd)}" autocomplete="off" autocapitalize="off" spellcheck="false"></div>` +
-        `<div class="field"><span class="lab">Model</span><div class="seg" data-key="model"><button class="${!d.model ? "on" : ""}" data-v="">Default${def.model ? " (" + esc(shortModel(def.model)) + ")" : ""}</button>${models.map((x) => `<button class="${d.model === x.slug ? "on" : ""}" data-v="${esc(x.slug)}">${esc(shortModel(x.slug))}</button>`).join("")}</div></div>` +
-        (model ? `<div class="field"><span class="lab">Intelligence</span><div class="seg" data-key="effort"><button class="${!d.effort ? "on" : ""}" data-v="">Default</button>${model.efforts.map((e) => `<button class="${d.effort === e ? "on" : ""}" data-v="${e}">${effortName(e)}</button>`).join("")}</div></div>` : "") +
-        `<div class="field"><span class="lab">Prompt</span><textarea id="nt-text" placeholder="What Should ${S.provider==='claude'?'Claude':'Codex'} Do?">${esc(d.text)}</textarea></div>` +
-        `<div class="attachments" id="nt-att">${attHTML(S.newAttach)}</div>` +
-        `<div class="sheet-actions"><button class="btn" data-x="img">Attach Image</button><span class="grow"></span><button class="btn primary" data-x="start">Start Chat</button></div>`;
-      const ta = sh.querySelector("#nt-text");
-      ta.oninput = () => (d.text = ta.value);
-      const cw = sh.querySelector("#nt-cwd");
-      cw.oninput = () => (d.cwd = cw.value.trim());
-    };
-    S.redraw = draw;
-    if (!c0.models) c0.send({ op: "models" });
-    c0.send({ op: "projects" });
-    draw();
-    setTimeout(() => { const ta = sh.querySelector("#nt-text"); if (ta && !d.text) ta.focus({ preventScroll: true }); }, 200);
-    sh.onclick = async (e) => {
-      const sv = e.target.closest("[data-sid]");
-      if (sv) {
-        d.sid = sv.dataset.sid; d.model = ""; d.effort = ""; S.newAttach = [];
-        const c2 = conns.get(d.sid);
-        if (!c2.models) c2.send({ op: "models" });
-        c2.send({ op: "projects" });
-        d.cwd = (c2.threads.find((t) => !t.subagent) || {}).cwd || "";
-        draw();
-        return;
-      }
-      const cp = e.target.closest("[data-cwd]");
-      if (cp) { d.cwd = cp.dataset.cwd; draw(); return; }
-      const v = e.target.closest("[data-v]");
-      if (v) { const k = v.parentElement.dataset.key; d[k] = v.dataset.v; if (k === "model") d.effort = ""; draw(); return; }
-      const rm = e.target.closest("[data-rm]");
-      if (rm) { removeAttachment(S.newAttach,+rm.dataset.rm); redrawAttachments("new"); return; }
-      const x = e.target.dataset.x;
-      if (x === "img") { pickAttachments("new"); }
-      if (x === "start") {
-        if (!d.text.trim()) { toast("Write A Prompt First"); return; }
-        if (S.newAttach.some((a) => a.uploading)) { toast("Waiting For Files To Upload"); return; }
-        e.target.disabled = true; e.target.textContent = "Starting";
-        buzz();
-        const a = await conns.get(d.sid).call({ op: "new", cwd: d.cwd, text: d.text.trim(), model: d.model || undefined, effort: d.effort || undefined, images: S.newAttach.filter(x => x.kind !== "file").map(x => x.path), files:S.newAttach.filter(x => x.kind === "file").map(x => x.path) }, 60000);
-        if (!a.ok) { toast(nice(a.msg)); e.target.disabled = false; e.target.textContent = "Start Chat"; return; }
-        const target = d.sid;
-        for(const [batchId,batch] of attachmentBatches)if(batch.list===S.newAttach)attachmentBatches.delete(batchId);
-        persistAttachmentBatches();store.set('attachment-return',null);
-        S.newDraft = null; S.newAttach = [];
-        closeSheet(true);
-        // The sheet's history entry becomes the thread.
-        history.replaceState({ view: "thread", sid: target, id: a.thread, provider:S.provider }, "");
-        openThread(target, a.thread, false);
-      }
     };
   },
 

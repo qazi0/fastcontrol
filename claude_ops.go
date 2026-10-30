@@ -18,7 +18,7 @@ func (m *ClaudeManager) discoverModels() error {
 	m.modelsMu.Lock()
 	defer m.modelsMu.Unlock()
 	m.mu.Lock()
-	ready := len(m.models) > 0
+	ready := len(m.models) > 0 && time.Since(m.modelsAt) < time.Minute
 	m.mu.Unlock()
 	if ready {
 		return nil
@@ -171,14 +171,14 @@ func (m *ClaudeManager) handle(c *Client, raw []byte) {
 	case "models":
 		go func() {
 			err := m.discoverModels()
-			if err != nil {
-				ack(err, nil)
-				return
-			}
 			m.mu.Lock()
 			models := append([]Model(nil), m.models...)
 			m.mu.Unlock()
-			m.emit(c, map[string]any{"t": "models", "models": models, "default": map[string]any{"model": "default", "effort": "low"}})
+			result := map[string]any{"t": "models", "models": models, "default": map[string]any{"model": "default", "effort": "low"}}
+			if err != nil {
+				result["error"] = err.Error()
+			}
+			m.emit(c, result)
 		}()
 	case "new":
 		go func() {
