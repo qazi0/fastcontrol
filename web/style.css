@@ -374,6 +374,45 @@ pre code { background: none !important; padding: 0 !important; font-size: inheri
 .field .lab { display: block; font-size: 13px; font-weight: 500; color: var(--muted); margin-bottom: 8px; }
 .field input, .field textarea { width: 100%; min-height: 48px; padding: 12px 16px; border-radius: 14px; border: 0; background: var(--raised); outline: none; font-size: 16px; }
 .field textarea { min-height: 120px; resize: vertical; line-height: 24px; }
+.new-chat-head { display: flex; align-items: center; justify-content: space-between; margin: 0 12px 16px; gap: 12px; }
+.new-chat-head h2 { margin: 0; }
+.new-chat-head .icon-btn { min-width: 48px; min-height: 48px; }
+.new-chat-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.new-chat-fields:disabled { opacity: .65; }
+.setup-select, .setup-folder { position: relative; display: flex; align-items: center; background: var(--raised); border-radius: 14px; }
+.setup-select select { appearance: none; width: 100%; min-height: 52px; border: 0; border-radius: inherit; padding: 12px 44px 12px 16px; font: inherit; color: var(--ink); background: transparent; }
+.setup-select > .ico { position: absolute; right: 16px; width: 16px; pointer-events: none; }
+.setup-folder input { min-width: 0; padding-right: 52px; background: transparent; }
+.setup-folder .icon-btn { position: absolute; right: 2px; }
+.setup-model { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 56px; padding: 12px 16px; border-radius: 14px; background: var(--raised); font-size: 16px; text-align: left; }
+.setup-model > span { flex: 1; min-width: 0; overflow-wrap: anywhere; line-height: 24px; }
+.setup-model > .ico { width: 16px; height: 16px; flex: none; transition: transform 160ms var(--ease); }
+.setup-model[aria-expanded=true] > .ico { transform: rotate(180deg); }
+.setup-disclosure { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 160ms var(--ease), opacity 120ms ease; }
+.setup-disclosure.open { grid-template-rows: 1fr; opacity: 1; margin-top: 8px; }
+.setup-menu-clip { overflow: hidden; min-height: 0; }
+.setup-model-list { max-height: 300px; overflow-y: auto; overscroll-behavior: contain; background: var(--raised); border-radius: 14px; padding: 4px; }
+.setup-model-list > button[role=option] { display: flex; align-items: center; gap: 12px; min-height: 52px; width: 100%; padding: 10px 12px; border-radius: 10px; text-align: left; }
+.setup-model-list > button[aria-selected=true] { background: var(--high); }
+.setup-model-list > button > span { flex: 1; min-width: 0; }
+.setup-model-list b { display: block; font-size: 15px; line-height: 22px; font-weight: 500; overflow-wrap: anywhere; }
+.setup-model-list small { display: block; margin-top: 2px; color: var(--muted); font-size: 13px; line-height: 19px; }
+.setup-model-list .ico { flex: none; width: 18px; height: 18px; }
+.setup-model:focus-visible, .setup-select select:focus-visible, .setup-model-list button:focus-visible, .setup-folder:focus-within { outline: 2px solid var(--muted); outline-offset: 2px; }
+.setup-effort-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.setup-effort-head output { font-size: 13px; line-height: 20px; }
+.setup-effort { padding: 0 14px 12px; border-radius: 14px; background: var(--raised); }
+.field .setup-effort input { appearance: none; padding: 0; margin: 0; width: 100%; min-height: 48px; background: transparent; cursor: pointer; }
+.setup-effort input::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: linear-gradient(to right, var(--ink) 0 var(--level), var(--high) var(--level) 100%); }
+.setup-effort input::-webkit-slider-thumb { appearance: none; margin-top: -9px; width: 24px; height: 24px; border: 0; border-radius: 50%; background: var(--ink); box-shadow: 0 2px 4px #0003; }
+.setup-effort input::-moz-range-track { height: 6px; border-radius: 3px; background: var(--high); }
+.setup-effort input::-moz-range-progress { height: 6px; border-radius: 3px; background: var(--ink); }
+.setup-effort input::-moz-range-thumb { width: 24px; height: 24px; border: 0; border-radius: 50%; background: var(--ink); }
+.setup-effort input:focus-visible { outline: 2px solid var(--muted); outline-offset: 2px; }
+.setup-effort-ends { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; }
+.new-chat-actions { position: sticky; bottom: -16px; padding: 12px 0; background: var(--surface); border-top: 1px solid var(--line); }
+.new-chat-actions .btn { min-height: 48px; }
+@media (prefers-reduced-motion: reduce) { .setup-disclosure, .setup-model > .ico { transition: none; } }
 .seg { display: flex; flex-wrap: wrap; gap: 8px; }
 .seg button { height: 36px; padding: 0 14px; border-radius: 10px; background: var(--raised); font-size: 14px; color: var(--muted); }
 .seg button.on { background: var(--ink); color: var(--bg); }

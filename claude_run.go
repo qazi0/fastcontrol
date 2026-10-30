@@ -609,12 +609,20 @@ func (m *ClaudeManager) setModels(raw []any) {
 				efforts = append(efforts, s)
 			}
 		}
-		if len(efforts) == 0 {
+		if supported, known := x["supportsEffort"].(bool); known && !supported {
+			efforts = []string{}
+		}
+		if supported, _ := x["supportsEffort"].(bool); len(efforts) == 0 && supported {
 			efforts = []string{"low"}
 		}
-		models = append(models, Model{Slug: str(x, "value"), Resolved: str(x, "resolvedModel"), Name: str(x, "displayName"), Description: str(x, "description"), DefaultEffort: "low", Efforts: efforts})
+		defaultEffort := ""
+		if len(efforts) > 0 {
+			defaultEffort = efforts[0]
+		}
+		models = append(models, Model{Slug: str(x, "value"), Resolved: str(x, "resolvedModel"), Name: str(x, "displayName"), Description: str(x, "description"), DefaultEffort: defaultEffort, Efforts: efforts})
 	}
 	m.mu.Lock()
 	m.models = models
+	m.modelsAt = time.Now()
 	m.mu.Unlock()
 }
