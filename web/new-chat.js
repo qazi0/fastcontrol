@@ -59,6 +59,8 @@ SHEETS.new = (sh, opts) => {
     text.oninput = () => d.text = text.value;
     cwd.oninput = () => d.cwd = cwd.value.trim();
     if (computer) computer.onchange = () => {
+      for(const [id,batch] of attachmentBatches)if(batch.list===S.newAttach)attachmentBatches.delete(id);
+      persistAttachmentBatches();store.set("attachment-return",null);
       d.sid = computer.value;d.model = "";d.effort = "";S.newAttach = [];modelOpen = projectOpen = false;
       const next = conns.get(d.sid);d.cwd = next.threads.find(thread => !thread.subagent)?.cwd || "";
       next.send({op:"models",provider});next.send({op:"projects",provider});draw();
