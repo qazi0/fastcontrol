@@ -79,7 +79,7 @@ func printPairing(ctx context.Context, port int, token string, output io.Writer)
 				link, err := info.link(token)
 				if err == nil {
 					fmt.Fprintf(output, "\nPair with %s\nScan this QR with your phone camera and open fastcontrol.\n\n", info.Host)
-					qrterminal.GenerateWithConfig(link, qrterminal.Config{Level: qrterminal.L, Writer: output, HalfBlocks: true, QuietZone: 2})
+					qrterminal.GenerateWithConfig(link, qrterminal.Config{Level: qrterminal.L, Writer: output, HalfBlocks: true, QuietZone: 4})
 					return nil
 				}
 			}

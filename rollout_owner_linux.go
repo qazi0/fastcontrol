@@ -13,8 +13,14 @@ func platformRolloutOwners(paths []string) map[string]rolloutOwnerEvidence {
 	if err != nil {
 		return result
 	}
+	aliases := map[string][]string{}
 	for _, path := range paths {
 		result[path] = rolloutOwnerEvidence{known: true}
+		canonical, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			canonical = path
+		}
+		aliases[canonical] = append(aliases[canonical], path)
 	}
 	for _, process := range processes {
 		if _, err := strconv.Atoi(process.Name()); err != nil {
@@ -30,7 +36,7 @@ func platformRolloutOwners(paths []string) map[string]rolloutOwnerEvidence {
 			if err != nil {
 				continue
 			}
-			if _, wanted := result[path]; !wanted {
+			if len(aliases[path]) == 0 {
 				continue
 			}
 			data, err := os.ReadFile(filepath.Join(root, "fdinfo", fd.Name()))
@@ -42,7 +48,9 @@ func platformRolloutOwners(paths []string) map[string]rolloutOwnerEvidence {
 				if len(fields) == 2 && fields[0] == "flags:" {
 					flags, err := strconv.ParseUint(fields[1], 8, 64)
 					if err == nil && flags&3 != 0 {
-						result[path] = rolloutOwnerEvidence{known: true, alive: true}
+						for _, original := range aliases[path] {
+							result[original] = rolloutOwnerEvidence{known: true, alive: true}
+						}
 					}
 				}
 			}

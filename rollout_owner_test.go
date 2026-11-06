@@ -45,7 +45,13 @@ func TestNativeRolloutOwnerSurvivesLongSilenceAndDetectsExit(t *testing.T) {
 	if err = cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { stdin.Close(); cmd.Process.Kill(); cmd.Wait() }()
+	defer func() {
+		stdin.Close()
+		if cmd.ProcessState == nil {
+			cmd.Process.Kill()
+			cmd.Wait()
+		}
+	}()
 	ready := make(chan bool, 1)
 	go func() { scanner := bufio.NewScanner(stdout); ready <- scanner.Scan() && scanner.Text() == "ready" }()
 	select {

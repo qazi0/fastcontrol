@@ -60,7 +60,9 @@ func rmHasOwner(paths []string) (alive, known bool) {
 	status, _, _ = rmList.Call(uintptr(handle), uintptr(unsafe.Pointer(&needed)), uintptr(unsafe.Pointer(&count)), 0, uintptr(unsafe.Pointer(&reasons)))
 	for attempt := 0; attempt < 3; attempt++ {
 		if status == 0 && count == 0 {
-			return false, reasons == 0
+			// Reboot reasons concern shutdown privileges, not whether the list
+			// was read successfully. Our own read handle can set DetectedSelf.
+			return false, true
 		}
 		if status != 234 || needed == 0 || needed > 1024 {
 			return false, false
@@ -74,7 +76,9 @@ func rmHasOwner(paths []string) (alive, known bool) {
 					return true, true
 				}
 			}
-			return false, reasons == 0
+			// Reboot reasons concern shutdown privileges, not whether the list
+			// was read successfully. Our own read handle can set DetectedSelf.
+			return false, true
 		}
 	}
 	return false, false
