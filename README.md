@@ -71,6 +71,27 @@ Repeat the computer installation to add another host. Each computer keeps its ow
 
 If a computer goes offline, open **Computers > Connection** for its status and retry control. On a Mac, open **fastcontrol Recovery.command** in your home Applications folder, or run `bash "$HOME/.fastcontrol/repair.command"`. It reconnects stopped Tailscale and restarts the relay, preserving your pairings. Use `--check` to inspect without restarting. The relay retries listeners automatically when network interfaces become available after login, wake or a connection change. A sleeping or powered-off Mac still needs to be woken.
 
+## Recover another Mac remotely
+
+If one relay goes offline, your phone or browser can use another online computer to restart it over SSH. Open **Computers > Connection > Restart via [helper computer]**. The target Mac must be awake and reachable over LAN or Tailscale. A disconnected phone can reconnect to either online Mac; no desktop agent or model request is needed.
+
+On the helper, configure `~/.fastcontrol/recovery-peers.json` with the Macs it may recover:
+
+```json
+[
+  {
+    "id": "other-mac",
+    "name": "Other Mac",
+    "urls": ["http://100.64.0.2:8787", "http://192.168.1.20:8787"],
+    "user": "youruser",
+    "hosts": ["100.64.0.2", "192.168.1.20"],
+    "hostKeyAlias": "100.64.0.2"
+  }
+]
+```
+
+Use `chmod 600 ~/.fastcontrol/recovery-peers.json`, then restart the helper relay. Set up key-based SSH and verify the target host key first. Every configured route must use that same verified `hostKeyAlias`. The helper races the configured routes and runs only the installed recovery script, once. The phone cannot supply shell commands, hosts or SSH options. Configure both Macs as helpers for recovery in either direction. Recovery skips active voice uploads and never resets pairings or TLS keys.
+
 ## Encrypted connections
 
 The installer enables TLS for network connections. Android 0.2.10 or newer pairs with the computer's certificate using the `fastcontrol://pair` link in its relay log. Copy that complete link into Add Computer, or scan the QR shown when starting the relay without `-no-qr`. You do not need a domain or a public certificate.

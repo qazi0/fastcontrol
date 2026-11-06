@@ -60,6 +60,7 @@ type Hub struct {
 	links        *sessionLinks
 	claude       *ClaudeManager
 	headless     *HeadlessCodex
+	recovery     *recoveryManager
 	ipc          *IPCClient
 	db           string
 
@@ -79,7 +80,7 @@ type Hub struct {
 
 func NewHub(ipc *IPCClient, db string) *Hub {
 	home, _ := os.UserHomeDir()
-	h := &Hub{organization: NewOrganizationReader(home), links: newSessionLinks(filepath.Join(home, ".fastcontrol/codex-forks.json")), ipc: ipc, db: db, clients: map[*Client]bool{}, sessions: map[string]*Session{}, execs: map[string]*execRun{}}
+	h := &Hub{organization: NewOrganizationReader(home), links: newSessionLinks(filepath.Join(home, ".fastcontrol/codex-forks.json")), recovery: newRecoveryManager(home), ipc: ipc, db: db, clients: map[*Client]bool{}, sessions: map[string]*Session{}, execs: map[string]*execRun{}}
 	ipc.OnBroadcast = h.onBroadcast
 	ipc.OnReset = h.onReset
 	return h
@@ -341,6 +342,23 @@ func (h *Hub) handle(c *Client, raw []byte) {
 	}
 	if route.Op == "ping" {
 		c.push(mustJSON(map[string]any{"t": "pong"}))
+		return
+	}
+	if route.Op == "recover" {
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&route) != nil || !recoveryID.MatchString(route.ID) {
+			c.push(mustJSON(map[string]any{"t": "ack", "op": "recover", "nonce": route.Nonce, "ok": false, "msg": "Invalid recovery request"}))
+			return
+		}
+		go func() {
+			err := h.recovery.recover(route.ID)
+			message := map[string]any{"t": "ack", "op": "recover", "nonce": route.Nonce, "ok": err == nil}
+			if err != nil {
+				message["msg"] = err.Error()
+			}
+			c.push(mustJSON(message))
+		}()
 		return
 	}
 	// File references are normalized once before routing to desktop, CLI or Claude.

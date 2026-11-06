@@ -134,6 +134,35 @@ window.onRelaySocket = event => {
   else if(event.event==='chunk'){(socket.chunks ||= []).push(event.text);if(event.last){const data=socket.chunks.join('');socket.chunks=null;socket.onmessage?.({data});}}
   else if(event.event==='close'){socket.readyState=3;relaySockets.delete(event.id);socket.onclose?.();}
 };
+const recoveryJobs=new Map();
+function recoveryAddress(value) {
+  try {const u=new URL(value);return u.hostname.toLowerCase()+':'+(u.port || (u.protocol==='https:' ? '443' : '80'));}catch{return '';}
+}
+function recoveryChoices(server) {
+  const addresses=new Set([server.url,...(server.alts || [])].map(recoveryAddress).filter(Boolean));
+  const choices=[];
+  for(const helper of conns.values()) {
+    if(!helper.ok || helper.state==='wait' || helper.s.id===server.id)continue;
+    for(const peer of helper.recoveryPeers || []) {
+      if((peer.urls || []).some(url=>addresses.has(recoveryAddress(url))))choices.push({helper,peer});
+    }
+  }
+  return choices;
+}
+async function recoverComputer(serverID,helperID,peerID) {
+  const server=S.servers.find(s=>s.id===serverID);
+  if(!server || recoveryJobs.get(serverID)?.busy)return;
+  const choice=recoveryChoices(server).find(value=>value.helper.s.id===helperID && value.peer.id===peerID);
+  if(!choice){toast('The helper is no longer connected');return;}
+  const job={busy:true,text:'Recovering via '+serverName(helperID)};recoveryJobs.set(serverID,job);
+  if(S.sheet==='connection')S.redraw?.();
+  const result=await choice.helper.call({op:'recover',id:peerID},55000);
+  if(recoveryJobs.get(serverID)!==job)return;
+  if(!S.servers.includes(server)){recoveryJobs.delete(serverID);if(S.sheet==='connection')S.redraw?.();return;}
+  job.busy=false;job.text=result.ok ? 'Recovery ran. Reconnecting to the computer.' : result.msg || 'Recovery could not complete. Try again.';
+  if(result.ok){const target=conns.get(serverID);if(target){target.paused=false;target.backoff=300;target.connect();}}
+  if(S.sheet==='connection' && S.connectionID===serverID)S.redraw?.();
+}
 function computerStatus(connection) {
   if(connection?.ok && connection.state!=="wait")return "Connected";
   if(connection?.state==="rejected")return "Pairing token rejected";
@@ -148,7 +177,7 @@ function refreshComputerStatus(connection) {
       if(dot)dot.className='dot '+(connection.ok && connection.state!=="wait" ? 'on' : connection.state==='wait' ? 'wait' : 'off');
     }
   }
-  if(S.sheet==="connection" && S.connectionID===connection.s.id)S.redraw?.();
+  if(S.sheet==="connection")S.redraw?.();
 }
 class Conn {
   constructor(server) {
@@ -161,7 +190,7 @@ class Conn {
     this.groups=store.get("groups:"+server.id+":"+S.provider,[]);
     this.byCwd = {}; // full thread lists of opened projects
     this.dead = false;
-    this.candidates = []; this.lastSeen = server.lastSeen || 0; this.heartbeatSupported = false;
+    this.candidates = []; this.lastSeen = server.lastSeen || 0; this.heartbeatSupported = false;this.recoveryPeers=[];
     this.byProvider = {};
     this.capabilities = {};
     this.threads = store.get("threads:" + server.id + ":" + S.provider, []);
@@ -270,7 +299,7 @@ class Conn {
     if (window.onAgentMessage?.(this, m, provider)) return;
     switch (m.t) {
       case "hello":
-        clearTimeout(this.deadline);this.heartbeatSupported=!!m.heartbeat;if(m.platform)this.s.platform=m.platform;this.rememberSeen();
+        clearTimeout(this.deadline);this.recoveryPeers=Array.isArray(m.recoveryPeers) ? m.recoveryPeers : [];this.heartbeatSupported=!!m.heartbeat;if(m.platform)this.s.platform=m.platform;this.rememberSeen();
         this.desktop = m.desktop;
         this.capabilities = m.providers || { codex:true, claude:false };
         if (Array.isArray(m.addrs) && JSON.stringify(m.addrs) !== JSON.stringify(this.s.alts || [])) { this.s.alts = m.addrs; saveServers(); }
@@ -2581,11 +2610,15 @@ const SHEETS = {
       const c=conns.get(server),s=S.servers.find(value=>value.id===server);if(!s)return;
       const connected=c?.ok && c.state!=="wait",checking=c?.state==="wait",mac=!s.platform || s.platform==='darwin';
       const last=c?.lastSeen || s.lastSeen;
+      const recovery=recoveryChoices(s),job=recoveryJobs.get(server);
+      const recoveryUI=`${job ? `<p role="status" class="hint">${job.busy ? loadingHTML(job.text) : esc(connected && job.text.startsWith('Recovery ran.') ? 'The computer is connected.' : job.text)}</p>` : ''}${!connected || job?.busy ? recovery.map(({helper,peer})=>`<button class="mi" data-recover-helper="${esc(helper.s.id)}" data-recover-peer="${esc(peer.id)}" ${job?.busy ? 'disabled' : ''}>${I.plug}<span class="txt">Restart via ${esc(serverName(helper.s.id))}<span class="d">Reconnect Tailscale and restart the relay over SSH</span></span>${I.chev}</button>`).join('') : ''}`;
       const seen=last ? new Date(last).toLocaleString([], {dateStyle:"medium",timeStyle:"short"}) : "No connection recorded";
-      sh.innerHTML=`<div class="grip"></div><h2>${esc(s.name || hostOf(s.url))}</h2><div class="connection-body"><p class="connection-state" role="status"><span class="dot ${connected ? 'on' : checking ? 'wait' : 'off'}"></span>${checking ? loadingHTML('Connecting') : esc(computerStatus(c))}</p><dl class="connection-details"><dt>${connected ? 'Connected address' : 'Paired address'}</dt><dd>${esc(connected ? c.base : s.url)}</dd><dt>Last connected</dt><dd>${esc(connected ? 'Now' : seen)}</dd></dl>${connected ? '<p class="hint">The relay is responding. Usage and session controls are available.</p>' : '<p class="hint">Keep the computer awake. Away from home, connect Tailscale on both devices. If it stays offline, restart the relay on that computer. On a Mac, open fastcontrol Recovery in your home Applications folder.</p>'}<div class="sheet-actions"><button class="btn" data-connection-back>Computers</button><span class="grow"></span><button class="btn primary" data-connection-retry ${checking ? 'disabled' : ''}>${connected ? 'Reconnect' : 'Retry'}</button></div>${mac ? `<button class="mi" data-connection-copy>${I.copy}<span class="txt">Copy Mac recovery command<span class="d">Run in Terminal on ${esc(s.name || hostOf(s.url))}</span></span></button>` : ''}${connected ? `<button class="mi" data-connection-usage>${I.gear}<span class="txt">Usage and limits</span>${I.chev}</button>` : ''}</div>`;
+      sh.innerHTML=`<div class="grip"></div><h2>${esc(s.name || hostOf(s.url))}</h2><div class="connection-body"><p class="connection-state" role="status"><span class="dot ${connected ? 'on' : checking ? 'wait' : 'off'}"></span>${checking ? loadingHTML('Connecting') : esc(computerStatus(c))}</p><dl class="connection-details"><dt>${connected ? 'Connected address' : 'Paired address'}</dt><dd>${esc(connected ? c.base : s.url)}</dd><dt>Last connected</dt><dd>${esc(connected ? 'Now' : seen)}</dd></dl>${connected ? '<p class="hint">The relay is responding. Usage and session controls are available.</p>' : '<p class="hint">Keep the computer awake. Away from home, connect Tailscale on both devices. If it stays offline, restart the relay on that computer. On a Mac, open fastcontrol Recovery in your home Applications folder.</p>'}${recoveryUI}<div class="sheet-actions"><button class="btn" data-connection-back>Computers</button><span class="grow"></span><button class="btn primary" data-connection-retry ${checking ? 'disabled' : ''}>${connected ? 'Reconnect' : 'Retry'}</button></div>${mac ? `<button class="mi" data-connection-copy>${I.copy}<span class="txt">Copy Mac recovery command<span class="d">Run in Terminal on ${esc(s.name || hostOf(s.url))}</span></span></button>` : ''}${connected ? `<button class="mi" data-connection-usage>${I.gear}<span class="txt">Usage and limits</span>${I.chev}</button>` : ''}</div>`;
     };
     S.redraw=draw;draw();
     sh.onclick=e=>{
+      const recover=e.target.closest('[data-recover-helper]');
+      if(recover){recoverComputer(server,recover.dataset.recoverHelper,recover.dataset.recoverPeer);return;}
       if(e.target.closest('[data-connection-back]'))openSheet('macs');
       if(e.target.closest('[data-connection-retry]')){const c=conns.get(server);if(c){c.paused=false;c.backoff=300;c.connect();}}
       if(e.target.closest('[data-connection-copy]'))copyText('bash "$HOME/.fastcontrol/repair.command"');
@@ -2631,7 +2664,7 @@ const SHEETS = {
       if (del) {
         const x = S.servers.find((s) => s.id === del.dataset.del);
         if (!x || !confirm(`Remove ${x.name || x.url}?`)) return;
-        window.forgetComputerTranscripts?.(x.id);
+        window.forgetComputerTranscripts?.(x.id);recoveryJobs.delete(x.id);
         S.servers = S.servers.filter((s) => s !== x);
         saveServers(); syncConns(); draw(); renderHome();
         return;
