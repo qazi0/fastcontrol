@@ -65,7 +65,19 @@ Download the [versioned Android APK from the latest release](https://github.com/
 
 After the first install, the app checks GitHub for updates. You can also choose **Check for updates** in Computers. Download and install from the app, or defer until later. Android asks you to approve installation.
 
-Open the pairing link from `~/.fastcontrol/relay.log` on Mac or Linux, or `%USERPROFILE%\.fastcontrol\relay.log` on Windows. You can also choose Add Computer in Android and enter the computer's address and token. The relay uses port 8787. Allow the relay through your firewall when prompted. Use Tailscale to connect outside your LAN.
+The installer shows a pairing QR in the terminal. Scan it with your phone camera and open fastcontrol. No token typing is needed. To show it again on a Mac or Linux:
+
+```sh
+~/.fastcontrol/fastcontrol -pair
+```
+
+On a Mac you can also open **fastcontrol Pair.command** from your home Applications folder. On Windows:
+
+```powershell
+& "$env:USERPROFILE\.fastcontrol\fastcontrol.exe" -pair
+```
+
+The QR includes the computer's address and certificate identity, along with any alternate LAN or Tailscale addresses. The relay uses port 8787. Allow the relay through your firewall when prompted. Use Tailscale to connect outside your LAN.
 
 Repeat the computer installation to add another host. Each computer keeps its own coding sessions and credentials.
 

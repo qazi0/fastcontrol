@@ -11,3 +11,8 @@ test('secure pairings use certificate identity and known legacy addresses',()=>{
  assert.equal(c.sameRelayPairing({...old,pin:'a'.repeat(64)},'https://another-address:8787','new-token','a'.repeat(64)),true);
  assert.equal(c.sameRelayPairing({...old,pin:'a'.repeat(64)},'https://another-address:8787','shared','b'.repeat(64)),false);
 });
+test('QR alternate routes reject credentials and HTTP downgrades',()=>{
+ vm.runInContext(source.slice(source.indexOf('function pairingAlternates('),source.indexOf('function addServer(')),c);
+ const result=c.pairingAlternates('https://192.168.1.20:8787',['https://100.64.0.2:8787','http://192.168.1.20:8787','https://user:password@example.com','https://example.com?t=secret','https://100.64.0.2:8787']);
+ assert.deepEqual(Array.from(result),['https://100.64.0.2:8787']);
+});

@@ -86,7 +86,13 @@ function sameRelayPairing(existing,url,token,pin) {
   const next=address(url);
   return !!next && [existing.url,...(existing.alts||[])].some(value=>address(value)===next);
 }
-function addServer({ url, token, name, custom, pin = "" }) {
+function pairingAlternates(primary, values) {
+  const secure=primary.startsWith('https://');
+  return [...new Set((Array.isArray(values) ? values : []).filter(value=>{
+    try{const u=new URL(value);return (u.protocol==='http:' || u.protocol==='https:') && (!secure || u.protocol==='https:') && !u.username && !u.password && !u.search && !u.hash && (u.pathname==='/' || !u.pathname);}catch{return false;}
+  }).map(value=>new URL(value).origin))].filter(value=>value!==primary).slice(0,8);
+}
+function addServer({ url, token, name, custom, pin = "", alts = [] }) {
   url = url.replace(/\/+$/, "");
   pin=pin.toLowerCase();
   if (pin && (!/^https:\/\//.test(url) || !/^[a-f0-9]{64}$/.test(pin))) throw Error('Invalid secure pairing link');
@@ -94,7 +100,7 @@ function addServer({ url, token, name, custom, pin = "" }) {
   const previous = S.servers[index];
   const s = {...previous,id:previous?.id || sid(),url,token,pin:pin || (previous?.url===url ? previous.pin || '' : ''),
     name:name || previous?.name || hostOf(url),custom:name ? !!custom : !!previous?.custom};
-  s.alts=(s.alts || []).filter(value => !url.startsWith('https://') || value.startsWith('https://'));
+  s.alts=pairingAlternates(url,[...alts,...(s.alts || [])]);
   if(index>=0)S.servers[index]=s;else S.servers.push(s);
   saveServers();syncConns();return s;
 }
@@ -2708,7 +2714,7 @@ window.onAndroidIntent = function () {
   let it;
   try { const j = Native.consumeLaunchIntent(); if (!j) return; it = JSON.parse(j); } catch { return; }
   if (it.type === "pair" && it.url && it.token) {
-    const s = addServer({ url: it.url, token: it.token, name: it.name || "", pin: it.pin || "" });
+    const s = addServer({ url: it.url, token: it.token, name: it.name || "", pin: it.pin || "", alts: it.alts || [] });
     S.machine = s.id; store.set("machine", s.id);
     toast("Paired With " + (s.name || s.url));
     if (S.view === "home") renderHome();
