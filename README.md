@@ -49,7 +49,7 @@ Manage the service with `systemctl --user restart fastcontrol` or `systemctl --u
 
 ## Install on Windows
 
-Requires Windows 11 ARM64 and a signed-in Codex desktop or native Claude Code installation. Run in PowerShell:
+Requires 64-bit Windows 11 (x64 or ARM64) and a signed-in Codex desktop or native Claude Code installation. Run in PowerShell:
 
 ```powershell
 irm https://github.com/qazi0/fastcontrol/releases/latest/download/install.ps1 | iex
@@ -57,7 +57,7 @@ irm https://github.com/qazi0/fastcontrol/releases/latest/download/install.ps1 | 
 
 The installer sets up the relay, a login task and local Whisper transcription. To skip the model download, set `$env:FASTCONTROL_SKIP_SPEECH = '1'` before running it.
 
-Windows installation and speech setup are tested on ARM64. Live control of signed-in Windows coding sessions still needs verification.
+The installer selects the native x64 or ARM64 package. Both packages are built and tested on matching Windows runners.
 
 ## Install the Android App
 
@@ -139,7 +139,7 @@ make android-release  # Signed APK
 make package          # Mac archive and checksums
 ```
 
-Android builds use Java 17 and Android SDK 36. The Makefile builds Gradle offline; populate the dependency cache with a normal Gradle build on a new machine. Linux packaging uses `scripts/package-linux.sh`, GCC and CMake. Windows packaging uses `scripts/build-windows.ps1`, CMake and Visual Studio with Clang and ARM64 C++ tools.
+Android builds use Java 17 and Android SDK 36. The Makefile builds Gradle offline; populate the dependency cache with a normal Gradle build on a new machine. Linux packaging uses `scripts/package-linux.sh`, GCC and CMake. Windows packaging uses `scripts/build-windows.ps1`, CMake and Visual Studio with Clang and the C++ tools for the target architecture.
 
 Create `android/signing.properties` locally for signed APKs:
 

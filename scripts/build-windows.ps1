@@ -1,10 +1,20 @@
-param([string]$Destination = 'dist')
+param([string]$Destination = 'dist', [ValidateSet('arm64','amd64')][string]$Architecture)
 $ErrorActionPreference = 'Stop'
-if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'Arm64') { throw 'Build on Windows ARM64 Only' }
+$NativeArchitecture = switch ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()) {
+    'Arm64' { 'arm64' }
+    'X64' { 'amd64' }
+    default { throw 'Build on 64-bit Windows (x64 or ARM64)' }
+}
+if (-not $Architecture) { $Architecture = $NativeArchitecture }
+if ($Architecture -ne $NativeArchitecture) { throw 'Build and verify each Windows package on a matching native runner' }
+$ExpectedMachine = if ($Architecture -eq 'arm64') { 0xaa64 } else { 0x8664 }
+$CMakeArchitecture = if ($Architecture -eq 'arm64') { 'ARM64' } else { 'x64' }
+$AssetName = "fastcontrol_windows_$Architecture.zip"
+$ChecksumName = "SHA256SUMS_windows_$Architecture"
 function Get-PEDependencies([string]$Path) {
     $Bytes = [IO.File]::ReadAllBytes($Path)
     $PE = [BitConverter]::ToInt32($Bytes, 60)
-    if ([BitConverter]::ToUInt16($Bytes, $PE + 4) -ne 0xaa64) { throw 'Package Contains a Non-ARM64 Executable' }
+    if ([BitConverter]::ToUInt16($Bytes, $PE + 4) -ne $ExpectedMachine) { throw "Package executable architecture does not match $Architecture" }
     $Count = [BitConverter]::ToUInt16($Bytes, $PE + 6)
     $OptionalSize = [BitConverter]::ToUInt16($Bytes, $PE + 20)
     $Optional = $PE + 24
@@ -38,7 +48,8 @@ try {
     tar -xzf $SourceArchive -C $Work
     if ($LASTEXITCODE -ne 0) { throw 'Whisper Extraction Failed' }
     $Build = Join-Path $Work 'build'
-    cmake -S (Join-Path $Work 'whisper.cpp-1.9.5') -B $Build -A ARM64 -T ClangCL '-DCMAKE_POLICY_DEFAULT_CMP0091=NEW' '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded' -DBUILD_SHARED_LIBS=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF -DWHISPER_CURL=OFF -DWHISPER_BUILD_IS_DEV=OFF -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8-a -DGGML_OPENMP=OFF
+    [string[]]$CPUOptions = if ($Architecture -eq 'arm64') { @('-DGGML_CPU_ARM_ARCH=armv8-a') } else { @('-DGGML_AVX=OFF','-DGGML_AVX2=OFF','-DGGML_FMA=OFF','-DGGML_F16C=OFF') }
+    cmake -S (Join-Path $Work 'whisper.cpp-1.9.5') -B $Build -A $CMakeArchitecture -T ClangCL '-DCMAKE_POLICY_DEFAULT_CMP0091=NEW' '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded' -DBUILD_SHARED_LIBS=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF -DWHISPER_CURL=OFF -DWHISPER_BUILD_IS_DEV=OFF -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF @CPUOptions
     if ($LASTEXITCODE -ne 0) { throw 'Speech Configure Failed' }
     cmake --build $Build --config Release --target whisper-cli --parallel 2
     if ($LASTEXITCODE -ne 0) { throw 'Speech Build Failed' }
@@ -60,6 +71,7 @@ try {
     }
     Copy-Item contrib/run-windows.ps1 $Package
     $env:CGO_ENABLED = '0'
+    $env:GOARCH = $Architecture
     go build -trimpath -ldflags '-s -w' -o (Join-Path $Package 'fastcontrol.exe') .
     if ($LASTEXITCODE -ne 0) { throw 'Relay Build Failed' }
     & (Join-Path $Package 'speech/whisper-cli.exe') --version
@@ -69,10 +81,10 @@ try {
     foreach ($Executable in @((Join-Path $Package 'fastcontrol.exe'), (Join-Path $Package 'speech/whisper-cli.exe'))) {
         $Dependencies = Get-PEDependencies $Executable
         if ($Dependencies | Where-Object { $_ -match '^(MSVCP|VCRUNTIME|libomp|ggml|whisper)' }) { throw "Unbundled Runtime Dependency in $Executable" }
-        Write-Host "Verified ARM64 Dependencies: $($Dependencies -join ', ')"
+        Write-Host "Verified $Architecture Dependencies: $($Dependencies -join ', ')"
     }
-    $Asset = Join-Path $Destination 'fastcontrol_windows_arm64.zip'
+    $Asset = Join-Path $Destination $AssetName
     Compress-Archive -Path (Join-Path $Package '*') -DestinationPath $Asset -Force
     $Hash = (Get-FileHash $Asset -Algorithm SHA256).Hash.ToLowerInvariant()
-    "$Hash  fastcontrol_windows_arm64.zip" | Set-Content (Join-Path $Destination 'SHA256SUMS_windows_arm64') -Encoding ascii
+    "$Hash  $AssetName" | Set-Content (Join-Path $Destination $ChecksumName) -Encoding ascii
 } finally { Remove-Item $Work -Recurse -Force }
