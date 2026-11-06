@@ -11,8 +11,9 @@ scripts/build-speech.sh arm64 "$folder/speech"
 cp scripts/setup-speech.sh "$folder/speech/setup.sh"
 GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o "$folder/fastcontrol" .
 cp contrib/com.fastcontrol.plist "$folder/"
+cp contrib/fastcontrol-repair.command "$folder/"
 cp -R licenses "$folder/"
-tar -czf dist/fastcontrol_darwin_arm64.tar.gz -C "$folder" fastcontrol com.fastcontrol.plist licenses speech
+tar -czf dist/fastcontrol_darwin_arm64.tar.gz -C "$folder" fastcontrol com.fastcontrol.plist fastcontrol-repair.command licenses speech
 if [[ -f android/app/build/outputs/apk/release/app-release.apk ]]; then
   apk_version="$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' android/app/build.gradle.kts)"
   [[ -n "$apk_version" ]]

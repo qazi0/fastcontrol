@@ -46,8 +46,8 @@ func loadToken(path string) (string, error) {
 	return t, os.WriteFile(path, []byte(t+"\n"), 0o600)
 }
 
-// autoAddrs picks loopback, Tailscale (100.64.0.0/10) and the default-route
-// interface (usually Wi-Fi). VPN and virtual adapters are left out.
+// autoAddrs picks loopback, Tailscale and physical LAN interfaces.
+// A separate VPN default route must not hide Wi-Fi or Ethernet.
 func autoAddrs() (addrs []string, preferred string) {
 	addrs = []string{"127.0.0.1"}
 	_, cgnat, _ := net.ParseCIDR("100.64.0.0/10")
@@ -58,18 +58,15 @@ func autoAddrs() (addrs []string, preferred string) {
 		}
 		as, _ := ifc.Addrs()
 		for _, a := range as {
-			if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil && cgnat.Contains(ipn.IP.To4()) {
+			if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil && (cgnat.Contains(ipn.IP.To4()) || (physicalLANInterface(ifc.Name) && ipn.IP.IsPrivate())) {
 				addrs = append(addrs, ipn.IP.String())
-				preferred = ipn.IP.String()
+				if preferred == "" || cgnat.Contains(ipn.IP) {
+					preferred = ipn.IP.String()
+				}
 			}
 		}
 	}
-	if lan := defaultRouteIP(); lan != "" && net.ParseIP(lan).IsPrivate() {
-		addrs = append(addrs, lan)
-		if preferred == "" {
-			preferred = lan
-		}
-	}
+
 	if preferred == "" {
 		preferred = "127.0.0.1"
 	}
@@ -79,7 +76,7 @@ func autoAddrs() (addrs []string, preferred string) {
 func main() {
 	home, _ := os.UserHomeDir()
 	port := flag.Int("port", 8787, "port to listen on")
-	bind := flag.String("bind", "auto", "comma-separated IPs to bind, or 'auto' for loopback, Tailscale and the default-route (Wi-Fi) address")
+	bind := flag.String("bind", "auto", "comma-separated IPs to bind, or 'auto' for loopback, Tailscale and physical LAN addresses")
 	tokenFile := flag.String("token-file", filepath.Join(home, ".fastcontrol", "token"), "pairing token file (created if missing)")
 	ipcPath := flag.String("ipc", defaultIPCPath(), "desktop app IPC socket")
 	flag.String("asar", desktopBundlePath(), "desktop app bundle, checked for IPC protocol changes")
@@ -254,40 +251,27 @@ func main() {
 	}
 	scheme, pin := "http", ""
 	var tlsConfig *tls.Config
+	var identity *relayTLS
 	if *secure {
 		var err error
 		names := append(append([]string(nil), addrs...), "localhost", "127.0.0.1", "::1")
 		for i := range names {
 			names[i] = strings.TrimSpace(names[i])
 		}
-		tlsConfig, pin, err = newRelayTLS(filepath.Join(home, ".fastcontrol", "tls"), names)
+		tlsConfig, pin, identity, err = newRelayTLSIdentity(filepath.Join(home, ".fastcontrol", "tls"), names)
 		if err != nil {
 			log.Fatalf("TLS identity: %v", err)
 		}
 		scheme = "https"
 	}
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-	for _, a := range addrs {
-		if a = strings.TrimSpace(a); a != "127.0.0.1" && a != "::1" {
-			hub.addrs = append(hub.addrs, fmt.Sprintf("%s://%s", scheme, net.JoinHostPort(a, fmt.Sprint(*port))))
-		}
+	resolve := func() []string { return addrs }
+	if *bind == "auto" {
+		resolve = func() []string { next, _ := autoAddrs(); return next }
 	}
-	for _, a := range addrs {
-		ln, err := net.Listen("tcp", net.JoinHostPort(strings.TrimSpace(a), fmt.Sprint(*port)))
-		if err != nil {
-			log.Printf("listen %s: %v", a, err)
-			continue
-		}
-		listenerScheme := scheme
-		// Loopback remains HTTP for an SSH tunnel and local desktop tooling.
-		if ip := net.ParseIP(strings.TrimSpace(a)); *secure && (ip == nil || !ip.IsLoopback()) {
-			ln = tls.NewListener(ln, tlsConfig)
-		} else {
-			listenerScheme = "http"
-		}
-		log.Printf("listening on %s://%s", listenerScheme, ln.Addr())
-		go func() { log.Println(srv.Serve(ln)) }()
-	}
+	network := newRelayListeners(srv, *port, tlsConfig, identity, hub.setAddresses)
+	network.reconcile(resolve())
+	go network.run(context.Background(), resolve, 5*time.Second)
 
 	if ip := net.ParseIP(preferred); ip != nil && ip.IsLoopback() {
 		scheme = "http"
@@ -344,7 +328,12 @@ func serveClient(ctx context.Context, hub *Hub, conn *websocket.Conn, eventsOnly
 		}
 	}()
 	// addrs lets clients fall back between Wi-Fi and Tailscale with one pairing.
-	c.push(mustJSON(map[string]any{"t": "hello", "host": hostName(), "desktop": hub.ipc.ClientID() != "", "v": 3, "addrs": hub.addrs, "providers": map[string]bool{"codex": hub.db != "", "claude": hub.claude != nil && hub.claude.bin != ""}}))
+	host, desktop := hostName(), hub.ipc.ClientID() != ""
+	// Serialize hello with network updates so an older address snapshot cannot
+	// arrive after a newer network message on this connection.
+	hub.mu.Lock()
+	c.push(mustJSON(map[string]any{"t": "hello", "host": host, "desktop": desktop, "v": 3, "addrs": hub.addrs, "heartbeat": true, "providers": map[string]bool{"codex": hub.db != "", "claude": hub.claude != nil && hub.claude.bin != ""}}))
+	hub.mu.Unlock()
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {

@@ -98,6 +98,9 @@ fi
 if [[ ! -f "$HOME/Library/LaunchAgents/com.fastcontrol.plist" ]]; then
   sed -e "s#__BIN__#$dir/fastcontrol#" -e "s#__HOME__#$HOME#g" com.fastcontrol.plist > "$HOME/Library/LaunchAgents/com.fastcontrol.plist"
 fi
+install -m 755 fastcontrol-repair.command "$dir/repair.command"
+mkdir -p "$HOME/Applications"
+ln -sfn "$dir/repair.command" "$HOME/Applications/fastcontrol Recovery.command"
 plist="$HOME/Library/LaunchAgents/com.fastcontrol.plist"
 if [[ "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments' "$plist")" != *"-tls"* ]]; then
   /usr/libexec/PlistBuddy -c 'Add :ProgramArguments: string -tls' "$plist"
