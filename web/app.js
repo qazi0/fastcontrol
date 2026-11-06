@@ -79,7 +79,6 @@ function saveServers() {
 }
 function sameRelayPairing(existing,url,token,pin) {
   if(existing.url===url)return true;
-  if(!pin)return false;
   if(typeof existing.pin==='string' && existing.pin)return existing.pin.toLowerCase()===pin;
   if(existing.token!==token)return false;
   const address=value=>{try{const u=new URL(value);return u.hostname+':'+(u.port || (u.protocol==='https:'?'443':'80'));}catch{return '';}};
@@ -98,9 +97,10 @@ function addServer({ url, token, name, custom, pin = "", alts = [] }) {
   if (pin && (!/^https:\/\//.test(url) || !/^[a-f0-9]{64}$/.test(pin))) throw Error('Invalid secure pairing link');
   const index = S.servers.findIndex(x => sameRelayPairing(x,url,token,pin));
   const previous = S.servers[index];
+  const keepCustomName=!!previous?.custom && !custom;
   const s = {...previous,id:previous?.id || sid(),url,token,pin:pin || (previous?.url===url ? previous.pin || '' : ''),
-    name:name || previous?.name || hostOf(url),custom:name ? !!custom : !!previous?.custom};
-  s.alts=pairingAlternates(url,[...alts,...(s.alts || [])]);
+    name:keepCustomName ? previous.name : name || previous?.name || hostOf(url),custom:keepCustomName || (name ? !!custom : !!previous?.custom)};
+  s.alts=pairingAlternates(url,[...(Array.isArray(alts) ? alts : []),...(Array.isArray(s.alts) ? s.alts : [])]);
   if(index>=0)S.servers[index]=s;else S.servers.push(s);
   saveServers();syncConns();return s;
 }
