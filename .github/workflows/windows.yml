@@ -1,4 +1,4 @@
-name: Windows ARM64
+name: Windows
 on:
   workflow_dispatch:
   push:
@@ -29,7 +29,15 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    runs-on: windows-11-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-11-arm
+            arch: arm64
+          - runner: windows-2022
+            arch: amd64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -43,7 +51,7 @@ jobs:
           go test ./...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build and Inspect Release Artifacts
-        run: ./scripts/build-windows.ps1
+        run: ./scripts/build-windows.ps1 -Architecture ${{ matrix.arch }}
       - name: Verify Installer and Local Speech Setup
         run: |
           ./install.ps1 -PackageDirectory dist -SkipSpeech
@@ -56,8 +64,8 @@ jobs:
           Unregister-ScheduledTask -TaskName fastcontrol -Confirm:$false
       - uses: actions/upload-artifact@v4
         with:
-          name: fastcontrol-windows-arm64
+          name: fastcontrol-windows-${{ matrix.arch }}
           path: |
-            dist/fastcontrol_windows_arm64.zip
-            dist/SHA256SUMS_windows_arm64
+            dist/fastcontrol_windows_${{ matrix.arch }}.zip
+            dist/SHA256SUMS_windows_${{ matrix.arch }}
           if-no-files-found: error

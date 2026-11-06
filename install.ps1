@@ -1,7 +1,13 @@
 param([switch]$SkipSpeech, [string]$PackageDirectory)
 $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT') { throw 'Run This Installer on Windows' }
-if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'Arm64') { throw 'fastcontrol Currently Supports Windows ARM64 Only' }
+$Architecture = switch ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()) {
+    'Arm64' { 'arm64' }
+    'X64' { 'amd64' }
+    default { throw 'fastcontrol requires 64-bit Windows (x64 or ARM64)' }
+}
+$AssetName = "fastcontrol_windows_$Architecture.zip"
+$ChecksumName = "SHA256SUMS_windows_$Architecture"
 $Repo = 'qazi0/fastcontrol'
 $Version = if ($env:FASTCONTROL_VERSION) { $env:FASTCONTROL_VERSION } else { 'latest' }
 $Work = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString())
@@ -10,15 +16,15 @@ $TaskName = 'fastcontrol'
 New-Item -ItemType Directory $Work | Out-Null
 try {
     if ($PackageDirectory) {
-        Copy-Item (Join-Path $PackageDirectory 'fastcontrol_windows_arm64.zip') $Work
-        Copy-Item (Join-Path $PackageDirectory 'SHA256SUMS_windows_arm64') $Work
+        Copy-Item (Join-Path $PackageDirectory $AssetName) $Work
+        Copy-Item (Join-Path $PackageDirectory $ChecksumName) $Work
     } else {
         $Base = if ($Version -eq 'latest') { "https://github.com/$Repo/releases/latest/download" } else { "https://github.com/$Repo/releases/download/$Version" }
-        Invoke-WebRequest "$Base/fastcontrol_windows_arm64.zip" -OutFile (Join-Path $Work 'fastcontrol_windows_arm64.zip')
-        Invoke-WebRequest "$Base/SHA256SUMS_windows_arm64" -OutFile (Join-Path $Work 'SHA256SUMS_windows_arm64')
+        Invoke-WebRequest "$Base/$AssetName" -OutFile (Join-Path $Work $AssetName)
+        Invoke-WebRequest "$Base/$ChecksumName" -OutFile (Join-Path $Work $ChecksumName)
     }
-    $Asset = Join-Path $Work 'fastcontrol_windows_arm64.zip'
-    $Line = Get-Content (Join-Path $Work 'SHA256SUMS_windows_arm64') | Where-Object { $_ -match '^[0-9a-fA-F]{64}\s+fastcontrol_windows_arm64\.zip$' }
+    $Asset = Join-Path $Work $AssetName
+    $Line = Get-Content (Join-Path $Work $ChecksumName) | Where-Object { $_ -match ('^[0-9a-fA-F]{64}\s+' + [regex]::Escape($AssetName) + '$') }
     if (@($Line).Count -ne 1) { throw 'Release Checksum Is Missing or Ambiguous' }
     if ((Get-FileHash $Asset -Algorithm SHA256).Hash -ne ($Line -split '\s+')[0]) { throw 'Release Checksum Failed' }
     $Expanded = Join-Path $Work 'expanded'
