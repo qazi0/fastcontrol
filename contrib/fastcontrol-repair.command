@@ -4,7 +4,9 @@ set -u
 dir="$HOME/.fastcontrol"
 label="gui/$(id -u)/com.fastcontrol"
 check_only=0
+remote=0
 [[ "${1:-}" != --check ]] || check_only=1
+[[ "${1:-}" != --remote ]] || remote=1
 echo "fastcontrol connection check"
 echo
 tailscale=/Applications/Tailscale.app/Contents/MacOS/Tailscale
@@ -22,7 +24,7 @@ if [[ -x "$tailscale" ]]; then
     echo "Tailscale after reconnect: ${state:-check the Tailscale app}"
   elif [[ "$state" != Running && "$check_only" == 0 ]]; then
     echo "Open Tailscale and check its connection or sign-in."
-    /usr/bin/open -a Tailscale
+    [[ "$remote" == 1 ]] || /usr/bin/open -a Tailscale
   fi
 else
   echo "Tailscale is not installed. LAN connections can still work."
@@ -32,11 +34,17 @@ if [[ "$check_only" == 0 ]]; then
   for path in "$dir"/voice/recording-*; do [[ ! -e "$path" ]] || recording=1; done
   if [[ "$recording" == 1 ]]; then
     echo "A voice upload is in progress. Relay restart skipped. Try again after it finishes."
+    [[ "$remote" == 0 ]] || exit 75
   elif [[ ! -f "$HOME/Library/LaunchAgents/com.fastcontrol.plist" ]]; then
     echo "The login service is missing. Run the fastcontrol installer again."
   else
     if ! launchctl print "$label" > /dev/null 2>&1; then
-      launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.fastcontrol.plist"
+      # A recently unloaded login service can take a moment to leave launchd.
+      for ((attempt=0;attempt<5;attempt++)); do
+        launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.fastcontrol.plist" && break
+        launchctl print "$label" > /dev/null 2>&1 && break
+        sleep 1
+      done
     fi
     if launchctl kickstart -k "$label"; then echo "Relay restarted."; else echo "Could not restart the relay. Run this from your signed-in Mac desktop."; fi
   fi
@@ -58,7 +66,7 @@ else
   echo "If you changed the port, check that port instead."
 fi
 echo
-if [[ -t 0 && "${1:-}" != --no-wait && "$check_only" == 0 ]]; then
+if [[ -t 0 && "${1:-}" != --no-wait && "$check_only" == 0 && "$remote" == 0 ]]; then
   read -r -p "Press Return to close. " ignored
 fi
 [[ "$ready" == 1 ]]
