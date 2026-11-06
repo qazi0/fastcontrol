@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -57,7 +58,9 @@ func newRecoveryManager(home string) *recoveryManager {
 	}
 	defer f.Close()
 	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 64<<10 || info.Mode().Perm()&0022 != 0 {
+	// Windows reports synthetic POSIX mode bits. Access there follows the user's
+	// home-directory ACL, as it does for the relay's other private configuration.
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 64<<10 || (runtime.GOOS != "windows" && info.Mode().Perm()&0022 != 0) {
 		log.Print("recovery configuration must be a regular private file under 64 KiB")
 		return m
 	}
