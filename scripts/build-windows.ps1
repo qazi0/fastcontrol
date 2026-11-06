@@ -48,7 +48,7 @@ try {
     tar -xzf $SourceArchive -C $Work
     if ($LASTEXITCODE -ne 0) { throw 'Whisper Extraction Failed' }
     $Build = Join-Path $Work 'build'
-    $CPUOptions = if ($Architecture -eq 'arm64') { @('-DGGML_CPU_ARM_ARCH=armv8-a') } else { @('-DGGML_AVX=OFF','-DGGML_AVX2=OFF','-DGGML_FMA=OFF','-DGGML_F16C=OFF') }
+    [string[]]$CPUOptions = if ($Architecture -eq 'arm64') { @('-DGGML_CPU_ARM_ARCH=armv8-a') } else { @('-DGGML_AVX=OFF','-DGGML_AVX2=OFF','-DGGML_FMA=OFF','-DGGML_F16C=OFF') }
     cmake -S (Join-Path $Work 'whisper.cpp-1.9.5') -B $Build -A $CMakeArchitecture -T ClangCL '-DCMAKE_POLICY_DEFAULT_CMP0091=NEW' '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded' -DBUILD_SHARED_LIBS=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF -DWHISPER_CURL=OFF -DWHISPER_BUILD_IS_DEV=OFF -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF @CPUOptions
     if ($LASTEXITCODE -ne 0) { throw 'Speech Configure Failed' }
     cmake --build $Build --config Release --target whisper-cli --parallel 2
