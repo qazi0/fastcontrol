@@ -270,7 +270,7 @@ class Conn {
     if (window.onAgentMessage?.(this, m, provider)) return;
     switch (m.t) {
       case "hello":
-        clearTimeout(this.deadline);this.heartbeatSupported=!!m.heartbeat;this.rememberSeen();
+        clearTimeout(this.deadline);this.heartbeatSupported=!!m.heartbeat;if(m.platform)this.s.platform=m.platform;this.rememberSeen();
         this.desktop = m.desktop;
         this.capabilities = m.providers || { codex:true, claude:false };
         if (Array.isArray(m.addrs) && JSON.stringify(m.addrs) !== JSON.stringify(this.s.alts || [])) { this.s.alts = m.addrs; saveServers(); }
@@ -2579,10 +2579,10 @@ const SHEETS = {
     S.connectionID=server;
     const draw=()=>{
       const c=conns.get(server),s=S.servers.find(value=>value.id===server);if(!s)return;
-      const connected=c?.ok && c.state!=="wait",checking=c?.state==="wait";
+      const connected=c?.ok && c.state!=="wait",checking=c?.state==="wait",mac=!s.platform || s.platform==='darwin';
       const last=c?.lastSeen || s.lastSeen;
       const seen=last ? new Date(last).toLocaleString([], {dateStyle:"medium",timeStyle:"short"}) : "No connection recorded";
-      sh.innerHTML=`<div class="grip"></div><h2>${esc(s.name || hostOf(s.url))}</h2><div class="connection-body"><p class="connection-state" role="status"><span class="dot ${connected ? 'on' : checking ? 'wait' : 'off'}"></span>${checking ? loadingHTML('Connecting') : esc(computerStatus(c))}</p><dl class="connection-details"><dt>${connected ? 'Connected address' : 'Paired address'}</dt><dd>${esc(connected ? c.base : s.url)}</dd><dt>Last connected</dt><dd>${esc(connected ? 'Now' : seen)}</dd></dl>${connected ? '<p class="hint">The relay is responding. Usage and session controls are available.</p>' : '<p class="hint">Keep the Mac awake. Away from home, connect Tailscale on both the phone and Mac. If it stays offline, open fastcontrol Recovery on that Mac to check the connection and restart the relay.</p>'}<div class="sheet-actions"><button class="btn" data-connection-back>Computers</button><span class="grow"></span><button class="btn primary" data-connection-retry ${checking ? 'disabled' : ''}>${connected ? 'Reconnect' : 'Retry'}</button></div><button class="mi" data-connection-copy>${I.copy}<span class="txt">Copy Mac recovery command<span class="d">Run in Terminal on this computer</span></span></button>${connected ? `<button class="mi" data-connection-usage>${I.gear}<span class="txt">Usage and limits</span>${I.chev}</button>` : ''}</div>`;
+      sh.innerHTML=`<div class="grip"></div><h2>${esc(s.name || hostOf(s.url))}</h2><div class="connection-body"><p class="connection-state" role="status"><span class="dot ${connected ? 'on' : checking ? 'wait' : 'off'}"></span>${checking ? loadingHTML('Connecting') : esc(computerStatus(c))}</p><dl class="connection-details"><dt>${connected ? 'Connected address' : 'Paired address'}</dt><dd>${esc(connected ? c.base : s.url)}</dd><dt>Last connected</dt><dd>${esc(connected ? 'Now' : seen)}</dd></dl>${connected ? '<p class="hint">The relay is responding. Usage and session controls are available.</p>' : '<p class="hint">Keep the computer awake. Away from home, connect Tailscale on both devices. If it stays offline, restart the relay on that computer. On a Mac, open fastcontrol Recovery in your home Applications folder.</p>'}<div class="sheet-actions"><button class="btn" data-connection-back>Computers</button><span class="grow"></span><button class="btn primary" data-connection-retry ${checking ? 'disabled' : ''}>${connected ? 'Reconnect' : 'Retry'}</button></div>${mac ? `<button class="mi" data-connection-copy>${I.copy}<span class="txt">Copy Mac recovery command<span class="d">Run in Terminal on ${esc(s.name || hostOf(s.url))}</span></span></button>` : ''}${connected ? `<button class="mi" data-connection-usage>${I.gear}<span class="txt">Usage and limits</span>${I.chev}</button>` : ''}</div>`;
     };
     S.redraw=draw;draw();
     sh.onclick=e=>{

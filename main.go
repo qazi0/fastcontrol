@@ -332,7 +332,7 @@ func serveClient(ctx context.Context, hub *Hub, conn *websocket.Conn, eventsOnly
 	// Serialize hello with network updates so an older address snapshot cannot
 	// arrive after a newer network message on this connection.
 	hub.mu.Lock()
-	c.push(mustJSON(map[string]any{"t": "hello", "host": host, "desktop": desktop, "v": 3, "addrs": hub.addrs, "heartbeat": true, "providers": map[string]bool{"codex": hub.db != "", "claude": hub.claude != nil && hub.claude.bin != ""}}))
+	c.push(mustJSON(map[string]any{"t": "hello", "host": host, "desktop": desktop, "v": 3, "addrs": hub.addrs, "heartbeat": true, "platform": runtime.GOOS, "providers": map[string]bool{"codex": hub.db != "", "claude": hub.claude != nil && hub.claude.bin != ""}}))
 	hub.mu.Unlock()
 	for {
 		_, data, err := conn.Read(ctx)

@@ -18,6 +18,8 @@ if [[ -x "$tailscale" ]]; then
     for ((i=0;i<20;i++)); do kill -0 "$task" 2>/dev/null || break; sleep 1; done
     if kill -0 "$task" 2>/dev/null; then kill "$task"; echo "Open Tailscale to finish connecting."; fi
     wait "$task" 2>/dev/null || true
+    state="$("$tailscale" status --json 2>/dev/null | /usr/bin/plutil -extract BackendState raw -o - - 2>/dev/null)"
+    echo "Tailscale after reconnect: ${state:-check the Tailscale app}"
   elif [[ "$state" != Running && "$check_only" == 0 ]]; then
     echo "Open Tailscale and check its connection or sign-in."
     /usr/bin/open -a Tailscale
