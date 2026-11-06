@@ -80,3 +80,10 @@ test('nonblocking answers preserve desktop question IDs and render as ordinary a
  const parts=vm.runInContext('MessageContent.parse('+JSON.stringify(wire)+')',context);
  assert.equal(parts.length,2);assert.equal(parts[0].kind,'reply');assert.equal(parts[1].answer,'A "quoted" answer\nwith a second line');
 });
+
+test('cached running flags do not claim live work on disconnected computers',()=>{
+ const source=fs.readFileSync('web/app.js','utf8');const a={ok:false,state:'off',threads:[{id:'old',running:true,attention:true}]},b={ok:true,state:'on',threads:[{id:'live',running:true}]};
+ const context=vm.createContext({S:{machine:'all'},conns:new Map([['a',a],['b',b]])});
+ vm.runInContext(source.slice(source.indexOf('function allThreads('),source.indexOf('function findThread(')),context);
+ const threads=context.allThreads();assert.equal(threads[0].running,false);assert.equal(threads[0].attention,false);assert.equal(threads[1].running,true);assert.equal(a.threads[0].running,true,'cached source remains untouched');
+});

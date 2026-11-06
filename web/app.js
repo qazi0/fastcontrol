@@ -507,7 +507,7 @@ function allThreads() {
   const out = [];
   for (const [id, c] of conns) {
     if (S.machine !== "all" && S.machine !== id) continue;
-    for (const t of c.threads) if (!t.subagent) { out.push({...t,sid:id}); }
+    for (const t of c.threads) if (!t.subagent) { out.push({...t,sid:id,running:!!t.running && c.ok && c.state!=="wait",attention:!!t.attention && c.ok && c.state!=="wait"}); }
   }
   return out;
 }
@@ -1490,7 +1490,7 @@ function renderStatus() {
 function renderActivity() {
   if(S.meta?.cached){$("activity").classList.add("hidden");return;}
   const pending = !!feed.querySelector(":scope > .u.pending");
-  const running = !!S.meta?.running || S.turns.at(-1)?.status === "inProgress" || pending;
+  const running = pending || (typeof S.meta?.running === "boolean" ? S.meta.running : S.turns.at(-1)?.status === "inProgress");
   $("activity").classList.toggle("hidden", !running || !!S.meta?.requests?.length);
 }
 let renderedMeta = "";

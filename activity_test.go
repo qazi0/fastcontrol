@@ -113,3 +113,20 @@ func TestTurnMarkerBeyondOldScanLimitAndIncrementalAppend(t *testing.T) {
 		t.Fatal("truncated transcript kept an old marker")
 	}
 }
+
+func TestDesktopIdleStateOverridesUnfinishedHistoricalTurn(t *testing.T) {
+	state := map[string]any{"turnHistory": map[string]any{"history": map[string]any{"entitiesByKey": map[string]any{"old": map[string]any{"status": "inProgress", "turnStartedAtMs": float64(123)}}}}}
+	if !desktopMeta(state, "test").Running {
+		t.Fatal("legacy snapshot lost its activity fallback")
+	}
+	for _, status := range []string{"idle", "notLoaded", "systemError"} {
+		state["threadRuntimeStatus"] = map[string]any{"type": status}
+		if desktopMeta(state, "test").Running {
+			t.Fatal("stale turn overrode current runtime state", status)
+		}
+	}
+	state["threadRuntimeStatus"] = map[string]any{"type": "active"}
+	if !desktopMeta(state, "test").Running {
+		t.Fatal("active runtime was lost")
+	}
+}

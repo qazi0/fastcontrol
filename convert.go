@@ -463,7 +463,7 @@ func desktopMeta(state map[string]any, title string) Meta {
 	keys := desktopTurnOrder(state)
 	if len(keys) > 0 {
 		if t, ok := desktopEntities(state)[keys[len(keys)-1]].(map[string]any); ok {
-			if str(t, "status") == "inProgress" {
+			if str(t, "status") == "inProgress" && m.Runtime != "idle" && m.Runtime != "notLoaded" && m.Runtime != "systemError" {
 				m.Running = true
 			}
 			m.TurnAt, _ = num(t, "turnStartedAtMs")
