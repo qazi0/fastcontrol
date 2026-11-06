@@ -17,6 +17,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 )
@@ -48,16 +49,30 @@ func (r *relayTLS) getCertificate(_ *tls.ClientHelloInfo) (*tls.Certificate, err
 	return r.certificate, nil
 }
 func newRelayTLS(dir string, names []string) (*tls.Config, string, error) {
+	config, pin, _, err := newRelayTLSIdentity(dir, names)
+	return config, pin, err
+}
+func newRelayTLSIdentity(dir string, names []string) (*tls.Config, string, *relayTLS, error) {
 	identity := &relayTLS{dir: dir, names: append([]string(nil), names...)}
 	cert, err := identity.getCertificate(nil)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	leaf, err := x509.ParseCertificate(cert.Certificate[0])
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
-	return &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: identity.getCertificate}, tlsFingerprint(leaf), nil
+	return &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: identity.getCertificate}, tlsFingerprint(leaf), identity, nil
+}
+func (r *relayTLS) setNames(names []string) error {
+	r.mu.Lock()
+	if !slices.Equal(r.names, names) {
+		r.names = append([]string(nil), names...)
+		r.nextCheck = time.Time{}
+	}
+	r.mu.Unlock()
+	_, err := r.getCertificate(nil)
+	return err
 }
 func privateAtomicFile(path string, data []byte) error {
 	f, err := os.CreateTemp(filepath.Dir(path), ".identity-*")

@@ -648,3 +648,13 @@ textarea, input { caret-color: var(--ink); }
 .context-weekly .context-weekly-link { display:inline-flex; align-items:center; gap:8px; min-height:48px; margin-top:4px; font-size:14px; font-weight:500; }
 .context-weekly-link .ico { width:16px; height:16px; }
 .context-weekly-loading { display:flex; align-items:center; gap:10px; color:var(--muted); }
+
+/* Connection diagnostics share the existing Computers sheet. */
+.computer-status { display: block; }
+.connection-body { padding: 0 8px 12px; }
+.connection-state { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 500; }
+.connection-details { display: grid; gap: 6px; margin: 24px 0; }
+.connection-details dt { color: var(--muted); font-size: 14px; }
+.connection-details dd { margin: 0 0 12px; overflow-wrap: anywhere; }
+.connection-body .hint { line-height: 1.5; }
+.connection-body .mi { text-align: start; }

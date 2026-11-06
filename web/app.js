@@ -134,6 +134,22 @@ window.onRelaySocket = event => {
   else if(event.event==='chunk'){(socket.chunks ||= []).push(event.text);if(event.last){const data=socket.chunks.join('');socket.chunks=null;socket.onmessage?.({data});}}
   else if(event.event==='close'){socket.readyState=3;relaySockets.delete(event.id);socket.onclose?.();}
 };
+function computerStatus(connection) {
+  if(connection?.ok && connection.state!=="wait")return "Connected";
+  if(connection?.state==="rejected")return "Pairing token rejected";
+  if(connection?.state==="wait")return "Connecting";
+  return "Not reachable";
+}
+function refreshComputerStatus(connection) {
+  for(const element of document.querySelectorAll('[data-computer-status]')) {
+    if(element.dataset.computerStatus===connection.s.id){
+      element.textContent=computerStatus(connection);
+      const dot=element.closest('.mi')?.querySelector('.dot');
+      if(dot)dot.className='dot '+(connection.ok && connection.state!=="wait" ? 'on' : connection.state==='wait' ? 'wait' : 'off');
+    }
+  }
+  if(S.sheet==="connection" && S.connectionID===connection.s.id)S.redraw?.();
+}
 class Conn {
   constructor(server) {
     this.s = server;
@@ -145,6 +161,7 @@ class Conn {
     this.groups=store.get("groups:"+server.id+":"+S.provider,[]);
     this.byCwd = {}; // full thread lists of opened projects
     this.dead = false;
+    this.candidates = []; this.lastSeen = server.lastSeen || 0; this.heartbeatSupported = false;
     this.byProvider = {};
     this.capabilities = {};
     this.threads = store.get("threads:" + server.id + ":" + S.provider, []);
@@ -153,35 +170,49 @@ class Conn {
   // connect races every known address of the Mac (the last one that worked,
   // the paired one, and the Wi-Fi and Tailscale addresses from hello) and
   // keeps whichever socket opens first.
+  dropSockets() {
+    clearTimeout(this.timer);clearTimeout(this.deadline);clearInterval(this.heartbeatTimer);
+    for (const socket of new Set([this.ws,...this.candidates])) if(socket) {socket.onclose=null;socket.onopen=null;socket.onmessage=null;try{socket.close();}catch{}}
+    this.candidates=[];this.ws=null;this.ok=false;
+  }
   connect() {
-    clearTimeout(this.timer);
-    if (this.dead) return;
-    if (this.ws) { this.ws.onclose = null; try { this.ws.close(); } catch {} this.ws = null; }
-    const urls = [this.base, this.s.url, ...(this.s.alts || [])].filter((u, i, a) => u && a.indexOf(u) === i && (!this.s.url.startsWith("https://") || u.startsWith("https://")));
-    const my = (this.attempt = (this.attempt || 0) + 1);
-    let winner = null, failed = 0;
-    const sockets = urls.map((u) => {
+    if(this.dead || this.paused)return;
+    const my=this.attempt=(this.attempt || 0)+1;
+    this.dropSockets();this.setState("wait");
+    const urls=[this.base,this.s.url,...(this.s.alts || [])].filter((u,i,a)=>u && a.indexOf(u)===i && (!this.s.url.startsWith("https://") || u.startsWith("https://")));
+    let winner=null,failed=0;
+    this.deadline=setTimeout(()=>{if(my===this.attempt && !winner){this.dropSockets();this.unreachable(my);}},7000);
+    for(const u of urls) {
       let w;
-      try { w = Native?.openRelaySocket && this.s.pin ? new PinnedRelaySocket(this.s,u) : new WebSocket(u.replace(/^http/, "ws") + "/ws?t=" + encodeURIComponent(this.s.token)); }
-      catch { failed++; return null; }
-      w.onopen = () => {
-        if (winner || my !== this.attempt || this.dead) { w.onclose = null; w.close(); return; }
-        winner = w;
-        for (const o of sockets) if (o && o !== w) { o.onclose = null; try { o.close(); } catch {} }
-        this.base = u;
-        this.attach(w);
+      try{w=Native?.openRelaySocket && this.s.pin ? new PinnedRelaySocket(this.s,u) : new WebSocket(u.replace(/^http/,"ws")+"/ws?t="+encodeURIComponent(this.s.token));}
+      catch{failed++;continue;}
+      this.candidates.push(w);
+      w.onopen=()=>{
+        if(winner || my!==this.attempt || this.dead || this.paused){w.onclose=null;w.close();return;}
+        winner=w;clearTimeout(this.deadline);
+        for(const other of this.candidates)if(other!==w){other.onclose=null;other.onopen=null;try{other.close();}catch{}}
+        this.candidates=[];this.base=u;this.attach(w);
       };
-      w.onclose = () => { if (!winner && my === this.attempt && ++failed === urls.length) this.unreachable(); };
-      return w;
-    });
-    if (failed === urls.length) this.unreachable();
+      w.onclose=()=>{if(!winner && my===this.attempt && ++failed===urls.length){clearTimeout(this.deadline);this.unreachable(my);}};
+    }
+    if(failed===urls.length){clearTimeout(this.deadline);this.unreachable(my);}
   }
   attach(ws) {
     mark("open:" + this.s.id);
     this.ws = ws; this.ok = true; this.backoff = 300;
-    ws.onmessage = (e) => this.onMessage(JSON.parse(e.data),e.data);
+    this.lastMessage=Date.now();this.heartbeatSupported=false;
+    this.deadline=setTimeout(()=>{if(this.ws===ws && this.state==="wait")this.connect();},10000);
+    ws.onmessage = (e) => {if(this.ws!==ws)return;this.lastMessage=Date.now();this.onMessage(JSON.parse(e.data),e.data);};
+    this.heartbeatTimer=setInterval(()=>{
+      if(this.ws!==ws)return;
+      if(this.heartbeatSupported && Date.now()-this.lastMessage>30000){this.connect();return;}
+      if(this.heartbeatSupported)this.send({op:"ping"});
+    },10000);
     ws.onclose = () => {
-      this.ok = false; this.ws = null;
+      if(this.ws!==ws)return;
+      this.dropSockets();this.rememberSeen();
+      const pending=this.pending;this.pending={};
+      for(const resolve of Object.values(pending))resolve({ok:false,msg:"Connection lost. Check the chat before sending again."});
       if (this.dead || this.paused) return;
       this.setState("off");
       this.timer = setTimeout(() => this.connect(), this.backoff);
@@ -195,24 +226,27 @@ class Conn {
     if (S.view === "project") this.send({ op: "project", cwd: S.cwd });
     if (S.view === "thread" && S.sid === this.s.id) this.send({ op: "open", id: S.id });
   }
-  async unreachable() {
-    this.ok = false;
-    if (this.dead || this.paused) return;
+  rememberSeen() {if(this.lastMessage){this.lastSeen=this.lastMessage;this.s.lastSeen=this.lastSeen;saveServers();}}
+  async unreachable(attempt=this.attempt) {
+    this.ok=false;
+    if(this.dead || this.paused || attempt!==this.attempt)return;
+    let rejected=false;
     try {
-      const r = await fetch(this.s.url + "/auth?t=" + encodeURIComponent(this.s.token));
-      if (r.status === 401) { this.setState("rejected"); return; }
+      const r=await fetch(this.s.url+"/auth?t="+encodeURIComponent(this.s.token),{signal:AbortSignal.timeout(2000)});
+      rejected=r.status===401;
     } catch {}
-    this.setState("off");
-    this.timer = setTimeout(() => this.connect(), this.backoff);
-    this.backoff = Math.min(this.backoff * 2, 5000);
+    if(this.dead || this.paused || attempt!==this.attempt || this.ok)return;
+    this.setState(rejected ? "rejected" : "off");
+    this.timer=setTimeout(()=>this.connect(),this.backoff);
+    this.backoff=Math.min(this.backoff*2,5000);
   }
   // Project counts come from the whole database, refreshed at most every 30 s.
   refreshProjects(force) {
     if (force || Date.now() - this.projAt > 30000) { this.projAt = Date.now(); this.send({ op: "projects" }); }
   }
-  pause() { this.paused = true; this.attempt = (this.attempt || 0) + 1; clearTimeout(this.timer); if (this.ws) { this.ws.onclose = null; try { this.ws.close(); } catch {} this.ws = null; } this.ok = false; }
-  close() { this.dead = true; clearTimeout(this.timer); if (this.ws) { this.ws.onclose = null; try { this.ws.close(); } catch {} } }
-  setState(st) { this.state = st; scheduleRender(); }
+  pause() {this.paused=true;this.attempt=(this.attempt || 0)+1;this.rememberSeen();this.dropSockets();}
+  close() {this.dead=true;this.attempt=(this.attempt || 0)+1;this.dropSockets();}
+  setState(st) {this.state=st; scheduleRender();refreshComputerStatus(this);}
   send(m) { if (this.ws && this.ws.readyState === 1) { this.ws.send(JSON.stringify({ provider:S.provider, ...m })); return true; } return false; }
   call(m, timeout = 30000) {
     return new Promise((res) => {
@@ -236,6 +270,7 @@ class Conn {
     if (window.onAgentMessage?.(this, m, provider)) return;
     switch (m.t) {
       case "hello":
+        clearTimeout(this.deadline);this.heartbeatSupported=!!m.heartbeat;if(m.platform)this.s.platform=m.platform;this.rememberSeen();
         this.desktop = m.desktop;
         this.capabilities = m.providers || { codex:true, claude:false };
         if (Array.isArray(m.addrs) && JSON.stringify(m.addrs) !== JSON.stringify(this.s.alts || [])) { this.s.alts = m.addrs; saveServers(); }
@@ -244,6 +279,10 @@ class Conn {
         this.setState(m.desktop ? "on" : "nodesk");
         window.reconnectAgentViewer?.(this);
         break;
+      case "network":
+        if(Array.isArray(m.addrs)){this.s.alts=m.addrs;saveServers();refreshComputerStatus(this);}
+        break;
+      case "pong": break;
       case "threads":
         mark("threads:" + this.s.id);
         this.threads = m.threads || [];this.groups=m.groups || [];
@@ -455,7 +494,7 @@ $("macs-btn").onclick = () => openSheet("macs");
 $("ask").onclick = () => openSheet("new", {});
 
 function renderMachines() {
-  const dotCls = (c) => ({ on: "on", nodesk: "wait", off: "off", rejected: "off", bad: "off" }[c.state] || "wait");
+  const dotCls = (c) => ({ on: "on", nodesk: "on", off: "off", rejected: "off", bad: "off" }[c.state] || "wait");
   let h = S.servers.length > 1 ? `<button class="chip ${S.machine === "all" ? "on" : ""}" data-m="all">All Computers</button>` : "";
   for (const s of S.servers) {
     const c = conns.get(s.id);
@@ -2536,17 +2575,35 @@ const SHEETS = {
     };
   },
 
+  connection(sh,{server}) {
+    S.connectionID=server;
+    const draw=()=>{
+      const c=conns.get(server),s=S.servers.find(value=>value.id===server);if(!s)return;
+      const connected=c?.ok && c.state!=="wait",checking=c?.state==="wait",mac=!s.platform || s.platform==='darwin';
+      const last=c?.lastSeen || s.lastSeen;
+      const seen=last ? new Date(last).toLocaleString([], {dateStyle:"medium",timeStyle:"short"}) : "No connection recorded";
+      sh.innerHTML=`<div class="grip"></div><h2>${esc(s.name || hostOf(s.url))}</h2><div class="connection-body"><p class="connection-state" role="status"><span class="dot ${connected ? 'on' : checking ? 'wait' : 'off'}"></span>${checking ? loadingHTML('Connecting') : esc(computerStatus(c))}</p><dl class="connection-details"><dt>${connected ? 'Connected address' : 'Paired address'}</dt><dd>${esc(connected ? c.base : s.url)}</dd><dt>Last connected</dt><dd>${esc(connected ? 'Now' : seen)}</dd></dl>${connected ? '<p class="hint">The relay is responding. Usage and session controls are available.</p>' : '<p class="hint">Keep the computer awake. Away from home, connect Tailscale on both devices. If it stays offline, restart the relay on that computer. On a Mac, open fastcontrol Recovery in your home Applications folder.</p>'}<div class="sheet-actions"><button class="btn" data-connection-back>Computers</button><span class="grow"></span><button class="btn primary" data-connection-retry ${checking ? 'disabled' : ''}>${connected ? 'Reconnect' : 'Retry'}</button></div>${mac ? `<button class="mi" data-connection-copy>${I.copy}<span class="txt">Copy Mac recovery command<span class="d">Run in Terminal on ${esc(s.name || hostOf(s.url))}</span></span></button>` : ''}${connected ? `<button class="mi" data-connection-usage>${I.gear}<span class="txt">Usage and limits</span>${I.chev}</button>` : ''}</div>`;
+    };
+    S.redraw=draw;draw();
+    sh.onclick=e=>{
+      if(e.target.closest('[data-connection-back]'))openSheet('macs');
+      if(e.target.closest('[data-connection-retry]')){const c=conns.get(server);if(c){c.paused=false;c.backoff=300;c.connect();}}
+      if(e.target.closest('[data-connection-copy]'))copyText('bash "$HOME/.fastcontrol/repair.command"');
+      if(e.target.closest('[data-connection-usage]'))openUsage(server);
+    };
+  },
+
   macs(sh) {
     const draw = () => {
       const notif = Native ? (() => { try { return Native.notificationsEnabled(); } catch { return false; } })() : false;
-      const stateText = { on: "Connected", nodesk: "Connected, Desktop App Not Running", off: "Not Reachable", rejected: "Token Rejected", bad: "Bad Address", wait: "Connecting" };
+
       sh.innerHTML = `<div class="grip"></div><h2>Computers</h2>` +
         S.servers.map((s) => {
           const c = conns.get(s.id);
           const link = `fastcontrol://pair?url=${encodeURIComponent(s.url)}&t=${encodeURIComponent(s.token)}&name=${encodeURIComponent(s.name || "")}${s.pin ? "&pin="+s.pin : ""}`;
-          return `<div class="mi"><span class="dot ${c && c.state === "on" ? "on" : c && c.state === "nodesk" ? "wait" : "off"}"></span><span class="txt">${esc(s.name || hostOf(s.url))}<span class="d">${esc(s.url)}, ${stateText[c ? c.state : "wait"]}</span></span>` +
+          return `<div class="mi"><span class="dot ${c && c.state === "on" ? "on" : c && c.state === "nodesk" ? "on" : "off"}"></span><span class="txt">${esc(s.name || hostOf(s.url))}<span class="d">${esc(s.url)}<span class="computer-status" data-computer-status="${esc(s.id)}">${esc(computerStatus(c))}</span></span></span>` +
             (!Native ? `<a class="btn" style="text-decoration:none;font-size:13px;padding:7px 10px" href="${esc(link)}">Open In App</a>` : "") +
-            `<button class="chip" data-usage="${esc(s.id)}">Usage</button><button class="icon-btn" data-del="${s.id}" aria-label="Remove Mac">${I.trash}</button></div>`;
+            `<button class="chip" data-connection="${esc(s.id)}">Connection</button><button class="icon-btn" data-del="${s.id}" aria-label="Remove Mac">${I.trash}</button></div>`;
         }).join("") +
         (Native ? `<div class="toggle"><div><div style="font-weight:650">Notifications</div><div class="hint" style="margin:0;font-size:13px;color:var(--faint)">Finished Turns And Approvals</div></div><button class="switch${notif ? " on" : ""}" data-x="notif" aria-label="Notifications"></button></div>` : "") +
         (Native?.checkAppUpdates ? mi('app-updates',I.download,'Check for updates','fastcontrol '+esc(Native.appVersion()),I.chev) : '') +
@@ -2566,6 +2623,8 @@ const SHEETS = {
     draw();
     sh.onclick = async (e) => {
       if(e.target.closest('[data-act="app-updates"]')){openSheet('update');Native.checkAppUpdates(true);return;}
+      const connection=e.target.closest("[data-connection]");
+      if(connection){openSheet("connection",{server:connection.dataset.connection});return;}
       const usage = e.target.closest("[data-usage]");
       if(usage){openUsage(usage.dataset.usage);return;}
       const del = e.target.closest("[data-del]");

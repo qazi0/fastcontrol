@@ -69,6 +69,8 @@ Open the pairing link from `~/.fastcontrol/relay.log` on Mac or Linux, or `%USER
 
 Repeat the computer installation to add another host. Each computer keeps its own coding sessions and credentials.
 
+If a computer goes offline, open **Computers > Connection** for its status and retry control. On a Mac, open **fastcontrol Recovery.command** in your home Applications folder, or run `bash "$HOME/.fastcontrol/repair.command"`. It reconnects stopped Tailscale and restarts the relay, preserving your pairings. Use `--check` to inspect without restarting. The relay retries listeners automatically when network interfaces become available after login, wake or a connection change. A sleeping or powered-off Mac still needs to be woken.
+
 ## Encrypted connections
 
 The installer enables TLS for network connections. Android 0.2.10 or newer pairs with the computer's certificate using the `fastcontrol://pair` link in its relay log. Copy that complete link into Add Computer, or scan the QR shown when starting the relay without `-no-qr`. You do not need a domain or a public certificate.

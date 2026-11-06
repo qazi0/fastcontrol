@@ -65,7 +65,7 @@ type Hub struct {
 
 	listMu      sync.Mutex  // serializes refreshList
 	listRefresh atomic.Bool // coalesces client and session refresh requests
-	addrs       []string    // http://ip:port for every non-loopback listener, sent in hello
+	addrs       []string    // successful non-loopback listeners, guarded by mu
 
 	mu       sync.Mutex
 	clients  map[*Client]bool
@@ -337,6 +337,10 @@ func (h *Hub) handle(c *Client, raw []byte) {
 		ID       string `json:"id"`
 	}
 	if json.Unmarshal(raw, &route) != nil {
+		return
+	}
+	if route.Op == "ping" {
+		c.push(mustJSON(map[string]any{"t": "pong"}))
 		return
 	}
 	// File references are normalized once before routing to desktop, CLI or Claude.
