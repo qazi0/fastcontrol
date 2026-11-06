@@ -79,22 +79,28 @@ function saveServers() {
 }
 function sameRelayPairing(existing,url,token,pin) {
   if(existing.url===url)return true;
-  if(!pin)return false;
   if(typeof existing.pin==='string' && existing.pin)return existing.pin.toLowerCase()===pin;
   if(existing.token!==token)return false;
   const address=value=>{try{const u=new URL(value);return u.hostname+':'+(u.port || (u.protocol==='https:'?'443':'80'));}catch{return '';}};
   const next=address(url);
   return !!next && [existing.url,...(existing.alts||[])].some(value=>address(value)===next);
 }
-function addServer({ url, token, name, custom, pin = "" }) {
+function pairingAlternates(primary, values) {
+  const secure=primary.startsWith('https://');
+  return [...new Set((Array.isArray(values) ? values : []).filter(value=>{
+    try{const u=new URL(value);return (u.protocol==='http:' || u.protocol==='https:') && (!secure || u.protocol==='https:') && !u.username && !u.password && !u.search && !u.hash && (u.pathname==='/' || !u.pathname);}catch{return false;}
+  }).map(value=>new URL(value).origin))].filter(value=>value!==primary).slice(0,8);
+}
+function addServer({ url, token, name, custom, pin = "", alts = [] }) {
   url = url.replace(/\/+$/, "");
   pin=pin.toLowerCase();
   if (pin && (!/^https:\/\//.test(url) || !/^[a-f0-9]{64}$/.test(pin))) throw Error('Invalid secure pairing link');
   const index = S.servers.findIndex(x => sameRelayPairing(x,url,token,pin));
   const previous = S.servers[index];
+  const keepCustomName=!!previous?.custom && !custom;
   const s = {...previous,id:previous?.id || sid(),url,token,pin:pin || (previous?.url===url ? previous.pin || '' : ''),
-    name:name || previous?.name || hostOf(url),custom:name ? !!custom : !!previous?.custom};
-  s.alts=(s.alts || []).filter(value => !url.startsWith('https://') || value.startsWith('https://'));
+    name:keepCustomName ? previous.name : name || previous?.name || hostOf(url),custom:keepCustomName || (name ? !!custom : !!previous?.custom)};
+  s.alts=pairingAlternates(url,[...(Array.isArray(alts) ? alts : []),...(Array.isArray(s.alts) ? s.alts : [])]);
   if(index>=0)S.servers[index]=s;else S.servers.push(s);
   saveServers();syncConns();return s;
 }
@@ -501,7 +507,7 @@ function allThreads() {
   const out = [];
   for (const [id, c] of conns) {
     if (S.machine !== "all" && S.machine !== id) continue;
-    for (const t of c.threads) if (!t.subagent) { out.push({...t,sid:id}); }
+    for (const t of c.threads) if (!t.subagent) { out.push({...t,sid:id,running:!!t.running && c.ok && c.state!=="wait",attention:!!t.attention && c.ok && c.state!=="wait"}); }
   }
   return out;
 }
@@ -1484,7 +1490,7 @@ function renderStatus() {
 function renderActivity() {
   if(S.meta?.cached){$("activity").classList.add("hidden");return;}
   const pending = !!feed.querySelector(":scope > .u.pending");
-  const running = !!S.meta?.running || S.turns.at(-1)?.status === "inProgress" || pending;
+  const running = pending || (typeof S.meta?.running === "boolean" ? S.meta.running : S.turns.at(-1)?.status === "inProgress");
   $("activity").classList.toggle("hidden", !running || !!S.meta?.requests?.length);
 }
 let renderedMeta = "";
@@ -2708,7 +2714,7 @@ window.onAndroidIntent = function () {
   let it;
   try { const j = Native.consumeLaunchIntent(); if (!j) return; it = JSON.parse(j); } catch { return; }
   if (it.type === "pair" && it.url && it.token) {
-    const s = addServer({ url: it.url, token: it.token, name: it.name || "", pin: it.pin || "" });
+    const s = addServer({ url: it.url, token: it.token, name: it.name || "", pin: it.pin || "", alts: it.alts || [] });
     S.machine = s.id; store.set("machine", s.id);
     toast("Paired With " + (s.name || s.url));
     if (S.view === "home") renderHome();

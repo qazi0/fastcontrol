@@ -228,7 +228,7 @@ func (h *Hub) refreshList() {
 		if s := h.sessions[t.ID]; s != nil {
 			st := s.listState()
 			t.Live = st.live
-			if st.known {
+			if st.known && st.live {
 				t.Running, t.Attention = st.running, st.attention
 			}
 			if st.hasTurn {
@@ -755,7 +755,7 @@ func (s *Session) meta() Meta {
 		m = Meta{Mode: "tail", Title: s.title, Cwd: i.Cwd, Branch: i.Branch, Model: i.Model, Effort: i.Effort, Approval: i.Approval, Sandbox: i.Sandbox}
 		m.Connecting = s.connecting || s.awaitingSnapshot
 		if s.rv != nil {
-			m.Running = s.rv.running()
+			m.Running = liveRolloutRunning(s.rollout, s.rv.running())
 			m.CtxUsed, m.CtxMax = s.rv.ctxUsed, s.rv.ctxMax
 			m.HasOlder = s.rv.hasOlder(s.window)
 			if t := s.rv.lastTurn(); t != nil {
@@ -793,6 +793,9 @@ func (s *Session) openMessage() []byte {
 		}
 	} else if s.rv != nil {
 		turns = s.rv.snapshot(s.window)
+		if !meta.Running && s.rv.running() && len(turns) > 0 {
+			turns[len(turns)-1].Status = "interrupted"
+		}
 	}
 	if turns == nil {
 		turns = []Turn{}
@@ -1163,13 +1166,22 @@ func (s *Session) sendMeta() {
 	if !bytes.Equal(mb, s.lastMeta) {
 		s.lastMeta = mb
 		s.publishMeta(meta)
+		if s.state == nil && !meta.Running && s.rv != nil && s.rv.running() {
+			if turn := s.rv.lastTurn(); turn != nil {
+				s.broadcast(mustJSON(map[string]any{"t": "head", "id": s.id, "key": turn.Key, "status": "interrupted"}))
+			}
+		}
 		s.broadcast(mustJSON(map[string]any{"t": "meta", "id": s.id, "meta": meta}))
 	}
 }
 
 func (s *Session) pollRollout() {
 	ch, err := s.rv.poll()
-	if err != nil || ch == nil {
+	if err != nil {
+		return
+	}
+	if ch == nil {
+		s.sendMeta()
 		return
 	}
 	newSet := map[*Turn]bool{}

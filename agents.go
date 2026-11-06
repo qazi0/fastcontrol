@@ -63,7 +63,7 @@ func listSubagents(db, parent string) ([]ThreadInfo, error) {
 		agents[i].ParentID = parent
 		if st, err := os.Stat(agents[i].Rollout); err == nil {
 			status := tailStatus(agents[i].Rollout, st)
-			agents[i].Running, agents[i].LastMsg, agents[i].LastErr, agents[i].TurnAt, agents[i].Activity = status.running, status.lastMsg, status.lastErr, status.turnAt, status.activity
+			agents[i].LastMsg, agents[i].LastErr, agents[i].TurnAt, agents[i].Activity = status.lastMsg, status.lastErr, status.turnAt, status.activity
 		}
 	}
 	if agents == nil && err == nil {

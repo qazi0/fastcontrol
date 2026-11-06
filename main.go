@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"embed"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -79,13 +80,26 @@ func main() {
 	bind := flag.String("bind", "auto", "comma-separated IPs to bind, or 'auto' for loopback, Tailscale and physical LAN addresses")
 	tokenFile := flag.String("token-file", filepath.Join(home, ".fastcontrol", "token"), "pairing token file (created if missing)")
 	ipcPath := flag.String("ipc", defaultIPCPath(), "desktop app IPC socket")
-	flag.String("asar", desktopBundlePath(), "desktop app bundle, checked for IPC protocol changes")
+	asarFlag := flag.String("asar", "", "desktop app bundle, checked for IPC protocol changes")
 	installSpeech := flag.Bool("install-speech", false, "download and prepare the local speech model")
 	speechStatus := flag.Bool("speech-status", false, "print local speech model availability and exit")
 	usageJSON := flag.Bool("usage-json", false, "print this computer usage and limits as JSON, then exit")
 	secure := flag.Bool("tls", false, "encrypt network connections; pair Android with the printed certificate fingerprint")
 	noQR := flag.Bool("no-qr", false, "do not print the pairing QR code")
+	pair := flag.Bool("pair", false, "show the running relay's pairing QR and exit")
 	flag.Parse()
+	if *pair {
+		data, err := os.ReadFile(*tokenFile)
+		if err != nil {
+			log.Fatal("Install and start fastcontrol before pairing")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		if err = printPairing(ctx, *port, strings.TrimSpace(string(data)), os.Stdout); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if *installSpeech {
 		if err := newSpeech().install(); err != nil {
 			log.Fatal(err)
@@ -113,7 +127,10 @@ func main() {
 		log.Fatalf("Install Codex Or Claude Code Before Starting fastcontrol")
 	}
 
-	asar := flag.Lookup("asar").Value.String()
+	asar := *asarFlag
+	if asar == "" {
+		asar = desktopBundlePath()
+	}
 	if asar == "" {
 		log.Printf("Codex Uses The Local CLI On This Platform")
 	} else if drift, err := checkProtocolDrift(asar); err != nil {
@@ -264,6 +281,19 @@ func main() {
 		}
 		scheme = "https"
 	}
+	mux.HandleFunc("/pairing", cors(func(w http.ResponseWriter, r *http.Request) {
+		if !authed(r) {
+			http.Error(w, "bad token", http.StatusUnauthorized)
+			return
+		}
+		if r.Method != "GET" {
+			http.Error(w, "GET required", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(pairingInfo{Host: hostName(), URLs: hub.addresses(), Pin: pin})
+	}))
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	resolve := func() []string { return addrs }
 	if *bind == "auto" {

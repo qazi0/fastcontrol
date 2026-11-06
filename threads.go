@@ -167,6 +167,7 @@ func queryThreads(db, query string) ([]ThreadInfo, error) {
 		}
 		res = append(res, t)
 	}
+	confirmThreadActivity(res)
 	return res, nil
 }
 

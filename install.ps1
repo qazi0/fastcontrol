@@ -57,5 +57,6 @@ try {
     $Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Principal $Principal -Settings $Settings -Force | Out-Null
     Start-ScheduledTask -TaskName $TaskName
-    Write-Host "Installed fastcontrol. Pairing links appear in $Directory\relay.log. Allow incoming access on your trusted private network if Windows prompts."
+    Write-Host "Installed fastcontrol. Show the pairing QR: & '$Directory\fastcontrol.exe' -pair"
+    if ([Environment]::UserInteractive -and -not [Console]::IsOutputRedirected) { & (Join-Path $Directory 'fastcontrol.exe') -pair }
 } finally { Remove-Item $Work -Recurse -Force }

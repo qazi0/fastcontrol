@@ -284,6 +284,7 @@ class MainActivity : Activity() {
                 .put("token", data.getQueryParameter("t") ?: "")
                 .put("pin", data.getQueryParameter("pin") ?: "")
                 .put("name", data.getQueryParameter("name") ?: "")
+                .put("alts", runCatching { org.json.JSONArray(data.getQueryParameter("alts") ?: "[]") }.getOrDefault(org.json.JSONArray()))
                 .toString()
         }
         return ""

@@ -92,7 +92,8 @@ if [[ "$platform" == Linux ]]; then
   kill -0 "$relay_pid" 2>/dev/null || { echo "Relay Did Not Start. See $dir/relay.log" >&2; exit 1; }
   echo "Started In The Background. A systemd User Service Is Needed For Automatic Login Startup."
  fi
- echo "Installed fastcontrol. Pairing links are in $dir/relay.log."
+ echo "Installed fastcontrol. Show the pairing QR: $dir/fastcontrol -pair"
+ if [[ -t 1 ]]; then "$dir/fastcontrol" -pair || true; fi
  exit 0
 fi
 if [[ ! -f "$HOME/Library/LaunchAgents/com.fastcontrol.plist" ]]; then
@@ -101,6 +102,9 @@ fi
 install -m 755 fastcontrol-repair.command "$dir/repair.command"
 mkdir -p "$HOME/Applications"
 ln -sfn "$dir/repair.command" "$HOME/Applications/fastcontrol Recovery.command"
+printf '#!/bin/bash\n"$HOME/.fastcontrol/fastcontrol" -pair\nread -r -p "Press Return to close. " ignored\n' > "$dir/pair.command"
+chmod 755 "$dir/pair.command"
+ln -sfn "$dir/pair.command" "$HOME/Applications/fastcontrol Pair.command"
 plist="$HOME/Library/LaunchAgents/com.fastcontrol.plist"
 if [[ "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments' "$plist")" != *"-tls"* ]]; then
   /usr/libexec/PlistBuddy -c 'Add :ProgramArguments: string -tls' "$plist"
@@ -111,4 +115,5 @@ if launchctl print "$label" >/dev/null 2>&1; then
 else
   launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.fastcontrol.plist"
 fi
-echo "Installed fastcontrol. Pairing links are in $dir/relay.log."
+echo "Installed fastcontrol. Show the pairing QR: $dir/fastcontrol -pair"
+if [[ -t 1 ]]; then "$dir/fastcontrol" -pair || true; fi
