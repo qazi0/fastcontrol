@@ -86,9 +86,19 @@ class MainActivity : Activity() {
     private var pendingImage: File? = null
     private var pendingAttachments: String? = null
     private var pendingAppInstall = false
+    private var networkMonitor: NetworkMonitor? = null
     private val updateObserver: (String) -> Unit = { state ->
         if (!isDestroyed) webView.evaluateJavascript("window.onAppUpdate && window.onAppUpdate($state)", null)
     }
+    private val discoveryObserver: (DiscoveredRelay) -> Unit = { discovery ->
+        if (!isDestroyed) {
+            val payload = jsSafeJson(discovery.toJson().toString())
+            webView.evaluateJavascript("window.onRelayDiscovered && window.onRelayDiscovered($payload)", null)
+        }
+    }
+
+    private fun jsSafeJson(json: String): String =
+        json.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
 
     @Volatile private var pendingLaunch = ""
 
@@ -160,6 +170,32 @@ class MainActivity : Activity() {
             pendingLaunch = savedInstanceState.getString("pendingLaunch", "")
             if (webView.restoreState(savedInstanceState) == null) webView.loadUrl(START_URL)
         }
+
+        networkMonitor = NetworkMonitor(this, tag = "MainActivityNet") { event ->
+            relayTransport.onNetworkChange()
+            if (event.lanChanged && event.online) {
+                RelayDiscovery.restart(this)
+            }
+            if (!isDestroyed) {
+                val payload = event.toJson().toString()
+                webView.evaluateJavascript(
+                    "var fn = window.onAndroidNetworkChange || window.onNetworkChange; if (fn) fn($payload);",
+                    null,
+                )
+            }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        networkMonitor?.start()
+        RelayDiscovery.acquire(this, "main", discoveryObserver)
+    }
+
+    override fun onStop() {
+        RelayDiscovery.release("main")
+        networkMonitor?.stop()
+        super.onStop()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -199,6 +235,7 @@ class MainActivity : Activity() {
         updateVoiceScreenState()
         restoreVoiceSession()
         webView.evaluateJavascript("window.restoreAppUpdates && window.restoreAppUpdates()", null)
+        replayDiscoveries()
         AppUpdates.installReturned()
         if (pendingAppInstall) {
             pendingAppInstall = false
@@ -219,6 +256,9 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        RelayDiscovery.release("main")
+        networkMonitor?.stop()
+        networkMonitor = null
         if (AppUpdates.observer === updateObserver) AppUpdates.observer = null
         if (VoiceCaptureService.observer === voiceObserver) VoiceCaptureService.observer = null
         if (ImageUploads.observer === uploadObserver) ImageUploads.observer = null
@@ -226,6 +266,14 @@ class MainActivity : Activity() {
         relayTransport.dispose()
         webView.destroy()
         super.onDestroy()
+    }
+
+    private fun replayDiscoveries() {
+        if (isDestroyed) return
+        for (discovery in RelayDiscovery.snapshotForSavedServers(this)) {
+            val payload = jsSafeJson(discovery.toJson().toString())
+            webView.evaluateJavascript("window.onRelayDiscovered && window.onRelayDiscovered($payload)", null)
+        }
     }
 
     private fun updateVoiceScreenState() {
@@ -394,7 +442,10 @@ class MainActivity : Activity() {
 
     private inner class ShellClient : WebViewClient() {
         override fun onPageFinished(view: WebView, url: String) {
-            if (!isDestroyed && UiState.resumed) view.evaluateJavascript("window.finishVoiceRestore && window.finishVoiceRestore(); window.restoreAttachmentUploads && window.restoreAttachmentUploads(); window.restoreAppUpdates && window.restoreAppUpdates()", null)
+            if (!isDestroyed && UiState.resumed) {
+                view.evaluateJavascript("window.finishVoiceRestore && window.finishVoiceRestore(); window.restoreAttachmentUploads && window.restoreAttachmentUploads(); window.restoreAppUpdates && window.restoreAppUpdates()", null)
+                replayDiscoveries()
+            }
         }
         override fun shouldInterceptRequest(
             view: WebView, request: WebResourceRequest
@@ -618,6 +669,9 @@ class MainActivity : Activity() {
         fun getServers(): String = Store.serversJson(ctx)
 
         @JavascriptInterface
+        fun getDiscoveredRelays(): String = RelayDiscovery.snapshotJson(ctx)
+
+        @JavascriptInterface
         fun downloadImage(serverId: String, base: String, path: String) {
             val server = Store.servers(ctx).firstOrNull { it.id == serverId && base.trimEnd('/') in it.urls.map { u -> u.trimEnd('/') } } ?: return
             val url = base.trimEnd('/') + "/image?path=" + java.net.URLEncoder.encode(path, "UTF-8")
@@ -741,7 +795,10 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun setServers(json: String) {
             Store.setServersJson(ctx, json)
-            runOnUiThread { RelayWatchService.reloadIfRunning() }
+            runOnUiThread {
+                RelayDiscovery.rematchSavedServers(ctx)
+                RelayWatchService.reloadIfRunning()
+            }
         }
 
         @JavascriptInterface

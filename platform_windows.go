@@ -31,6 +31,22 @@ func killProcess(p *os.Process) {
 	_ = cmd.Run()
 	_ = p.Kill()
 }
+func platformProcessAlive(pid int) bool {
+	const (
+		processQueryLimitedInformation = 0x1000
+		stillActive                    = 259
+	)
+	h, err := syscall.OpenProcess(processQueryLimitedInformation, false, uint32(pid))
+	if err != nil {
+		return errors.Is(err, syscall.ERROR_ACCESS_DENIED) || errors.Is(err, os.ErrPermission)
+	}
+	defer syscall.CloseHandle(h)
+	var exitCode uint32
+	if err := syscall.GetExitCodeProcess(h, &exitCode); err != nil {
+		return false
+	}
+	return exitCode == stillActive
+}
 func dialDesktopIPC(path string) (net.Conn, error) {
 	timeout := 5 * time.Second
 	return winio.DialPipe(path, &timeout)

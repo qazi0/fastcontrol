@@ -18,9 +18,11 @@ import (
 	"net/http"
 	neturl "net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/coder/websocket"
@@ -144,6 +146,9 @@ func main() {
 		log.Printf("desktop IPC protocol versions match")
 	}
 
+	runCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+
 	ipc := NewIPCClient(*ipcPath)
 	hub := NewHub(ipc, db)
 	if runtime.GOOS == "linux" {
@@ -152,9 +157,9 @@ func main() {
 		go ipc.Run()
 	}
 	hub.claude = newClaudeManager(hub)
-	go hub.claude.run(context.Background())
+	go hub.claude.run(runCtx)
 	hub.refreshList()
-	go hub.RunList(context.Background())
+	go hub.RunList(runCtx)
 
 	sub, _ := fs.Sub(webFS, "web")
 	static := http.FileServer(http.FS(sub))
@@ -269,12 +274,15 @@ func main() {
 	scheme, pin := "http", ""
 	var tlsConfig *tls.Config
 	var identity *relayTLS
+	hostResolver := newSystemHostnameResolver()
 	if *secure {
 		var err error
-		names := append(append([]string(nil), addrs...), "localhost", "127.0.0.1", "::1")
-		for i := range names {
-			names[i] = strings.TrimSpace(names[i])
+		wantedLAN, wantedTS := listenerKinds(addrs)
+		var initialHosts relayHostnames
+		if wantedLAN || wantedTS {
+			initialHosts = sanitizeRelayHostnames(hostResolver(wantedLAN, wantedTS))
 		}
+		names := relayCertNames(addrs, initialHosts)
 		tlsConfig, pin, identity, err = newRelayTLSIdentity(filepath.Join(home, ".fastcontrol", "tls"), names)
 		if err != nil {
 			log.Fatalf("TLS identity: %v", err)
@@ -299,9 +307,19 @@ func main() {
 	if *bind == "auto" {
 		resolve = func() []string { next, _ := autoAddrs(); return next }
 	}
+	mdns := newMDNSAdvertiser(mdnsServiceConfig{
+		Instance: hostName(),
+		Host:     localHostLabel(),
+		Port:     *port,
+		TLS:      *secure,
+		Token:    token,
+	})
+	defer mdns.Close()
 	network := newRelayListeners(srv, *port, tlsConfig, identity, hub.setAddresses)
+	network.hostnames = hostResolver
+	network.onLANState = mdns.SetLANState
 	network.reconcile(resolve())
-	go network.run(context.Background(), resolve, 5*time.Second)
+	go network.run(runCtx, resolve, 5*time.Second)
 
 	if ip := net.ParseIP(preferred); ip != nil && ip.IsLoopback() {
 		scheme = "http"
@@ -321,12 +339,37 @@ func main() {
 		}
 		qrterminal.GenerateHalfBlock(qrURL, qrterminal.L, os.Stdout)
 	}
-	select {}
+	<-runCtx.Done()
+	mdns.Close()
+	shutCtx, shutCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer shutCancel()
+	_ = srv.Shutdown(shutCtx)
 }
 
 func serveClient(ctx context.Context, hub *Hub, conn *websocket.Conn, eventsOnly bool) {
 	c := &Client{hub: hub, out: make(chan []byte, 1024), done: make(chan struct{}), eventsOnly: eventsOnly, events: eventsOnly}
-	hub.addClient(c)
+	// addrs lets clients fall back between Wi-Fi, .local and Tailscale with one pairing.
+	host, desktop := hostName(), hub.ipc != nil && hub.ipc.ClientID() != ""
+	var recoveryPeers []publicRecoveryPeer
+	if hub.recovery != nil {
+		recoveryPeers = hub.recovery.public
+	}
+	providers := map[string]bool{"codex": hub.db != "", "claude": hub.claude != nil && hub.claude.bin != ""}
+	// Register c and enqueue hello atomically under hub.mu before any initial
+	// thread snapshot or subsequent network update can reach c.out.
+	hub.registerClient(c, func(addrs []string) []byte {
+		return mustJSON(map[string]any{
+			"t":             "hello",
+			"host":          host,
+			"desktop":       desktop,
+			"v":             3,
+			"addrs":         addrs,
+			"heartbeat":     true,
+			"platform":      runtime.GOOS,
+			"recoveryPeers": recoveryPeers,
+			"providers":     providers,
+		})
+	})
 	defer hub.removeClient(c)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -357,17 +400,6 @@ func serveClient(ctx context.Context, hub *Hub, conn *websocket.Conn, eventsOnly
 			}
 		}
 	}()
-	// addrs lets clients fall back between Wi-Fi and Tailscale with one pairing.
-	host, desktop := hostName(), hub.ipc.ClientID() != ""
-	var recoveryPeers []publicRecoveryPeer
-	if hub.recovery != nil {
-		recoveryPeers = hub.recovery.public
-	}
-	// Serialize hello with network updates so an older address snapshot cannot
-	// arrive after a newer network message on this connection.
-	hub.mu.Lock()
-	c.push(mustJSON(map[string]any{"t": "hello", "host": host, "desktop": desktop, "v": 3, "addrs": hub.addrs, "heartbeat": true, "platform": runtime.GOOS, "recoveryPeers": recoveryPeers, "providers": map[string]bool{"codex": hub.db != "", "claude": hub.claude != nil && hub.claude.bin != ""}}))
-	hub.mu.Unlock()
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {

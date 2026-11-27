@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"os"
@@ -10,11 +11,15 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
+
+const defaultClaudeRecencyBroadcastInterval = 15 * time.Second
 
 type claudePreference struct {
 	Title      string `json:"title,omitempty"`
@@ -32,14 +37,344 @@ type claudeEntry struct {
 	Size     int64
 }
 type claudeActive struct {
-	ID        string `json:"id"`
-	SessionID string `json:"sessionId"`
-	Cwd       string `json:"cwd"`
-	State     string `json:"state"`
+	ID              string `json:"id,omitempty"`
+	PID             int    `json:"pid,omitempty"`
+	SessionID       string `json:"sessionId,omitempty"`
+	HostSessionID   string `json:"hostSessionId,omitempty"`
+	Cwd             string `json:"cwd,omitempty"`
+	Kind            string `json:"kind,omitempty"`
+	Name            string `json:"name,omitempty"`
+	State           string `json:"state,omitempty"`
+	Status          string `json:"status,omitempty"`
+	StartedAt       int64  `json:"startedAt,omitempty"`
+	StatusUpdatedAt int64  `json:"statusUpdatedAt,omitempty"`
+	UpdatedAt       int64  `json:"updatedAt,omitempty"`
 }
+
+func (a *claudeActive) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		ID              string          `json:"id"`
+		PID             json.RawMessage `json:"pid"`
+		SessionID       string          `json:"sessionId"`
+		HostSessionID   string          `json:"hostSessionId"`
+		Cwd             string          `json:"cwd"`
+		Kind            string          `json:"kind"`
+		Name            string          `json:"name"`
+		State           string          `json:"state"`
+		Status          string          `json:"status"`
+		StartedAt       json.RawMessage `json:"startedAt"`
+		StatusUpdatedAt json.RawMessage `json:"statusUpdatedAt"`
+		UpdatedAt       json.RawMessage `json:"updatedAt"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*a = claudeActive{
+		ID:              strings.TrimSpace(raw.ID),
+		PID:             parseClaudePID(raw.PID),
+		SessionID:       strings.TrimSpace(raw.SessionID),
+		HostSessionID:   strings.TrimSpace(raw.HostSessionID),
+		Cwd:             strings.TrimSpace(raw.Cwd),
+		Kind:            strings.TrimSpace(raw.Kind),
+		Name:            strings.TrimSpace(raw.Name),
+		State:           normalizeClaudeState(raw.State),
+		Status:          strings.TrimSpace(raw.Status),
+		StartedAt:       parseClaudeMillis(raw.StartedAt),
+		StatusUpdatedAt: parseClaudeMillis(raw.StatusUpdatedAt),
+		UpdatedAt:       parseClaudeMillis(raw.UpdatedAt),
+	}
+	if status := normalizeClaudeState(raw.Status); status != "" {
+		a.State = status
+	}
+	if a.ID == "" {
+		a.ID = a.derivedOwnerID()
+	}
+	return nil
+}
+
+func normalizeClaudeState(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	switch s {
+	case "":
+		return ""
+	case "running", "busy":
+		return "running"
+	case "blocked", "waiting", "needs_attention", "needs-attention", "permission":
+		return "blocked"
+	case "idle":
+		return "idle"
+	default:
+		return s
+	}
+}
+
+func parseClaudePID(raw json.RawMessage) int {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return 0
+	}
+	var n int
+	if json.Unmarshal(raw, &n) == nil && n > 0 {
+		return n
+	}
+	var f float64
+	if json.Unmarshal(raw, &f) == nil && f > 0 && f == float64(int(f)) {
+		return int(f)
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(s)); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return 0
+}
+
+func normalizeClaudeMillis(n int64) int64 {
+	if n <= 0 {
+		return 0
+	}
+	if n >= 1_000_000_000 && n < 100_000_000_000 {
+		return n * 1000
+	}
+	return n
+}
+
+func parseClaudeMillis(raw json.RawMessage) int64 {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return 0
+	}
+	var n int64
+	if json.Unmarshal(raw, &n) == nil && n > 0 {
+		return normalizeClaudeMillis(n)
+	}
+	var f float64
+	if json.Unmarshal(raw, &f) == nil && f > 0 {
+		return normalizeClaudeMillis(int64(f))
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		s = strings.TrimSpace(s)
+		if parsed, err := strconv.ParseInt(s, 10, 64); err == nil && parsed > 0 {
+			return normalizeClaudeMillis(parsed)
+		}
+		if ts := claudeTime(s); ts > 0 {
+			return ts
+		}
+	}
+	return 0
+}
+
+func (a claudeActive) derivedOwnerID() string {
+	if a.PID > 0 {
+		return "pid:" + strconv.Itoa(a.PID)
+	}
+	if a.HostSessionID != "" {
+		return "host:" + a.HostSessionID
+	}
+	if a.SessionID != "" {
+		return "session:" + a.SessionID
+	}
+	return ""
+}
+
+func (a claudeActive) ownerID() string {
+	if id := strings.TrimSpace(a.ID); id != "" {
+		return id
+	}
+	return a.derivedOwnerID()
+}
+
+func (a claudeActive) backgroundID() string {
+	id := strings.TrimSpace(a.ID)
+	if id == "" || strings.HasPrefix(id, "pid:") || strings.HasPrefix(id, "host:") || strings.HasPrefix(id, "session:") {
+		return ""
+	}
+	return id
+}
+
+func (a claudeActive) normalizedState() string {
+	if s := normalizeClaudeState(a.State); s != "" {
+		return s
+	}
+	return normalizeClaudeState(a.Status)
+}
+
+func (a claudeActive) present() bool {
+	return a.ownerID() != "" || a.normalizedState() != ""
+}
+
+func (a claudeActive) isRunning() bool {
+	return a.normalizedState() == "running"
+}
+
+func (a claudeActive) isAttention() bool {
+	return a.normalizedState() == "blocked"
+}
+
+func (a claudeActive) isBusy() bool {
+	s := a.normalizedState()
+	return s == "running" || s == "blocked"
+}
+
+func (a claudeActive) effectiveTurnAt() int64 {
+	if !a.isBusy() {
+		return 0
+	}
+	if a.StatusUpdatedAt > 0 {
+		return a.StatusUpdatedAt
+	}
+	if a.StartedAt > 0 {
+		return a.StartedAt
+	}
+	return a.UpdatedAt
+}
+
+func (a claudeActive) recencyStamp() int64 {
+	best := a.StatusUpdatedAt
+	if a.UpdatedAt > best {
+		best = a.UpdatedAt
+	}
+	if a.StartedAt > best {
+		best = a.StartedAt
+	}
+	return best
+}
+
+func (a claudeActive) watchKey() string {
+	if !a.present() {
+		return ""
+	}
+	return a.ownerID() + ":" + a.normalizedState() + ":" + strconv.FormatInt(a.effectiveTurnAt(), 10)
+}
+
+func mergeClaudeActiveSession(base, session claudeActive) claudeActive {
+	if session.SessionID != "" && base.SessionID != "" && session.SessionID != base.SessionID {
+		return base
+	}
+	merged := base
+	if merged.SessionID == "" {
+		merged.SessionID = session.SessionID
+	}
+	if merged.PID == 0 {
+		merged.PID = session.PID
+	}
+	if merged.HostSessionID == "" {
+		merged.HostSessionID = session.HostSessionID
+	}
+	if merged.Cwd == "" {
+		merged.Cwd = session.Cwd
+	}
+	if merged.Kind == "" {
+		merged.Kind = session.Kind
+	}
+	if merged.Name == "" {
+		merged.Name = session.Name
+	}
+	if merged.StartedAt == 0 {
+		merged.StartedAt = session.StartedAt
+	}
+	if session.UpdatedAt > merged.UpdatedAt {
+		merged.UpdatedAt = session.UpdatedAt
+	}
+	baseState := merged.normalizedState()
+	sessionState := session.normalizedState()
+	if baseState == "" && sessionState != "" {
+		merged.State = sessionState
+		if merged.Status == "" {
+			merged.Status = session.Status
+		}
+		if session.StatusUpdatedAt > merged.StatusUpdatedAt {
+			merged.StatusUpdatedAt = session.StatusUpdatedAt
+		}
+	} else if sessionState == "" || sessionState == baseState {
+		if session.StatusUpdatedAt > merged.StatusUpdatedAt {
+			merged.StatusUpdatedAt = session.StatusUpdatedAt
+		}
+	}
+	if merged.ID == "" {
+		merged.ID = merged.derivedOwnerID()
+	}
+	return merged
+}
+
+func preferClaudeActive(existing, candidate claudeActive) claudeActive {
+	if !existing.present() {
+		return candidate
+	}
+	if !candidate.present() {
+		return existing
+	}
+	if existing.PID > 0 && existing.PID == candidate.PID {
+		return mergeClaudeActiveSession(existing, candidate)
+	}
+	if candidate.isBusy() != existing.isBusy() {
+		if candidate.isBusy() {
+			return candidate
+		}
+		return existing
+	}
+	if candidate.recencyStamp() > existing.recencyStamp() {
+		return candidate
+	}
+	return existing
+}
+
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	return platformProcessAlive(pid)
+}
+
+func signalExternalPID(pid int) error {
+	if pid <= 0 {
+		return errors.New("Invalid Process ID")
+	}
+	if pid == os.Getpid() {
+		return errors.New("Refusing To Stop Relay Process")
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	if runtime.GOOS == "windows" {
+		defer p.Release()
+		return p.Kill()
+	}
+	err = p.Signal(syscall.SIGTERM)
+	if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	return err
+}
+
+func claudeListSignature(list []ThreadInfo, groups []OrganizationGroup) [32]byte {
+	stripped := make([]ThreadInfo, len(list))
+	extra := make([]string, len(list))
+	for i, t := range list {
+		t.Recency = 0
+		stripped[i] = t
+		if t.Model != "" || t.Effort != "" {
+			extra[i] = t.Model + "\x00" + t.Effort
+		}
+	}
+	return sha256.Sum256(mustJSON(struct {
+		Threads []ThreadInfo        `json:"threads"`
+		Groups  []OrganizationGroup `json:"groups"`
+		Extra   []string            `json:"extra"`
+	}{Threads: stripped, Groups: groups, Extra: extra}))
+}
+
 type ClaudeManager struct {
 	hub                        *Hub
 	bin, root, preferencesPath string
+	sessionsDir                string
+	pidAlive                   func(int) bool
+	stopExternalFn             func(context.Context, claudeActive) error
+	now                        func() time.Time
+	recencyBroadcastInterval   time.Duration
 	mu                         sync.Mutex
 	entries                    map[string]claudeEntry
 	runs                       map[string]*ClaudeRun
@@ -50,15 +385,54 @@ type ClaudeManager struct {
 	modelsAt                   time.Time // model catalog publication time, guarded by mu
 	active                     map[string]claudeActive
 	lastList                   []byte
+	lastBroadcast              []byte
+	lastBroadcastSig           [32]byte
+	lastBroadcastAt            time.Time
 	orgState                   OrganizationSnapshot // immutable after publication under mu
 	watchedMod                 map[string]time.Time
+	watchedActive              map[string]string
 	refreshMu                  sync.Mutex
+	activeMu                   sync.Mutex
 	refreshJob                 atomic.Bool
 	modelsMu                   sync.Mutex
 	workMu                     sync.Mutex // index lookup only; each index owns its append cursor
 	workIndexes                map[string]*claudeWorkIndex
 	workSummaries              map[string]claudeWorkSummary           // immutable values guarded by workMu
 	workWatch                  map[*Client]map[string]claudeWorkWatch // guarded by mu
+}
+
+func (m *ClaudeManager) nowTime() time.Time {
+	if m.now != nil {
+		return m.now()
+	}
+	return time.Now()
+}
+
+func (m *ClaudeManager) recencyThrottle() time.Duration {
+	if m.recencyBroadcastInterval > 0 {
+		return m.recencyBroadcastInterval
+	}
+	return defaultClaudeRecencyBroadcastInterval
+}
+
+func (m *ClaudeManager) isPIDAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	if m.pidAlive != nil {
+		return m.pidAlive(pid)
+	}
+	return processAlive(pid)
+}
+
+func (m *ClaudeManager) claudeSessionsDir() string {
+	if m.sessionsDir != "" {
+		return m.sessionsDir
+	}
+	if m.root != "" {
+		return filepath.Join(filepath.Dir(m.root), "sessions")
+	}
+	return ""
 }
 
 func claudeBinary() string {
@@ -73,7 +447,21 @@ func claudeBinary() string {
 }
 func newClaudeManager(h *Hub) *ClaudeManager {
 	home, _ := os.UserHomeDir()
-	m := &ClaudeManager{hub: h, bin: claudeBinary(), root: filepath.Join(home, ".claude/projects"), preferencesPath: filepath.Join(home, ".fastcontrol/claude-state.json"), entries: map[string]claudeEntry{}, runs: map[string]*ClaudeRun{}, watch: map[*Client]map[string]int{}, prefs: map[string]claudePreference{}, active: map[string]claudeActive{}, watchedMod: map[string]time.Time{}}
+	m := &ClaudeManager{
+		hub:                      h,
+		bin:                      claudeBinary(),
+		root:                     filepath.Join(home, ".claude/projects"),
+		sessionsDir:              filepath.Join(home, ".claude/sessions"),
+		preferencesPath:          filepath.Join(home, ".fastcontrol/claude-state.json"),
+		entries:                  map[string]claudeEntry{},
+		runs:                     map[string]*ClaudeRun{},
+		watch:                    map[*Client]map[string]int{},
+		prefs:                    map[string]claudePreference{},
+		active:                   map[string]claudeActive{},
+		watchedMod:               map[string]time.Time{},
+		watchedActive:            map[string]string{},
+		recencyBroadcastInterval: defaultClaudeRecencyBroadcastInterval,
+	}
 	if b, err := os.ReadFile(m.preferencesPath); err == nil {
 		_ = json.Unmarshal(b, &m.prefs)
 	}
@@ -196,10 +584,13 @@ func (m *ClaudeManager) refresh() {
 			continue
 		}
 		info := e.Info
-		if a, ok := active[id]; ok {
-			info.Running = a.State == "running"
-			info.Attention = a.State == "blocked"
+		if a, ok := active[id]; ok && a.present() {
+			info.Running = a.isRunning()
+			info.Attention = a.isAttention()
 			info.Active = true
+			if info.Running || info.Attention {
+				info.TurnAt = a.effectiveTurnAt()
+			}
 		}
 		if r := runs[id]; r != nil {
 			meta, _ := r.snapshot()
@@ -210,13 +601,23 @@ func (m *ClaudeManager) refresh() {
 		}
 		list = append(list, info)
 	}
+	now := m.nowTime()
 	for id, r := range runs {
 		if _, ok := next[id]; !ok {
 			meta, _ := r.snapshot()
-			list = append(list, ThreadInfo{ID: id, Provider: "claude", Title: meta.Title, Cwd: meta.Cwd, Model: meta.Model, Effort: meta.Effort, Source: "claude", Live: true, Running: meta.Running, Attention: len(meta.Requests) > 0, Recency: time.Now().UnixMilli()})
+			recency := meta.TurnAt
+			if recency == 0 {
+				recency = now.UnixMilli()
+			}
+			list = append(list, ThreadInfo{ID: id, Provider: "claude", Title: meta.Title, Cwd: meta.Cwd, Model: meta.Model, Effort: meta.Effort, Source: "claude", Live: true, Running: meta.Running, Attention: len(meta.Requests) > 0, TurnAt: meta.TurnAt, Recency: recency})
 		}
 	}
-	sort.Slice(list, func(i, j int) bool { return list[i].Recency > list[j].Recency })
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].Recency != list[j].Recency {
+			return list[i].Recency > list[j].Recency
+		}
+		return list[i].ID < list[j].ID
+	})
 	organization := emptyOrganization()
 	if m.hub.organization != nil && len(list) > 0 {
 		ids := make([]string, len(list))
@@ -242,12 +643,27 @@ func (m *ClaudeManager) refresh() {
 	}
 	list = applyThreadOrganization(list, organization)
 	b := mustJSON(map[string]any{"t": "threads", "provider": "claude", "threads": list, "groups": organization.Groups})
+	throttle := m.recencyThrottle()
 	m.mu.Lock()
-	changed := !bytes.Equal(b, m.lastList)
 	m.lastList = b
 	m.orgState = organization
+	shouldBroadcast := false
+	if len(m.lastBroadcast) == 0 {
+		shouldBroadcast = true
+		m.lastBroadcastSig = claudeListSignature(list, organization.Groups)
+	} else if !bytes.Equal(b, m.lastBroadcast) {
+		sig := claudeListSignature(list, organization.Groups)
+		if sig != m.lastBroadcastSig || now.Sub(m.lastBroadcastAt) >= throttle {
+			shouldBroadcast = true
+			m.lastBroadcastSig = sig
+		}
+	}
+	if shouldBroadcast {
+		m.lastBroadcast = b
+		m.lastBroadcastAt = now
+	}
 	m.mu.Unlock()
-	if changed {
+	if shouldBroadcast {
 		m.hub.mu.Lock()
 		var clients []*Client
 		for c := range m.hub.clients {
@@ -261,26 +677,132 @@ func (m *ClaudeManager) refresh() {
 		}
 	}
 }
-func (m *ClaudeManager) refreshActive() {
-	if m.bin == "" {
-		return
+
+func (m *ClaudeManager) readClaudeSessionFiles() (map[int]claudeActive, bool) {
+	dir := m.claudeSessionsDir()
+	if dir == "" {
+		return nil, false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, m.bin, "agents", "--json").Output()
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return
+		return nil, false
 	}
+	byPID := map[int]claudeActive{}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		pidText := strings.TrimSuffix(name, ".json")
+		if pidText == "" {
+			continue
+		}
+		pid, err := strconv.Atoi(pidText)
+		if err != nil || pid <= 0 || strconv.Itoa(pid) != pidText {
+			continue
+		}
+		if !m.isPIDAlive(pid) {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		st, err := os.Lstat(path)
+		if err != nil || !st.Mode().IsRegular() || st.Size() <= 0 || st.Size() > 64<<10 {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var sf claudeActive
+		if json.Unmarshal(data, &sf) != nil {
+			continue
+		}
+		if sf.PID == 0 {
+			sf.PID = pid
+		}
+		if sf.PID != pid {
+			continue
+		}
+		if sf.ID == "" {
+			sf.ID = sf.derivedOwnerID()
+		}
+		if sf.SessionID == "" {
+			continue
+		}
+		byPID[pid] = sf
+	}
+	return byPID, true
+}
+
+func (m *ClaudeManager) refreshActive() {
+	m.activeMu.Lock()
+	defer m.activeMu.Unlock()
 	var values []claudeActive
-	if json.Unmarshal(out, &values) != nil {
+	agentsOK := false
+	if m.bin != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		out, err := exec.CommandContext(ctx, m.bin, "agents", "--json").Output()
+		cancel()
+		if err == nil && json.Unmarshal(out, &values) == nil {
+			agentsOK = true
+		}
+	}
+	sessionByPID, sessionsOK := m.readClaudeSessionFiles()
+	if !agentsOK && !sessionsOK {
 		return
 	}
 	active := map[string]claudeActive{}
-	for _, a := range values {
-		active[a.SessionID] = a
+	if agentsOK {
+		for _, a := range values {
+			if a.SessionID == "" {
+				continue
+			}
+			if a.PID > 0 {
+				if !m.isPIDAlive(a.PID) {
+					continue
+				}
+				if sf, ok := sessionByPID[a.PID]; ok {
+					a = mergeClaudeActiveSession(a, sf)
+				}
+			}
+			if a.ID == "" {
+				a.ID = a.derivedOwnerID()
+			}
+			if !a.present() {
+				continue
+			}
+			active[a.SessionID] = preferClaudeActive(active[a.SessionID], a)
+		}
+	}
+	for _, sf := range sessionByPID {
+		if sf.SessionID == "" || !sf.present() {
+			continue
+		}
+		if existing, ok := active[sf.SessionID]; ok {
+			if existing.PID == sf.PID {
+				active[sf.SessionID] = mergeClaudeActiveSession(existing, sf)
+			} else {
+				active[sf.SessionID] = preferClaudeActive(existing, sf)
+			}
+		} else {
+			active[sf.SessionID] = sf
+		}
 	}
 	m.mu.Lock()
 	previous := m.active
+	if !agentsOK {
+		for id, old := range previous {
+			if !old.present() {
+				continue
+			}
+			if _, ok := active[id]; ok {
+				continue
+			}
+			if old.PID == 0 || m.isPIDAlive(old.PID) {
+				active[id] = old
+			}
+		}
+	}
 	m.active = active
 	managed := make(map[string]bool, len(m.runs))
 	for id := range m.runs {
@@ -293,7 +815,7 @@ func (m *ClaudeManager) refreshActive() {
 			continue
 		}
 		old, known := previous[id]
-		if known && old.State != next.State && next.State == "blocked" {
+		if known && !old.isAttention() && next.isAttention() {
 			m.event(id, "attention", entries[id].Info.Title, "Needs Your Attention")
 		}
 	}
@@ -302,7 +824,7 @@ func (m *ClaudeManager) refreshActive() {
 			continue
 		}
 		next, exists := active[id]
-		if (old.State == "running" || old.State == "blocked") && (!exists || next.State == "idle") {
+		if old.isBusy() && (!exists || !next.isBusy()) {
 			m.event(id, "completed", entries[id].Info.Title, entries[id].Info.LastMsg)
 		}
 	}
@@ -337,12 +859,18 @@ func (m *ClaudeManager) run(ctx context.Context) {
 				m.mu.Lock()
 				r := m.runs[id]
 				entry, ok := m.entries[id]
+				active := m.active[id]
 				m.mu.Unlock()
 				if r != nil || !ok {
 					continue
 				}
-				if !entry.Modified.Equal(m.watchedMod[id]) {
+				activeKey := active.watchKey()
+				if !entry.Modified.Equal(m.watchedMod[id]) || activeKey != m.watchedActive[id] {
 					m.watchedMod[id] = entry.Modified
+					if m.watchedActive == nil {
+						m.watchedActive = map[string]string{}
+					}
+					m.watchedActive[id] = activeKey
 					m.mu.Lock()
 					var clients []*Client
 					for c, ids := range m.watch {
@@ -458,9 +986,12 @@ func (m *ClaudeManager) open(c *Client, id string, more bool) error {
 		size *= 2
 	}
 	v.Meta.Model = entry.Meta.Model
-	if active.ID != "" {
+	if active.present() {
 		v.Meta.Mode = "external"
-		v.Meta.Running = active.State == "running" || active.State == "blocked"
+		v.Meta.Running = active.isBusy()
+		if turnAt := active.effectiveTurnAt(); turnAt > 0 {
+			v.Meta.TurnAt = turnAt
+		}
 	}
 	p := m.preference(id)
 	if p.Model != "" {

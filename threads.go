@@ -7,10 +7,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -80,7 +80,7 @@ const threadCols = threadSelect + ` where archived=0 and preview<>''`
 
 const threadQuery = threadCols + ` order by is_pinned desc, recency_at_ms desc limit 400`
 
-// sqlQuote quotes a string literal for the sqlite3 command line.
+// sqlQuote quotes a SQLite string literal.
 func sqlQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 
 // listProjectThreads returns every visible thread in one folder, newest first.
@@ -88,54 +88,67 @@ func listProjectThreads(db, cwd string) ([]ThreadInfo, error) {
 	return queryThreads(db, threadCols+` and cwd=`+sqlQuote(cwd)+` order by recency_at_ms desc limit 500`)
 }
 
-func sqliteJSONCLI(db, query string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	var out []byte
-	var err error
-	for attempt := 0; attempt < 3; attempt++ {
-		// mode=ro sees the WAL. If the WAL is unreadable (some sandboxes hide
-		// it), fall back to immutable mode, which only sees checkpointed data.
-		uri := "file:" + db + "?mode=ro"
-		if attempt == 2 {
-			uri = "file:" + db + "?immutable=1"
-		}
-		out, err = exec.CommandContext(ctx, sqliteBinary(), "-json", "-cmd", ".timeout 500", uri, query).Output()
-		if err == nil {
-			return out, nil
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return nil, err
-}
-
 func listThreads(db string) ([]ThreadInfo, error) { return queryThreads(db, threadQuery) }
 
+type threadQueryRow struct {
+	ID       string
+	Title    string
+	Preview  string
+	Cwd      string
+	Source   string
+	Kind     string
+	Recency  int64
+	Rollout  string
+	Pinned   int
+	Branch   string
+	Model    string
+	Effort   string
+	Approval string
+	Sandbox  string
+}
+
 func queryThreads(db, query string) ([]ThreadInfo, error) {
-	out, err := sqliteJSON(db, query)
+	var rows []threadQueryRow
+	err := withReadOnlySQLite(context.Background(), db, func(ctx context.Context, conn *sql.DB) error {
+		sqlRows, err := conn.QueryContext(ctx, query)
+		if err != nil {
+			return err
+		}
+		defer sqlRows.Close()
+		rows = make([]threadQueryRow, 0, 64)
+		for sqlRows.Next() {
+			var (
+				id, title, preview, cwd, source, kind, rollout, branch, model, effort, approval, sandbox sql.NullString
+				recency, pinned                                                                          sql.NullInt64
+			)
+			if err := sqlRows.Scan(
+				&id, &title, &preview, &cwd, &source, &kind,
+				&recency, &rollout, &pinned,
+				&branch, &model, &effort, &approval, &sandbox,
+			); err != nil {
+				return err
+			}
+			rows = append(rows, threadQueryRow{
+				ID:       id.String,
+				Title:    title.String,
+				Preview:  preview.String,
+				Cwd:      cwd.String,
+				Source:   source.String,
+				Kind:     kind.String,
+				Recency:  recency.Int64,
+				Rollout:  rollout.String,
+				Pinned:   int(pinned.Int64),
+				Branch:   branch.String,
+				Model:    model.String,
+				Effort:   effort.String,
+				Approval: approval.String,
+				Sandbox:  sandbox.String,
+			})
+		}
+		return sqlRows.Err()
+	})
 	if err != nil {
 		return nil, err
-	}
-	var rows []struct {
-		ID       string `json:"id"`
-		Title    string `json:"title"`
-		Preview  string `json:"preview"`
-		Cwd      string `json:"cwd"`
-		Source   string `json:"source"`
-		Kind     string `json:"kind"`
-		Recency  int64  `json:"recency"`
-		Rollout  string `json:"rollout"`
-		Pinned   int    `json:"pinned"`
-		Branch   string `json:"branch"`
-		Model    string `json:"model"`
-		Effort   string `json:"effort"`
-		Approval string `json:"approval"`
-		Sandbox  string `json:"sandbox"`
-	}
-	if len(out) > 0 {
-		if err := json.Unmarshal(out, &rows); err != nil {
-			return nil, err
-		}
 	}
 	now := time.Now()
 	res := make([]ThreadInfo, 0, len(rows))
@@ -280,17 +293,30 @@ type Project struct {
 }
 
 func listProjects(db string) ([]Project, error) {
-	out, err := sqliteJSON(db, `select cwd, count(*) as threads, max(recency_at_ms) as recency from threads
-	 where archived=0 and preview<>'' and coalesce(thread_source,'') not in ('subagent','guardian_review')
-	 group by cwd order by recency desc limit 40`)
+	var ps []Project
+	err := withReadOnlySQLite(context.Background(), db, func(ctx context.Context, conn *sql.DB) error {
+		rows, err := conn.QueryContext(ctx, `select cwd, count(*) as threads, max(recency_at_ms) as recency from threads
+		 where archived=0 and preview<>'' and coalesce(thread_source,'') not in ('subagent','guardian_review')
+		 group by cwd order by recency desc limit 40`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		ps = make([]Project, 0)
+		for rows.Next() {
+			var cwd sql.NullString
+			var count, recency sql.NullInt64
+			if err := rows.Scan(&cwd, &count, &recency); err != nil {
+				return err
+			}
+			ps = append(ps, Project{Cwd: cwd.String, Threads: int(count.Int64), Recency: recency.Int64})
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, err
 	}
-	var ps []Project
-	if len(out) > 0 {
-		err = json.Unmarshal(out, &ps)
-	}
-	return ps, err
+	return ps, nil
 }
 
 type Model struct {

@@ -71,3 +71,37 @@ func TestRelayTLSMissingKeyDoesNotSilentlyReplaceIdentity(t *testing.T) {
 		t.Fatal("lost key was silently replaced")
 	}
 }
+
+func TestRelayTLSCoversLocalAndMagicDNSHostnamesWithoutChangingPin(t *testing.T) {
+	dir := t.TempDir()
+	_, pin, identity, err := newRelayTLSIdentity(dir, []string{"127.0.0.1", "localhost"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := relayCertNames(
+		[]string{"127.0.0.1", "192.168.1.10", "100.125.53.124", " 127.0.0.1 ", ""},
+		relayHostnames{Local: "BlakBerriSigma-2.local.", MagicDNS: "BlakBerriSigma.tail1000c2.ts.net."},
+	)
+	if err := identity.setNames(names); err != nil {
+		t.Fatal(err)
+	}
+	cert, err := identity.getCertificate(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tlsFingerprint(leaf) != pin {
+		t.Fatal("updating SANs with .local and MagicDNS changed the paired pin")
+	}
+	for _, host := range []string{"localhost", "127.0.0.1", "192.168.1.10", "100.125.53.124", "blakberrisigma-2.local", "blakberrisigma.tail1000c2.ts.net"} {
+		if err := leaf.VerifyHostname(host); err != nil {
+			t.Fatalf("certificate did not verify %q: %v", host, err)
+		}
+	}
+	if err := leaf.VerifyHostname("other.local"); err == nil {
+		t.Fatal("certificate accepted unrelated .local hostname")
+	}
+}
