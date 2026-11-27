@@ -106,13 +106,17 @@ function saveServers() {
   store.set("servers", S.servers);
   if (Native) try { Native.setServers(JSON.stringify(S.servers)); } catch {}
 }
-function sameRelayPairing(existing,url,token,pin) {
-  if(existing.url===url)return true;
-  if(typeof existing.pin==='string' && existing.pin)return existing.pin.toLowerCase()===pin;
+function sameRelayPairing(existing,url,token,pin,alts=[]) {
+  const cleanUrl = String(url || "").replace(/\/+$/, "");
+  const cleanExisting = String(existing.url || "").replace(/\/+$/, "");
+  if(cleanExisting===cleanUrl)return true;
+  if(typeof existing.pin==='string' && existing.pin)return !!pin && existing.pin.toLowerCase()===pin.toLowerCase();
   if(existing.token!==token)return false;
-  const address=value=>{try{const u=new URL(value);return u.hostname+':'+(u.port || (u.protocol==='https:'?'443':'80'));}catch{return '';}};
-  const next=address(url);
-  return !!next && [existing.url,...(existing.alts||[])].some(value=>address(value)===next);
+  const address=value=>{try{const u=new URL(value);return u.hostname.toLowerCase()+':'+(u.port || (u.protocol==='https:'?'443':'80'));}catch{return '';}};
+  const known = new Set([existing.url,...(existing.alts||[])].map(address).filter(Boolean));
+  if(!known.size)return false;
+  const incoming = [cleanUrl,...(Array.isArray(alts) ? alts : [])].map(address).filter(Boolean);
+  return incoming.some(addr => known.has(addr));
 }
 function pairingAlternates(primary, values) {
   const secure=primary.startsWith('https://');
@@ -120,18 +124,34 @@ function pairingAlternates(primary, values) {
     try{const u=new URL(value);return (u.protocol==='http:' || u.protocol==='https:') && (!secure || u.protocol==='https:') && !u.username && !u.password && !u.search && !u.hash && (u.pathname==='/' || !u.pathname);}catch{return false;}
   }).map(value=>new URL(value).origin))].filter(value=>value!==primary).slice(0,8);
 }
+function findMatchingServer(url, token, pin = "", alts = []) {
+  const cleanUrl = String(url || "").replace(/\/+$/, "");
+  const cleanPin = String(pin || "").toLowerCase();
+  return S.servers.findIndex(x => sameRelayPairing(x, cleanUrl, token, cleanPin, alts));
+}
 function addServer({ url, token, name, custom, pin = "", alts = [] }) {
   url = url.replace(/\/+$/, "");
   pin=pin.toLowerCase();
   if (pin && (!/^https:\/\//.test(url) || !/^[a-f0-9]{64}$/.test(pin))) throw Error('Invalid secure pairing link');
-  const index = S.servers.findIndex(x => sameRelayPairing(x,url,token,pin));
+  const index = findMatchingServer(url, token, pin, alts);
   const previous = S.servers[index];
   const keepCustomName=!!previous?.custom && !custom;
+  const prevAlts = Array.isArray(previous?.alts) ? previous.alts : [];
   const s = {...previous,id:previous?.id || sid(),url,token,pin:pin || (previous?.url===url ? previous.pin || '' : ''),
     name:keepCustomName ? previous.name : name || previous?.name || hostOf(url),custom:keepCustomName || (name ? !!custom : !!previous?.custom)};
-  s.alts=pairingAlternates(url,[...(Array.isArray(alts) ? alts : []),...(Array.isArray(s.alts) ? s.alts : [])]);
+  s.alts=pairingAlternates(url,[...(Array.isArray(alts) ? alts : []),...(previous?.url && previous.url !== url ? [previous.url] : []),...prevAlts]);
+  const altsChanged = previous && JSON.stringify(prevAlts) !== JSON.stringify(s.alts);
   if(index>=0)S.servers[index]=s;else S.servers.push(s);
-  saveServers();syncConns();return s;
+  saveServers();syncConns();
+  if (index >= 0 && typeof conns !== "undefined") {
+    const c = conns.get(s.id);
+    if (c && (!c.ok || c.state !== "on" || altsChanged)) {
+      c.paused = false;
+      c.backoff = 300;
+      c.connect(true);
+    }
+  }
+  return s;
 }
 
 const serverName = (id) => { const s = S.servers.find((x) => x.id === id); return s ? s.name || hostOf(s.url) : "Computer"; };
@@ -3516,10 +3536,11 @@ const SHEETS = {
       const u = sh.querySelector("#sv-url");
       if (u) u.oninput = () => {
         u.dataset.pin="";
+        u.dataset.alts="";
         const m = u.value.match(/^(https?:\/\/[^/#?\s]+)\/?#t=([0-9a-f]+)/) || u.value.match(/^fastcontrol:\/\/pair\?(.*)$/);
         if (!m) return;
         if (m[2]) { const hash=new URL(u.value).hash;u.dataset.pin=new URLSearchParams(hash.slice(1)).get("pin") || "";u.value = m[1]; sh.querySelector("#sv-token").value = m[2]; }
-        else { const p = new URLSearchParams(m[1]); u.dataset.pin=p.get("pin") || ""; u.value = p.get("url") || ""; sh.querySelector("#sv-token").value = p.get("t") || ""; sh.querySelector("#sv-name").value = p.get("name") || ""; }
+        else { const p = new URLSearchParams(m[1]); u.dataset.pin=p.get("pin") || ""; u.dataset.alts=p.get("alts") || ""; u.value = p.get("url") || ""; sh.querySelector("#sv-token").value = p.get("t") || ""; sh.querySelector("#sv-name").value = p.get("name") || ""; }
       };
     };
     draw();
@@ -3562,9 +3583,12 @@ const SHEETS = {
         toast(on ? "Notifications On" : "Notifications Off");
       }
       if (x === "add") {
-        let url = sh.querySelector("#sv-url").value.trim();
+        const urlInput = sh.querySelector("#sv-url");
+        let url = urlInput.value.trim();
         const token = sh.querySelector("#sv-token").value.trim();
-        const pin=sh.querySelector("#sv-url").dataset.pin || "";
+        const pin=urlInput.dataset.pin || "";
+        let alts = [];
+        try { const parsed = JSON.parse(urlInput.dataset.alts || "[]"); if (Array.isArray(parsed)) alts = parsed; } catch {}
         const name = sh.querySelector("#sv-name").value.trim();
         if (!url || !token) { toast("Enter The Address And Token"); return; }
         if (!/^https?:\/\//.test(url)) url = "http://" + url;
@@ -3577,10 +3601,12 @@ const SHEETS = {
         catch { msg = "Cannot Reach " + url; }
         xBtn.disabled = false; xBtn.textContent = "Add Computer";
         if (!ok) { Native?.clearRelayPairing?.();toast(msg); return; }
-        const s = addServer({ url, token, name, custom: !!name, pin });
+        const existed = findMatchingServer(url, token, pin, alts) >= 0;
+        const s = addServer({ url, token, name, custom: !!name, pin, alts });
         Native?.clearRelayPairing?.();
         S.machine = s.id; store.set("machine", s.id);
         closeSheet(); renderHome();
+        toast((existed ? "Updated " : "Paired With ") + (s.name || hostOf(s.url)));
       }
     };
   },
@@ -3604,12 +3630,13 @@ window.onQrScanResult = function (result) {
     const name = String(result.name || "").trim();
     const pin = String(result.pin || "").trim();
     const alts = Array.isArray(result.alts) ? result.alts : [];
-    const s = addServer({ url, token, name, custom: !!name, pin, alts });
+    const existed = findMatchingServer(url, token, pin, alts) >= 0;
+    const s = addServer({ url, token, name, custom: false, pin, alts });
     S.machine = s.id;
     store.set("machine", s.id);
     if (S.sheet === "macs") closeSheet();
     renderHome();
-    toast("Paired With " + (s.name || hostOf(s.url)));
+    toast((existed ? "Updated " : "Paired With ") + (s.name || hostOf(s.url)));
   } catch (err) {
     toast(nice(err?.message || "Invalid Pairing QR Code"));
   }
@@ -3620,9 +3647,11 @@ window.onAndroidIntent = function () {
   let it;
   try { const j = Native.consumeLaunchIntent(); if (!j) return; it = JSON.parse(j); } catch { return; }
   if (it.type === "pair" && it.url && it.token) {
-    const s = addServer({ url: it.url, token: it.token, name: it.name || "", pin: it.pin || "", alts: it.alts || [] });
+    const alts = Array.isArray(it.alts) ? it.alts : [];
+    const existed = findMatchingServer(it.url, it.token, it.pin || "", alts) >= 0;
+    const s = addServer({ url: it.url, token: it.token, name: it.name || "", pin: it.pin || "", alts });
     S.machine = s.id; store.set("machine", s.id);
-    toast("Paired With " + (s.name || s.url));
+    toast((existed ? "Updated " : "Paired With ") + (s.name || hostOf(s.url)));
     if (S.view === "home") renderHome();
   } else if (it.type === "thread" && it.thread) {
     const provider = PROVIDERS.includes(it.provider) ? it.provider : "codex";
