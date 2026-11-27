@@ -82,7 +82,7 @@ test("HTML, CSS, service worker, and guardrails support 4-provider Grok layout w
   assert.match(htmlSource, /data-provider="claude"/);
   assert.match(htmlSource, /data-provider="antigravity"/);
   assert.match(htmlSource, /data-provider="grok"[^>]*><span>Grok<\/span>/);
-  assert.match(swSource, /const CACHE = "fastcontrol-v21";/);
+  assert.match(swSource, /const CACHE = "fastcontrol-v22";/);
   assert.match(cssSource, /@media\s*\(max-height:\s*680px\)\s*\{[\s\S]*\.provider-choice[\s\S]*\.provider-option/);
   assert.match(cssSource, /@media\s*\(max-width:\s*380px\)\s*\{[\s\S]*\.usage-body/);
   assert.match(cssSource, /@media\s*\(min-width:\s*620px\)\s*\{[\s\S]*\.usage-providers\s*\{\s*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);[\s\S]*\.usage-provider:nth-child\(n\+3\)/);

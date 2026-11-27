@@ -91,6 +91,8 @@ class MainActivity : Activity() {
         private const val REQ_MIC = 3
         private const val REQ_SAVE_IMAGE = 4
         private const val REQ_ATTACHMENTS = 5
+        private const val REQ_CAMERA = 6
+        private const val REQ_QR_SCAN = 7
 
         internal enum class BackAction {
             HANDLED,
@@ -199,6 +201,7 @@ class MainActivity : Activity() {
     } }
     private var fileCallback: ValueCallback<Array<Uri>>? = null
     private var awaitingMic = false
+    private var awaitingCamera = false
     @Volatile private var pendingVoice: String? = null
     @Volatile private var launchingVoice: String? = null
     private var voiceCompressed = false
@@ -248,6 +251,7 @@ class MainActivity : Activity() {
         pendingAppInstall = savedInstanceState?.getBoolean("pendingAppInstall") ?: false
         pendingVoice = savedInstanceState?.getString("pendingVoice")
         awaitingMic = savedInstanceState?.getBoolean("awaitingMic") ?: false
+        awaitingCamera = savedInstanceState?.getBoolean("awaitingCamera") ?: false
         voiceCompressed = savedInstanceState?.getBoolean("voiceCompressed") ?: false
         val bg = getColor(R.color.bg)
         container = FrameLayout(this).apply { setBackgroundColor(bg) }
@@ -341,6 +345,7 @@ class MainActivity : Activity() {
         outState.putBoolean("pendingAppInstall", pendingAppInstall)
         outState.putString("pendingVoice", pendingVoice)
         outState.putBoolean("awaitingMic", awaitingMic)
+        outState.putBoolean("awaitingCamera", awaitingCamera)
         outState.putBoolean("voiceCompressed", voiceCompressed)
     }
 
@@ -733,6 +738,17 @@ class MainActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == REQ_QR_SCAN) {
+            val payload = when {
+                resultCode == RESULT_OK -> data?.getStringExtra(QrScannerActivity.EXTRA_PAIRING_JSON)
+                    ?: JSONObject().put("ok", false).put("message", "Could Not Read Pairing QR Code").toString()
+                !data?.getStringExtra(QrScannerActivity.EXTRA_ERROR_MESSAGE).isNullOrBlank() ->
+                    JSONObject().put("ok", false).put("message", data?.getStringExtra(QrScannerActivity.EXTRA_ERROR_MESSAGE)).toString()
+                else -> JSONObject().put("ok", false).put("cancelled", true).toString()
+            }
+            deliverQrScanResult(payload)
+            return
+        }
         if (requestCode == REQ_ATTACHMENTS) {
             val saved = pendingAttachments; pendingAttachments = null
             if (saved != null) {
@@ -790,6 +806,49 @@ class MainActivity : Activity() {
             else {
                 pendingVoice?.let { VoiceCaptureService.failStart(this, JSONObject(it), "Microphone Permission Is Required") }
                 pendingVoice = null
+            }
+            return
+        }
+        if (requestCode == REQ_CAMERA) {
+            val wanted = awaitingCamera; awaitingCamera = false
+            if (!wanted) return
+            if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                launchQrScanner()
+            } else {
+                deliverQrScanResult(
+                    JSONObject()
+                        .put("ok", false)
+                        .put("message", "Allow Camera Access To Scan Pairing QR Codes")
+                        .toString()
+                )
+            }
+        }
+    }
+
+    private fun launchQrScanner() {
+        if (isDestroyed) return
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            awaitingCamera = true
+            requestPermissions(arrayOf(Manifest.permission.CAMERA), REQ_CAMERA)
+            return
+        }
+        try {
+            startActivityForResult(Intent(this, QrScannerActivity::class.java), REQ_QR_SCAN)
+        } catch (_: Exception) {
+            deliverQrScanResult(
+                JSONObject()
+                    .put("ok", false)
+                    .put("message", "Could Not Open Camera Scanner")
+                    .toString()
+            )
+        }
+    }
+
+    private fun deliverQrScanResult(json: String) {
+        runOnUiThread {
+            if (!isDestroyed) {
+                val safe = jsSafeJson(json)
+                webView.evaluateJavascript("window.onQrScanResult && window.onQrScanResult($safe)", null)
             }
         }
     }
@@ -1058,5 +1117,8 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun appVersion(): String =
             packageManager.getPackageInfo(packageName, 0).versionName ?: ""
+
+        @JavascriptInterface
+        fun scanPairingQr() = runOnUiThread { launchQrScanner() }
     }
 }

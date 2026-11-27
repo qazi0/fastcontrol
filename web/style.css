@@ -357,6 +357,10 @@ pre code { background: none !important; padding: 0 !important; font-size: inheri
 .btn.primary { background: var(--act); color: var(--act-ink); }
 .btn.danger { background: transparent; color: var(--bad); padding: 0 12px; }
 .btn:disabled { opacity: 0.4; }
+.scan-qr-btn { gap: 8px; }
+.scan-qr-btn .ico { width: 18px; height: 18px; flex: none; }
+.scan-qr-block { width: 100%; }
+.empty-actions { margin-top: 16px; display: flex; justify-content: center; }
 
 /* bottom sheets */
 .scrim { position: fixed; inset: 0; background: var(--scrim); z-index: 20; }

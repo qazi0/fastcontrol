@@ -29,8 +29,8 @@ android {
         applicationId = "net.siraj.fastcontrol"
         minSdk = 26
         targetSdk = 36
-        versionCode = 130
-        versionName = "0.2.19"
+        versionCode = 131
+        versionName = "0.2.20"
     }
 
     signingConfigs {
@@ -74,4 +74,5 @@ dependencies {
         exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-jdk8")
         exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-jdk7")
     }
+    implementation("com.google.zxing:core:3.5.3")
 }

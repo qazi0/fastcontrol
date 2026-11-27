@@ -57,11 +57,44 @@ jobs:
         run: |
           $env:FASTCONTROL_PACKAGE_DIR = (Resolve-Path dist).Path
           $env:FASTCONTROL_SKIP_SPEECH = '1'
-          (Get-Content ./install.ps1 -Raw) | Invoke-Expression
-          $relay = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.fastcontrol\fastcontrol.exe'
-          if (-not (Test-Path $relay)) { throw 'Installed Relay Missing After Windows PowerShell 5.1 Run' }
-          Stop-ScheduledTask -TaskName fastcontrol -ErrorAction SilentlyContinue
-          Unregister-ScheduledTask -TaskName fastcontrol -Confirm:$false -ErrorAction SilentlyContinue
+          $grokStub = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.grok\sessions\ci\s1'
+          New-Item -ItemType Directory -Path $grokStub -Force | Out-Null
+          try {
+            (Get-Content ./install.ps1 -Raw) | Invoke-Expression
+            $dir = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.fastcontrol'
+            $relay = Join-Path $dir 'fastcontrol.exe'
+            if (-not (Test-Path $relay)) { throw 'Installed Relay Missing After Windows PowerShell 5.1 Run' }
+            $ready = $false
+            for ($i = 0; $i -lt 90; $i++) {
+              Start-Sleep -Milliseconds 500
+              $tokenPath = Join-Path $dir 'token'
+              if (Test-Path $tokenPath) {
+                $tok = (Get-Content $tokenPath -Raw).Trim()
+                try {
+                  $resp = Invoke-WebRequest -Uri "http://127.0.0.1:8787/auth?t=$tok" -UseBasicParsing -TimeoutSec 2
+                  if ($resp.StatusCode -eq 204) { $ready = $true; break }
+                } catch {}
+              }
+            }
+            if (-not $ready) {
+              $info = Get-ScheduledTaskInfo -TaskName fastcontrol -ErrorAction SilentlyContinue
+              Write-Host "Scheduled task info: state=$((Get-ScheduledTask -TaskName fastcontrol).State) lastResult=$($info.LastTaskResult)"
+              Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'powershell|fastcontrol' } | Select-Object ProcessId, Name, CommandLine | Format-Table -AutoSize | Out-String | Write-Host
+              if (Test-Path (Join-Path $dir 'relay.log')) { Get-Content (Join-Path $dir 'relay.log') -Tail 40 }
+              throw 'Background Scheduled Task Relay Did Not Become Ready On Windows PowerShell 5.1'
+            }
+            Start-Sleep -Seconds 2
+            $tok = (Get-Content (Join-Path $dir 'token') -Raw).Trim()
+            $alive = Invoke-WebRequest -Uri "http://127.0.0.1:8787/auth?t=$tok" -UseBasicParsing -TimeoutSec 2
+            if ($alive.StatusCode -ne 204) { throw "Expected Relay Still Alive (204), Got $($alive.StatusCode)" }
+            $task = Get-ScheduledTask -TaskName fastcontrol
+            if ($task.State -ne 'Running') { throw "Expected Scheduled Task Running, Got $($task.State)" }
+          } finally {
+            Stop-ScheduledTask -TaskName fastcontrol -ErrorAction SilentlyContinue
+            Unregister-ScheduledTask -TaskName fastcontrol -Confirm:$false -ErrorAction SilentlyContinue
+            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq 'fastcontrol.exe' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+            Remove-Item (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.grok') -Recurse -Force -ErrorAction SilentlyContinue
+          }
       - name: Verify Installer and Local Speech Setup
         run: |
           ./install.ps1 -PackageDirectory dist -SkipSpeech
