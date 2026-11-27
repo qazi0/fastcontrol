@@ -71,9 +71,15 @@ class RelayTransport(private val context: Context, private val emit: (JSONObject
                 response.message.ifEmpty { "Relay Response" }, headers, stream)
         } catch (_: Exception) { error(502, "Secure connection failed. Check the computer or pair it again") }
     }
+    fun onNetworkChange() {
+        http.connectionPool.evictAll()
+    }
     fun open(id: String, serverId: String, base: String) = main.post {
         if (disposed) return@post
-        val server = Store.servers(context).firstOrNull { it.id == serverId && it.pin.isNotEmpty() && base.trimEnd('/') in it.urls.map { url -> url.trimEnd('/') } }
+        val targetOrigin = origin(base)
+        val server = if (targetOrigin == null) null else Store.servers(context).firstOrNull {
+            it.id == serverId && it.pin.isNotEmpty() && it.urls.any { url -> origin(url) == targetOrigin }
+        }
         if (server == null || !base.startsWith("https://")) { emit(JSONObject().put("id", id).put("event", "close")); return@post }
         sockets.remove(id)?.socket?.cancel()
         val connection = Connection(); sockets[id] = connection
