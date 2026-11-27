@@ -729,10 +729,11 @@ window.addEventListener("popstate", (e) => {
   if (S.sheet && !st.sheet) closeSheet(true);
   if (st.view === "thread") { if (S.id !== st.id || S.view !== "thread") openThread(st.sid, st.id, false); }
   else if (st.view === "project") { leaveThread(); if(st.group && window.openNativeGroup)openNativeGroup(st.group.server,st.group.id,false);else openProject(st.cwd, false); }
-  else if (!st.sheet) { leaveThread(); show("home"); renderHome(); }
+  else if (!st.sheet) { navStack = []; leaveThread(); show("home"); renderHome(); }
 });
 function selectProvider(provider, push = true) {
   if (!PROVIDERS.includes(provider)) return;
+  if (typeof navStack !== "undefined") navStack = [];
   leaveThread();
   S.newDraft = null; S.newAttach = [];
   S.provider = provider; store.set("provider", provider);
@@ -750,7 +751,7 @@ function selectProvider(provider, push = true) {
 $('provider-switch').onclick=()=>openSheet('providers');
 $('provider-macs').onclick=()=>openSheet('macs');
 for(const button of document.querySelectorAll('[data-provider]'))button.onclick=()=>selectProvider(button.dataset.provider);
-for (const b of document.querySelectorAll(".back")) b.onclick = () => history.back();
+for (const b of document.querySelectorAll(".back")) b.onclick = () => { if (!window.handleAndroidBack?.()) history.back(); };
 
 // Every list render goes through one animation frame.
 let renderQueued = 0;
@@ -3074,14 +3075,15 @@ function closeSheet(fromPop) {
     $('jump').classList.toggle('hidden',S.stick);
   }
   const generation = ++sheetGeneration, sh = $("sheet"), scrim = $("scrim");
-  resetSheetSwipeStyles(sh, scrim);
   sh.inert = true; scrim.style.pointerEvents = "none";
   const hide = () => { if (generation === sheetGeneration) { resetSheetSwipeStyles(sh, scrim); sh.classList.add("hidden"); scrim.classList.add("hidden"); } };
   if (reducedMotion.matches || document.hidden) hide();
   else {
-    const transform = getComputedStyle(sh).transform;
+    const dragged = sh.style.transform && sh.style.transform !== "none" ? sh.style.transform : "";
+    const transform = dragged || getComputedStyle(sh).transform;
+    const endTransform = sh.classList.contains("full") ? "translateX(32px)" : dragged ? `translateY(${Math.max(sh.offsetHeight || 360, 200)}px)` : "translateY(20px)";
     if (sh.getAnimations) for (const animation of sh.getAnimations()) animation.cancel();
-    sh.animate([{ transform, opacity: 1 }, { transform: sh.classList.contains("full") ? "translateX(32px)" : "translateY(20px)", opacity: 0 }], { duration: 130, easing: "ease-in", fill: "forwards" }).finished.then(hide, () => {});
+    sh.animate([{ transform, opacity: 1 }, { transform: endTransform, opacity: 0 }], { duration: 130, easing: "ease-in", fill: "forwards" }).finished.then(hide, () => {});
   }
   if (!fromPop && sheetHistoryDepth > 0 && history.state && history.state.sheet) {
     sheetHistoryDepth = 0;

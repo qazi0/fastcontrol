@@ -1468,4 +1468,55 @@ test("window.handleAndroidBack unwinds slash menu, nested sheets, thread, projec
   // 6. Root home with no modal returns false (triggers Android double-back toast).
   assert.equal(ctx.window.handleAndroidBack(), false);
   assert.equal(historyBackCalls, 0);
+
+  // 7. On-screen .back buttons delegate to window.handleAndroidBack() before falling back to history.back(),
+  //    and popstate to home clears navStack cleanly.
+  assert.match(appSource, /querySelectorAll\("\.back"\)\) b\.onclick = \(\) => \{ if \(!window\.handleAndroidBack\?\.\(\)\) history\.back\(\); \};/);
+  assert.match(appSource, /else if \(!st\.sheet\) \{ navStack = \[\]; leaveThread\(\); show\("home"\); renderHome\(\); \}/);
+
+  // 8. Swipe-dismiss closeSheet preserves dragged translateY into exit animation before hiding and resetting styles.
+  const animFrames = [];
+  let finishAnim;
+  const animSh = makeElement("div", "sheet");
+  animSh.offsetHeight = 400;
+  animSh.style = { transform: "translateY(140px)", transition: "none", bottom: "" };
+  animSh.getAnimations = () => [];
+  animSh.animate = (frames) => {
+    animFrames.push(frames);
+    return { finished: new Promise((res) => { finishAnim = res; }) };
+  };
+  const animScrim = makeElement("div", "scrim");
+  animScrim.style = { opacity: "0.65", pointerEvents: "" };
+  const animCtx = vm.createContext({
+    Set,
+    Map,
+    Math,
+    Date,
+    setTimeout: (fn) => { fn(); return 1; },
+    clearTimeout() {},
+    S: { view: "home", provider: "antigravity", sid: "", id: "", sheet: "macs", sheetOpts: {} },
+    $: (id) => ({ sheet: animSh, scrim: animScrim, composer: { offsetHeight: 60 }, jump: makeElement("button") }[id] || makeElement("div", id)),
+    history: { state: {}, pushState() {}, replaceState() {}, back() {} },
+    document: { hidden: false },
+    reducedMotion: { matches: false },
+    getComputedStyle: () => ({ transform: "none" }),
+    feed: { scrollHeight: 0, clientHeight: 0, scrollTop: 0 },
+    Native: null,
+    appUpdate: { phase: "idle" },
+    appUpdateInstallWanted: false,
+    SHEETS: {},
+  });
+  animCtx.window = animCtx;
+  vm.runInContext(appSource.slice(start, end), animCtx);
+  animCtx.closeSheet(true);
+  assert.equal(animFrames.length, 1);
+  assert.equal(animFrames[0][0].transform, "translateY(140px)");
+  assert.equal(animFrames[0][1].transform, "translateY(400px)");
+  assert.equal(animSh.style.transform, "translateY(140px)");
+  finishAnim();
+  return Promise.resolve().then(() => {
+    assert.equal(animSh.style.transform, "");
+    assert.equal(animScrim.style.opacity, "");
+    assert.equal(animSh.classList.contains("hidden"), true);
+  });
 });
