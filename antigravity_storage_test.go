@@ -15,8 +15,9 @@ import (
 )
 
 const antigravityTestSchema21 = `
+PRAGMA busy_timeout = 5000;
 PRAGMA journal_mode = WAL;
-CREATE TABLE conversation_summaries (
+CREATE TABLE IF NOT EXISTS conversation_summaries (
 	conversation_id TEXT PRIMARY KEY,
 	title TEXT,
 	preview TEXT,
@@ -58,6 +59,9 @@ func createAntigravityTestDB(t *testing.T, path string, rows []antigravityTestRo
 
 	if _, err := db.Exec(antigravityTestSchema21); err != nil {
 		t.Fatalf("create schema: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM conversation_summaries`); err != nil {
+		t.Fatalf("clear table: %v", err)
 	}
 	stmt, err := db.Prepare(`INSERT INTO conversation_summaries (
 		conversation_id, title, preview, step_count, last_modified_time,
