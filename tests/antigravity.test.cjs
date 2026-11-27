@@ -76,7 +76,7 @@ test("HTML, CSS, service worker, and guardrails support 3-provider Antigravity l
   assert.match(htmlSource, /data-provider="antigravity"/);
   assert.match(htmlSource, /id="slash-menu"/);
   assert.match(htmlSource, /Usage And Limits/);
-  assert.match(swSource, /const CACHE = "fastcontrol-v20";/);
+  assert.match(swSource, /const CACHE = "fastcontrol-v21";/);
   assert.match(cssSource, /\.slash-menu\s*\{\s*position:\s*absolute;/);
   assert.match(cssSource, /\.usage-providers\s*\{\s*display:\s*grid;\s*grid-template-columns:\s*minmax\(0,\s*1fr\);/);
   assert.match(cssSource, /grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/);
@@ -91,8 +91,10 @@ test("HTML, CSS, service worker, and guardrails support 3-provider Antigravity l
     ["web/organization.js", orgSource],
     ["web/style.css", cssSource],
     ["web/sw.js", swSource],
+    ["web/messages.js", fs.readFileSync("web/messages.js", "utf8")],
   ]) {
     assert.equal(text.includes("\u2014"), false, `${name} must not contain em dashes`);
+    assert.equal(text.includes("\u2013"), false, `${name} must not contain en dashes`);
   }
 });
 
@@ -315,18 +317,23 @@ test("Antigravity modes, opt-in Full Access gating, catalog model display, steer
     ctx
   );
 
-  // Default modes omit opt-in full-access.
+  // Turbo (full-access) is visible by default for Antigravity unless explicitly disabled on both meta and models.
+  const defaultPerms = ctx.antigravityPermsFor(ctx.S.meta, connection.models);
   assert.deepEqual(
-    Array.from(ctx.antigravityPermsFor(ctx.S.meta, connection.models).map((p) => p.id)),
-    ["default", "accept-edits", "auto", "plan"]
-  );
-  // Relay allowFullAccess / modes enables opt-in full-access.
-  assert.deepEqual(
-    Array.from(ctx.antigravityPermsFor({ ...ctx.S.meta, allowFullAccess: true }, connection.models).map((p) => p.id)),
+    Array.from(defaultPerms.map((p) => p.id)),
     ["default", "accept-edits", "auto", "plan", "full-access"]
   );
+  const turbo = defaultPerms.find((p) => p.id === "full-access");
+  assert.equal(turbo.name, "Turbo");
+  assert.equal(turbo.short, "Turbo");
+  assert.equal(turbo.d, "Auto-Approves All Edits And Commands");
+  // Explicitly disabled on both meta and models hides full-access.
   assert.deepEqual(
-    Array.from(ctx.antigravityPermsFor({ permissionMode: "default" }, { modes: [{ id: "full-access", description: "Opt-In Full Access" }] }).map((p) => p.id)),
+    Array.from(ctx.antigravityPermsFor({ ...ctx.S.meta, allowFullAccess: false }, { ...connection.models, allowFullAccess: false }).map((p) => p.id)),
+    ["default", "accept-edits", "auto", "plan"]
+  );
+  assert.deepEqual(
+    Array.from(ctx.antigravityPermsFor({ permissionMode: "default", allowFullAccess: false }, { allowFullAccess: false, modes: [{ id: "full-access", description: "Turbo Mode" }] }).map((p) => p.id)),
     ["default", "accept-edits", "auto", "plan", "full-access"]
   );
   // Antigravity thought_level efforts include Default plus low/medium/high/xhigh.
@@ -457,7 +464,7 @@ test("new-chat Antigravity flow renders models, thought_level, and Execution Mod
   assert.match(sh.innerHTML, /data-new-mode="accept-edits"/);
   assert.match(sh.innerHTML, /data-new-mode="auto"/);
   assert.match(sh.innerHTML, /data-new-mode="plan"/);
-  assert.doesNotMatch(sh.innerHTML, /data-new-mode="full-access"/);
+  assert.match(sh.innerHTML, /data-new-mode="full-access"[^>]*>Turbo</);
 
   // Select model, effort, mode, and prompt.
   sh.scrollTop = 95;
@@ -973,4 +980,492 @@ test("Antigravity organization requests preserve provider scoping", async () => 
   await ctx.openNativeGroup("m1", "g1", false);
   assert.equal(calls.length, 1);
   assert.deepEqual(JSON.parse(JSON.stringify(calls[0])), { op: "group", id: "g1", provider: "antigravity" });
+});
+
+test("Antigravity thread labels clean cached XML, model catalog skips caching empty errors, and new-chat retries cleanly", () => {
+  const msgCtx = vm.createContext({});
+  vm.runInContext(fs.readFileSync("web/messages.js", "utf8") + "\nglobalThis.MessageContent = MessageContent;", msgCtx);
+
+  // Thread row & header cleaning.
+  const tTitleEl = makeElement("div", "t-title");
+  const tSubEl = makeElement("div", "t-sub");
+  const rowCtx = vm.createContext({
+    Map,
+    Set,
+    Date,
+    String,
+    MessageContent: msgCtx.MessageContent,
+    S: {
+      sid: "m1",
+      id: "ag-1",
+      machine: "m1",
+      servers: [{ id: "m1", name: "Studio" }],
+      meta: { title: "<USER_REQUEST>\nHeader Title\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\ntime\n</ADDITIONAL_METADATA>" },
+    },
+    $: (id) => ({ "t-title": tTitleEl, "t-sub": tSubEl }[id] || makeElement("div", id)),
+    esc: (s) => String(s ?? ""),
+    base: (p) => String(p || "").split("/").pop(),
+    ago: () => "1m",
+    dur: () => "1s",
+    serverName: () => "Studio",
+    computerDotClass: () => "on",
+    conn: () => ({ ok: true, state: "on" }),
+    findThread: () => ({ id: "ag-1", title: "", preview: "<USER_REQUEST>\nPreview fallback" }),
+  });
+  const rowStart = appSource.indexOf("function cleanThreadText(");
+  const rowEnd = appSource.indexOf("function projectsOf(");
+  const hdrStart = appSource.indexOf("function renderThreadHeader(");
+  const hdrEnd = appSource.indexOf('$("t-title").onclick');
+  vm.runInContext(appSource.slice(rowStart, rowEnd) + "\n" + appSource.slice(hdrStart, hdrEnd), rowCtx);
+
+  const rowHTML = rowCtx.threadRow({
+    sid: "m1",
+    id: "ag-1",
+    title: "<SYSTEM_MESSAGE>\nwakeup\n</SYSTEM_MESSAGE>",
+    preview: "<USER_REQUEST>\nFix Antigravity XML\n</USER_REQUEST>\n<ADDITIONAL_METADATA>meta</ADDITIONAL_METADATA>",
+    cwd: "/work/app",
+    recency: Date.now(),
+  });
+  assert.match(rowHTML, /Fix Antigravity XML/);
+  assert.doesNotMatch(rowHTML, /USER_REQUEST|ADDITIONAL_METADATA|SYSTEM_MESSAGE|wakeup/);
+
+  rowCtx.renderThreadHeader();
+  assert.equal(tTitleEl.textContent, "Header Title");
+
+  // Conn.onMessage never caches empty/errored model catalog over valid models.
+  const sockets = [];
+  class Socket {
+    constructor(url) { this.url = url; this.readyState = 1; this.sent = []; sockets.push(this); }
+    send(t) { this.sent.push(JSON.parse(t)); }
+    close() { this.readyState = 3; }
+    open() { this.readyState = 1; this.onopen?.(); }
+    message(v) { this.onmessage?.({ data: JSON.stringify(v) }); }
+  }
+  let redrawCount = 0;
+  const connCtx = vm.createContext({
+    Native: null,
+    WebSocket: Socket,
+    URL,
+    Set,
+    Map,
+    Date,
+    JSON,
+    Math,
+    Array,
+    AbortSignal,
+    fetch: async () => ({ status: 204 }),
+    setTimeout: () => 1,
+    clearTimeout() {},
+    setInterval: () => 1,
+    clearInterval() {},
+    store: { get: (_, d) => d, set() {} },
+    S: { provider: "antigravity", view: "home", servers: [], sheet: "new", redraw: () => { redrawCount++; } },
+    window: {},
+    document: { querySelectorAll: () => [] },
+    scheduleRender() {},
+    saveServers() {},
+    mark() {},
+    serverName: () => "Studio",
+    syncProviderButtons() {},
+  });
+  vm.runInContext(appSource.slice(appSource.indexOf("function computerStatus("), appSource.indexOf("function syncConns()")) + ";globalThis.Conn=Conn;", connCtx);
+  const c = new connCtx.Conn({ id: "m1", url: "http://127.0.0.1:8787", alts: [], token: "tok" });
+  sockets[0].open();
+  sockets[0].message({ t: "models", provider: "antigravity", models: [] });
+  assert.equal(c.byProvider.antigravity.models, undefined);
+  assert.equal(c.models.models.length, 0);
+  sockets[0].message({ t: "models", provider: "antigravity", models: [{ slug: "gemini-4-neon", name: "Gemini 4 Neon", efforts: ["low", "high"] }] });
+  assert.equal(c.byProvider.antigravity.models.models.length, 1);
+  // Subsequent empty error does not wipe out valid cached models.
+  sockets[0].message({ t: "models", provider: "antigravity", models: [], error: "temporary timeout" });
+  assert.equal(c.byProvider.antigravity.models.models.length, 1);
+  assert.equal(c.models.models.length, 1);
+  assert.ok(redrawCount >= 3);
+
+  // SHEETS.new shows Retry on empty catalog, re-requests on computer switch, and preserves draft text/caret on async models arrival.
+  const sent1 = [], sent2 = [];
+  const c1 = { threads: [{ cwd: "/work/a" }], projects: [], home: "/work", capabilities: { antigravity: true }, models: null, send: (m) => sent1.push(m) };
+  const c2 = { threads: [{ cwd: "/work/b" }], projects: [], home: "/work", capabilities: { antigravity: true }, models: { models: [] }, send: (m) => sent2.push(m) };
+  const textEl = makeElement("textarea", "nt-text");
+  const cwdEl = makeElement("input", "nt-cwd");
+  const compEl = makeElement("select", "nt-computer");
+  let restoredSelection = null;
+  textEl.setSelectionRange = (a, b) => { restoredSelection = [a, b]; };
+  const newSheet = makeElement("div", "sheet");
+  newSheet.contains = (el) => el === textEl;
+  newSheet.querySelector = (sel) => ({ "#nt-text": textEl, "#nt-cwd": cwdEl, "#nt-computer": compEl }[sel] || null);
+  const newCtx = vm.createContext({
+    Map,
+    Set,
+    Array,
+    Number,
+    Object,
+    String,
+    CSS: { escape: (x) => x },
+    I: { close: "X", down: "V", check: "C" },
+    S: {
+      provider: "antigravity",
+      sheet: "new",
+      machine: "m1",
+      servers: [{ id: "m1", name: "Mac 1", url: "http://1" }, { id: "m2", name: "Mac 2", url: "http://2" }],
+      newAttach: [],
+      newDraft: null,
+    },
+    SHEETS: {},
+    conns: new Map([["m1", c1], ["m2", c2]]),
+    document: { activeElement: textEl },
+    esc: (s) => String(s ?? ""),
+    base: (p) => String(p || "").split("/").pop(),
+    hostOf: (u) => u,
+    loadingHTML: (s) => s,
+    attHTML: () => "",
+    projectsOf: () => [],
+    shortModel: (s) => s,
+    effortName: (s) => s,
+    attachmentBatches: new Map(),
+    persistAttachmentBatches() {},
+    store: { get: (_, d) => d, set() {} },
+    closeSheet() {},
+    openSheet() {},
+  });
+  vm.runInContext(newChatSource, newCtx);
+  newCtx.SHEETS.new(newSheet);
+  assert.match(newSheet.innerHTML, /Loading Models/);
+
+  // Empty response triggers Retry UI instead of infinite spinner.
+  c1.models = { models: [] };
+  newCtx.S.redraw();
+  assert.match(newSheet.innerHTML, /data-model-retry/);
+  assert.match(newSheet.innerHTML, /No models available yet\./);
+
+  // User types a prompt while models arrive asynchronously -> text and caret preserved.
+  textEl.value = "Deploy release";
+  textEl.selectionStart = 6;
+  textEl.selectionEnd = 6;
+  textEl.oninput();
+  c1.models = { models: [{ slug: "gemini-4-neon", name: "Gemini 4 Neon", efforts: ["low", "high"] }], default: { model: "gemini-4-neon" } };
+  newCtx.S.redraw();
+  assert.equal(newCtx.S.newDraft.text, "Deploy release");
+  assert.deepEqual(restoredSelection, [6, 6]);
+  assert.match(newSheet.innerHTML, /Gemini 4 Neon/);
+
+  // Switching computers clears stale empty catalog and requests models for m2.
+  compEl.value = "m2";
+  compEl.onchange();
+  assert.equal(c2.models, null);
+  assert.ok(sent2.some((m) => m.op === "models" && m.provider === "antigravity"));
+});
+
+test("Notification Controls UI defaults, toggle persistence to Native bridge, browser filtering, and boot sync", () => {
+  const storage = new Map();
+  const nativeSaved = [];
+  let nativeReturned = "";
+  let nativeMaster = true;
+  const toasts = [];
+  const browserNotifs = [];
+  const buzzes = [];
+
+  class FakeNotification {
+    constructor(title, opts) { browserNotifs.push({ title, body: opts?.body }); }
+  }
+  FakeNotification.permission = "granted";
+
+  function buildCtx(withNative) {
+    const ctx = vm.createContext({
+      Map,
+      Set,
+      Array,
+      JSON,
+      String,
+      Object,
+      Notification: FakeNotification,
+      Native: withNative ? {
+        notificationsEnabled: () => nativeMaster,
+        setNotifications: (v) => { nativeMaster = !!v; },
+        getNotificationPrefs: () => nativeReturned,
+        setNotificationPrefs: (j) => { nativeSaved.push(j); nativeReturned = j; },
+      } : null,
+      store: {
+        get: (k, d) => (storage.has(k) ? JSON.parse(storage.get(k)) : d),
+        set: (k, v) => storage.set(k, JSON.stringify(v)),
+      },
+      S: { provider: "antigravity", view: "home", sid: "m1", id: "", servers: [], sheet: "macs" },
+      conns: new Map(),
+      recoveryJobs: new Map(),
+      I: { trash: "T", download: "D", chev: ">", plug: "P", copy: "C", gear: "G" },
+      esc: (s) => String(s ?? ""),
+      hostOf: (u) => u,
+      computerDotClass: () => "on",
+      computerStatus: () => "Connected",
+      cleanThreadText: (s) => String(s || ""),
+      toast: (msg) => toasts.push(msg),
+      buzz: (ms) => buzzes.push(ms),
+      selectProvider() {},
+      openThread() {},
+      saveServers() {},
+      syncConns() {},
+      renderHome() {},
+      openSheet() {},
+      closeSheet() {},
+      openUsage() {},
+      mi: () => "",
+      document: { visibilityState: "hidden" },
+    });
+    const evStart = appSource.indexOf("function onEvent(");
+    const evEnd = appSource.indexOf("// -------------------------------------------------------------- utilities --");
+    const macsStart = appSource.indexOf("  macs(sh) {");
+    const macsEnd = appSource.indexOf("// ------------------------------------------------------- Android intents --", macsStart);
+    vm.runInContext(
+      appSource.slice(evStart, evEnd) +
+        "\nconst SHEETS = {\n" +
+        appSource.slice(macsStart, macsEnd) +
+        "\nglobalThis.SHEETS = SHEETS;",
+      ctx
+    );
+    return ctx;
+  }
+
+  // 1. Defaults are all true when nothing is stored.
+  const ctx = buildCtx(true);
+  assert.deepEqual(JSON.parse(JSON.stringify(ctx.loadNotificationPrefs())), { completed: true, attention: true, failed: true });
+
+  // 2. Render Notification Controls in SHEETS.macs with Title Case labels and toggle Turn Completed off.
+  const sheet = makeElement("div", "sheet");
+  ctx.SHEETS.macs(sheet);
+  assert.match(sheet.innerHTML, /Turn Completed/);
+  assert.match(sheet.innerHTML, /Notify When An Agent Finishes A Turn/);
+  assert.match(sheet.innerHTML, /Questions And Approvals/);
+  assert.match(sheet.innerHTML, /Notify When An Agent Needs Input Or Permission/);
+  assert.match(sheet.innerHTML, /Turn Failed/);
+  assert.match(sheet.innerHTML, /Notify When A Turn Fails/);
+  assert.match(sheet.innerHTML, /role="switch" aria-checked="true"[^>]*data-notify-pref="completed"/);
+
+  sheet.onclick({
+    target: {
+      dataset: {},
+      closest: (sel) => (sel === "[data-notify-pref]" ? { dataset: { notifyPref: "completed" } } : null),
+    },
+  });
+  assert.equal(nativeSaved.at(-1), '{"completed":false,"attention":true,"failed":true}');
+  assert.equal(storage.get("fc_notify_prefs"), '{"completed":false,"attention":true,"failed":true}');
+  assert.match(sheet.innerHTML, /role="switch" aria-checked="false"[^>]*data-notify-pref="completed"/);
+
+  // 3. Browser / web onEvent suppresses completed notifications while still allowing attention & failed.
+  const webCtx = buildCtx(false);
+  webCtx.loadNotificationPrefs();
+  webCtx.onEvent({ s: { id: "m1" } }, { kind: "completed", provider: "antigravity", id: "t1", title: "Finished Task" });
+  assert.equal(toasts.filter((t) => t.startsWith("Finished:")).length, 0);
+  assert.equal(browserNotifs.length, 0);
+
+  webCtx.onEvent({ s: { id: "m1" } }, { kind: "attention", provider: "antigravity", id: "t1", title: "Needs Approval" });
+  assert.equal(toasts.filter((t) => t.startsWith("Needs You:")).length, 1);
+  assert.equal(browserNotifs.length, 1);
+  assert.equal(browserNotifs[0].body, "Needs Approval");
+  assert.equal(buzzes.length, 1);
+
+  // 4. Boot sync: Native.getNotificationPrefs wins over localStorage if present.
+  storage.set("fc_notify_prefs", '{"completed":true,"attention":true,"failed":true}');
+  nativeReturned = '{"completed":false,"attention":true,"failed":false}';
+  const bootCtx = buildCtx(true);
+  assert.deepEqual(JSON.parse(JSON.stringify(bootCtx.loadNotificationPrefs())), { completed: false, attention: true, failed: false });
+  assert.equal(storage.get("fc_notify_prefs"), '{"completed":false,"attention":true,"failed":false}');
+
+  // 5. Boot sync: when Native has no saved prefs, localStorage is pushed to Native.
+  nativeReturned = "";
+  nativeSaved.length = 0;
+  storage.set("fc_notify_prefs", '{"completed":false,"attention":false,"failed":true}');
+  const pushCtx = buildCtx(true);
+  assert.deepEqual(JSON.parse(JSON.stringify(pushCtx.loadNotificationPrefs())), { completed: false, attention: false, failed: true });
+  assert.equal(nativeSaved.at(-1), '{"completed":false,"attention":false,"failed":true}');
+});
+
+test("Swipe-down-to-dismiss sheets respects scrollTop>0, interactive controls, thresholds, and resets styles", () => {
+  const sh = makeElement("div", "sheet");
+  sh.offsetHeight = 400;
+  sh.style = { transform: "", transition: "", bottom: "" };
+  sh.getAnimations = () => [];
+  const scrim = makeElement("div", "scrim");
+  scrim.style = { opacity: "", pointerEvents: "" };
+
+  const listeners = new Map();
+  sh.addEventListener = (type, fn) => {
+    if (!listeners.has(type)) listeners.set(type, []);
+    listeners.get(type).push(fn);
+  };
+  const emit = (type, ev) => { for (const fn of listeners.get(type) || []) fn(ev); };
+
+  let closed = 0;
+  let now = 1000;
+  const ctx = vm.createContext({
+    Set,
+    Map,
+    Math,
+    Date: { now: () => now },
+    setTimeout: (fn) => { fn(); return 1; },
+    clearTimeout() {},
+    S: { sheet: "macs", view: "home", provider: "antigravity" },
+    $: (id) => ({ sheet: sh, scrim, composer: { offsetHeight: 60 }, jump: makeElement("button") }[id] || makeElement("div", id)),
+    history: { state: {}, pushState() {}, replaceState() {}, back() {} },
+    document: { hidden: true },
+    reducedMotion: { matches: true },
+    window: {},
+    SHEETS: { macs() {} },
+    closeSheet() { closed++; ctx.S.sheet = null; ctx.resetSheetSwipeStyles(sh, scrim); },
+  });
+  const start = appSource.indexOf("function resetSheetSwipeStyles(");
+  const end = appSource.indexOf("function openSheet(");
+  vm.runInContext(appSource.slice(start, end), ctx);
+  ctx.bindSheetSwipe(sh, scrim);
+
+  const bodyTarget = { scrollTop: 0, parentElement: sh, closest: () => null };
+  const scrolledTarget = { scrollTop: 42, parentElement: sh, closest: () => null };
+  const rangeTarget = { scrollTop: 0, parentElement: sh, closest: (sel) => (sel.includes('input[type="range"]') ? {} : null) };
+  const gripTarget = { scrollTop: 0, parentElement: sh, closest: (sel) => (sel.includes(".grip") ? {} : null) };
+
+  // 1. Scrollable content with scrollTop > 0 must NOT trigger sheet dismiss.
+  emit("pointerdown", { pointerId: 1, button: 0, clientX: 100, clientY: 100, target: scrolledTarget });
+  now += 50;
+  emit("pointermove", { pointerId: 1, clientX: 100, clientY: 260, preventDefault() {} });
+  emit("pointerup", { pointerId: 1 });
+  assert.equal(closed, 0);
+  assert.equal(sh.style.transform, "");
+
+  // 2. Interactive range slider must NOT trigger sheet dismiss.
+  emit("pointerdown", { pointerId: 2, button: 0, clientX: 100, clientY: 100, target: rangeTarget });
+  now += 50;
+  emit("pointermove", { pointerId: 2, clientX: 100, clientY: 260, preventDefault() {} });
+  emit("pointerup", { pointerId: 2 });
+  assert.equal(closed, 0);
+
+  // 3. Small downward drag snaps back without closing and resets inline styles.
+  emit("pointerdown", { pointerId: 3, button: 0, clientX: 100, clientY: 100, target: bodyTarget });
+  now += 200;
+  emit("pointermove", { pointerId: 3, clientX: 100, clientY: 145, preventDefault() {} });
+  assert.equal(sh.style.transform, "translateY(45px)");
+  assert.ok(Number(scrim.style.opacity) < 1);
+  emit("pointerup", { pointerId: 3 });
+  assert.equal(closed, 0);
+  assert.equal(sh.style.transform, "");
+  assert.equal(scrim.style.opacity, "");
+
+  // 4. Full-screen sheet (.full) ignores swipe-down dismiss.
+  sh.classList.add("full");
+  emit("pointerdown", { pointerId: 4, button: 0, clientX: 100, clientY: 50, target: gripTarget });
+  now += 40;
+  emit("pointermove", { pointerId: 4, clientX: 100, clientY: 250, preventDefault() {} });
+  emit("pointerup", { pointerId: 4 });
+  assert.equal(closed, 0);
+  sh.classList.remove("full");
+
+  // 5. Dragging grip past dismiss threshold closes sheet cleanly via touch events.
+  let prevented = false;
+  emit("touchstart", { touches: [{ identifier: 7, clientX: 100, clientY: 60 }], target: gripTarget });
+  now += 40;
+  emit("touchmove", { touches: [{ identifier: 7, clientX: 102, clientY: 200 }], cancelable: true, preventDefault: () => { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.equal(sh.style.transform, "translateY(140px)");
+  emit("touchend", {});
+  assert.equal(closed, 1);
+  assert.equal(sh.style.transform, "");
+  assert.equal(scrim.style.opacity, "");
+});
+
+test("window.handleAndroidBack unwinds slash menu, nested sheets, thread, project, and returns false at home root", () => {
+  const sh = makeElement("div", "sheet");
+  sh.style = { transform: "", transition: "", bottom: "" };
+  sh.getAnimations = () => [];
+  const scrim = makeElement("div", "scrim");
+  scrim.style = { opacity: "", pointerEvents: "" };
+  const replacedStates = [];
+  const pushedStates = [];
+  let historyBackCalls = 0;
+  let leftThreads = 0;
+  let renderedHome = 0;
+  let openedProjects = [];
+  let openedSheets = [];
+
+  const ctx = vm.createContext({
+    Set,
+    Map,
+    Math,
+    Date,
+    setTimeout: (fn) => { fn(); return 1; },
+    clearTimeout() {},
+    S: { view: "home", provider: "antigravity", sid: "", id: "", cwd: "", group: null, sheet: null, sheetOpts: null },
+    slashState: { open: false },
+    closeSlashMenu() { ctx.slashState.open = false; },
+    $: (id) => ({ sheet: sh, scrim, composer: { offsetHeight: 60 }, jump: makeElement("button") }[id] || makeElement("div", id)),
+    history: {
+      state: { view: "home", provider: "antigravity" },
+      pushState(st) { this.state = st; pushedStates.push(st); },
+      replaceState(st) { this.state = st; replacedStates.push(st); },
+      back() { historyBackCalls++; },
+    },
+    document: { hidden: true },
+    reducedMotion: { matches: true },
+    feed: { scrollHeight: 0, clientHeight: 0, scrollTop: 0 },
+    Native: null,
+    appUpdate: { phase: "idle" },
+    appUpdateInstallWanted: false,
+    SHEETS: {
+      macs(_s, opts) { openedSheets.push(["macs", opts]); },
+      connection(_s, opts) { openedSheets.push(["connection", opts]); },
+    },
+    show(v) { ctx.S.view = v; },
+    renderHome() { renderedHome++; },
+    leaveThread() { leftThreads++; ctx.S.id = ""; },
+    openProject(cwd, push) {
+      if (push) ctx.pushNavSnapshot();
+      ctx.S.group = null;
+      ctx.S.cwd = cwd;
+      ctx.S.view = "project";
+      openedProjects.push(cwd);
+    },
+    openThread(sid, id, push) {
+      if (push) ctx.pushNavSnapshot();
+      ctx.S.sid = sid;
+      ctx.S.id = id;
+      ctx.S.view = "thread";
+    },
+  });
+  ctx.window = ctx;
+  const start = appSource.indexOf("let sheetGeneration = 0;");
+  const end = appSource.indexOf('$("scrim").onclick');
+  vm.runInContext(appSource.slice(start, end), ctx);
+
+  // Navigate home -> project -> thread, open nested sheets macs -> connection, then open slash menu.
+  ctx.openProject("/work/fastcontrol", true);
+  ctx.openThread("m1", "ag-1", true);
+  ctx.openSheet("macs", {});
+  ctx.openSheet("connection", { server: "m1" });
+  ctx.slashState.open = true;
+
+  // 1. Slash menu closes first.
+  assert.equal(ctx.window.handleAndroidBack(), true);
+  assert.equal(ctx.slashState.open, false);
+  assert.equal(ctx.S.sheet, "connection");
+
+  // 2. Nested sheet returns to parent sheet (macs).
+  assert.equal(ctx.window.handleAndroidBack(), true);
+  assert.equal(ctx.S.sheet, "macs");
+
+  // 3. Parent sheet closes cleanly without calling history.back().
+  assert.equal(ctx.window.handleAndroidBack(), true);
+  assert.equal(ctx.S.sheet, null);
+  assert.equal(historyBackCalls, 0);
+
+  // 4. Thread navigates back to parent project.
+  assert.equal(ctx.window.handleAndroidBack(), true);
+  assert.equal(leftThreads, 1);
+  assert.equal(ctx.S.view, "project");
+  assert.equal(openedProjects.at(-1), "/work/fastcontrol");
+
+  // 5. Project navigates back to home.
+  assert.equal(ctx.window.handleAndroidBack(), true);
+  assert.equal(ctx.S.view, "home");
+  assert.equal(renderedHome, 1);
+
+  // 6. Root home with no modal returns false (triggers Android double-back toast).
+  assert.equal(ctx.window.handleAndroidBack(), false);
+  assert.equal(historyBackCalls, 0);
 });

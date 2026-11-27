@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const fs = require('node:fs');
 const context = vm.createContext({});
-vm.runInContext(fs.readFileSync('web/messages.js', 'utf8') + '\nthis.parse = MessageContent.parse; this.renderFileCitations = MessageContent.renderFileCitations;', context);
+vm.runInContext(fs.readFileSync('web/messages.js', 'utf8') + '\nthis.parse = MessageContent.parse; this.renderFileCitations = MessageContent.renderFileCitations; this.cleanUserMessage = MessageContent.cleanUserMessage; this.MessageContent = MessageContent;', context);
 const parse = text => JSON.parse(JSON.stringify(context.parse(text)));
 const heartbeat = '<heartbeat>\n<automation_id>internal-check-id</automation_id>\n<decision>NOTIFY</decision>\n<message>Final verification and scoped shutdown completed. **All records match.**\n\nReport: [Final Report](/reports/final report.md).</message>\n</heartbeat>';
 
@@ -108,4 +108,80 @@ test('assistant responses and user messages share envelope formatting without lo
   const paint=app.slice(app.indexOf('function paintResponse('),app.indexOf('function revealResponses('));
   assert.match(paint,/content\.innerHTML = messageHTML\(r\.shown, true,/);
   assert.doesNotMatch(paint,/content\.innerHTML = md\(/);
+});
+
+test('Antigravity XML envelopes and BEGIN/END CHAT markers are stripped while preserving code fences and Codex/Claude envelopes', () => {
+  const wrapped = '<USER_REQUEST>\nFix the build error\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-27T20:00:00Z\n<SKILL>\nname: build-helper\n</SKILL>\n</ADDITIONAL_METADATA>\n<USER_SETTINGS_CHANGE>\nmodel=gemini-4-neon\n</USER_SETTINGS_CHANGE>';
+  assert.equal(context.cleanUserMessage(wrapped), 'Fix the build error');
+  assert.deepEqual(parse(wrapped), [{kind:'text', text:'Fix the build error'}]);
+
+  // Truncated preview / unclosed tag + partial closing tag.
+  assert.equal(context.cleanUserMessage('<USER_REQUEST>\nTruncated prompt text'), 'Truncated prompt text');
+  assert.equal(context.cleanUserMessage('<USER_REQUEST>\nTruncated prompt</USER_REQU'), 'Truncated prompt');
+  assert.equal(context.cleanUserMessage('<USER_REQUEST>\nDone\n</USER_REQUEST>\n<ADDITIONAL_ME\u2026'), 'Done');
+
+  // BEGIN CHAT / END CHAT variants.
+  assert.equal(context.cleanUserMessage('BEGIN CHAT\nCheck tests\nEND CHAT\n<ADDITIONAL_METADATA>time</ADDITIONAL_METADATA>'), 'Check tests');
+  assert.equal(context.cleanUserMessage('--- BEGIN CHAT ---\n<begin_chat>\n<USER_REQUEST>\nRun checks\n</USER_REQUEST>\n<end_chat>\n--- END CHAT ---'), 'Run checks');
+  assert.equal(context.cleanUserMessage('<begin_chat>Inline prompt<end_chat>'), 'Inline prompt');
+
+  // Multiple context/metadata blocks.
+  const multiMeta = '<ATTACHED_FILES>a.go</ATTACHED_FILES>\n<CURRENT_EDITOR>b.go</CURRENT_EDITOR>\n<OPEN_FILES>c.go</OPEN_FILES>\n<USER_CONTEXT>ctx</USER_CONTEXT>\n<CONTEXT>more</CONTEXT>\n<EPHEMERAL_MESSAGE>note</EPHEMERAL_MESSAGE>\nClean message';
+  assert.equal(context.cleanUserMessage(multiMeta), 'Clean message');
+
+  // System-only / metadata-only wakeups clean to empty string and empty parse parts.
+  const sysWake = 'The following is a <SYSTEM_MESSAGE> not actually sent by the user. It is provided by the system as important information to pay attention to.\n\n<SYSTEM_MESSAGE>\n[Message] timer fired\n</SYSTEM_MESSAGE>';
+  assert.equal(context.cleanUserMessage(sysWake), '');
+  assert.deepEqual(parse(sysWake), []);
+  assert.equal(context.cleanUserMessage('<USER_SETTINGS_CHANGE>effort=high</USER_SETTINGS_CHANGE>'), '');
+
+  // Streaming user_message_chunk never flashes raw wrapper tag prefixes.
+  for (let n = 1; n <= wrapped.length; n++) {
+    const cleaned = context.cleanUserMessage(wrapped.slice(0, n), true);
+    assert.doesNotMatch(cleaned, /<\/?(?:USER_REQUEST|ADDITIONAL_METADATA|USER_SETTINGS_CHANGE|SKILL)/i, 'prefix ' + n);
+  }
+
+  // Fenced code blocks, inline code, and plain prose MUST be preserved.
+  const fencedUnwrapped = 'Example:\n```xml\n<USER_REQUEST>literal</USER_REQUEST>\n<ADDITIONAL_METADATA>meta</ADDITIONAL_METADATA>\nBEGIN CHAT\nhi\nEND CHAT\n```';
+  assert.equal(context.cleanUserMessage(fencedUnwrapped), fencedUnwrapped);
+  const fencedWrapped = '<USER_REQUEST>\n' + fencedUnwrapped + '\n</USER_REQUEST>\n<ADDITIONAL_METADATA>real meta</ADDITIONAL_METADATA>';
+  assert.equal(context.cleanUserMessage(fencedWrapped), fencedUnwrapped);
+  assert.equal(context.cleanUserMessage('<USER_REQUEST>\nKeep `<USER_REQUEST>` and `</USER_REQUEST>` in <div>html</div>.\n</USER_REQUEST>'), 'Keep `<USER_REQUEST>` and `</USER_REQUEST>` in <div>html</div>.');
+  assert.equal(context.cleanUserMessage('Let us begin chat testing and end chat logging.'), 'Let us begin chat testing and end chat logging.');
+});
+
+test('turnHTML cleans Antigravity user bubbles and omits system-only wakeup bubbles', () => {
+  const app = fs.readFileSync('web/app.js', 'utf8');
+  const renderer = vm.createContext({
+    S: { sid: 'm1', open: new Set() },
+    I: { chev: '>' },
+    esc: s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
+    base: s => s.split(/[\\/]/).pop(),
+    dur: ms => ms + 'ms',
+    MessageContent: context.MessageContent,
+    imagesHTML: () => '',
+    audioHTMLs: () => '',
+    entryHTML: html => html,
+    stepHTML: () => '',
+    responseState: (t, it, i) => ({ key: t.key + ':r:' + i }),
+    md: s => `<p>${s}</p>`,
+    Date,
+  });
+  vm.runInContext(
+    app.slice(app.indexOf('function hiddenTool('), app.indexOf('function outputLines(')),
+    renderer
+  );
+  const html = renderer.turnHTML({
+    key: 'step-0',
+    status: 'completed',
+    items: [
+      { id: 'u0', k: 'user', text: '<SYSTEM_MESSAGE>\nwakeup\n</SYSTEM_MESSAGE>' },
+      { id: 'u1', k: 'user', text: '<USER_REQUEST>\nShip v0.2.19\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\ntime\n</ADDITIONAL_METADATA>' },
+    ],
+  });
+  assert.match(html, /Ship v0\.2\.19/);
+  assert.doesNotMatch(html, /USER_REQUEST|ADDITIONAL_METADATA|SYSTEM_MESSAGE|wakeup/);
+  // Only one .u bubble rendered (the system-only wakeup was skipped, and the real user bubble is not marked steer).
+  assert.equal((html.match(/class="u/g) || []).length, 1);
+  assert.doesNotMatch(html, /class="u steer"/);
 });
