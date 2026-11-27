@@ -166,29 +166,93 @@ async function recoverComputer(serverID,helperID,peerID) {
   if(recoveryJobs.get(serverID)!==job)return;
   if(!S.servers.includes(server)){recoveryJobs.delete(serverID);if(S.sheet==='connection')S.redraw?.();return;}
   job.busy=false;job.text=result.ok ? 'Recovery ran. Reconnecting to the computer.' : result.msg || 'Recovery could not complete. Try again.';
-  if(result.ok){const target=conns.get(serverID);if(target){target.paused=false;target.backoff=300;target.connect();}}
+  if(result.ok){const target=conns.get(serverID);if(target){target.paused=false;target.backoff=300;target.connect(true);}}
   if(S.sheet==='connection' && S.connectionID===serverID)S.redraw?.();
 }
 function computerStatus(connection) {
   if(connection?.ok && connection.state!=="wait")return "Connected";
-  if(connection?.state==="rejected")return "Pairing token rejected";
+  if(connection?.state==="rejected")return "Pairing Token Rejected";
   if(connection?.state==="wait")return "Connecting";
-  return "Not reachable";
+  return "Not Reachable";
+}
+function computerDotClass(connection) {
+  return connection?.ok && connection.state!=="wait" ? "on" : connection?.state==="wait" ? "wait" : "off";
 }
 function refreshComputerStatus(connection) {
   for(const element of document.querySelectorAll('[data-computer-status]')) {
     if(element.dataset.computerStatus===connection.s.id){
       element.textContent=computerStatus(connection);
       const dot=element.closest('.mi')?.querySelector('.dot');
-      if(dot)dot.className='dot '+(connection.ok && connection.state!=="wait" ? 'on' : connection.state==='wait' ? 'wait' : 'off');
+      if(dot)dot.className='dot '+computerDotClass(connection);
     }
   }
   if(S.sheet==="connection")S.redraw?.();
+}
+const CONNECT_TIMEOUT_MS = 3500;
+const AUTH_PROBE_TIMEOUT_MS = 1500;
+const NETWORK_PROBE_TIMEOUT_MS = 3000;
+const MAX_RELAY_ALTS = 8;
+function normalizeRelayOrigin(value, requireHttps = false) {
+  if (typeof value !== "string" || !value.trim()) return "";
+  try {
+    const u = new URL(value.trim());
+    if ((u.protocol !== "http:" && u.protocol !== "https:") || (requireHttps && u.protocol !== "https:")) return "";
+    if (u.username || u.password || u.search || u.hash || (u.pathname && u.pathname !== "/")) return "";
+    return u.origin;
+  } catch { return ""; }
+}
+function isTailscaleHost(host) {
+  const clean = host.replace(/^\[|\]$/g, "").toLowerCase();
+  if (clean.endsWith(".ts.net") || clean.startsWith("fd7a:115c:a1e0:")) return true;
+  const m = /^100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(clean);
+  return !!m && +m[1] >= 64 && +m[1] <= 127 && +m[2] <= 255 && +m[3] <= 255;
+}
+function isLiteralHostIP(host) {
+  const clean = host.replace(/^\[|\]$/g, "");
+  return /^(\d{1,3}\.){3}\d{1,3}$/.test(clean) || clean.includes(":");
+}
+function mergeRelayAddresses(server, incoming, limit = MAX_RELAY_ALTS) {
+  const requireHttps = !!(server?.pin || (typeof server?.url === "string" && server.url.startsWith("https://")));
+  const primary = normalizeRelayOrigin(server?.url || "", false);
+  const seen = new Set(primary ? [primary] : []);
+  const fresh = [];
+  for (const raw of Array.isArray(incoming) ? incoming : []) {
+    const origin = normalizeRelayOrigin(raw, requireHttps);
+    if (origin && !seen.has(origin)) { seen.add(origin); fresh.push(origin); }
+  }
+  const stable = [], tailscale = [], other = [];
+  for (const raw of Array.isArray(server?.alts) ? server.alts : []) {
+    const origin = normalizeRelayOrigin(raw, requireHttps);
+    if (!origin || seen.has(origin)) continue;
+    seen.add(origin);
+    const host = new URL(origin).hostname.toLowerCase();
+    if (!isLiteralHostIP(host)) stable.push(origin);
+    else if (isTailscaleHost(host)) tailscale.push(origin);
+    else other.push(origin);
+  }
+  return [...fresh, ...stable, ...tailscale, ...other].slice(0, limit);
+}
+function mergeNativeServers(localServers, nativeServers) {
+  if (!Array.isArray(localServers) || !Array.isArray(nativeServers)) return false;
+  let changed = false;
+  for (const server of localServers) {
+    if (!server?.id) continue;
+    const nativeServer = nativeServers.find((x) => x && x.id === server.id);
+    if (!nativeServer) continue;
+    const incoming = [...(Array.isArray(nativeServer.alts) ? nativeServer.alts : []), nativeServer.url];
+    const merged = mergeRelayAddresses(server, incoming);
+    if (JSON.stringify(merged) !== JSON.stringify(server.alts || [])) {
+      server.alts = merged;
+      changed = true;
+    }
+  }
+  return changed;
 }
 class Conn {
   constructor(server) {
     this.s = server;
     this.ws = null; this.ok = false; this.desktop = false; this.state = "wait";
+    this.helloReceived = false; this.probeTimer = 0;
     this.threads = store.get("threads:" + server.id, []);
     this.backoff = 300; this.timer = 0; this.nonce = 0; this.pending = {};
     this.models = null; this.projects = null; this.home = ""; this.projAt = 0;
@@ -200,23 +264,29 @@ class Conn {
     this.byProvider = {};
     this.capabilities = {};
     this.threads = store.get("threads:" + server.id + ":" + S.provider, []);
-    this.connect();
+    this.connect(true);
   }
   // connect races every known address of the Mac (the last one that worked,
   // the paired one, and the Wi-Fi and Tailscale addresses from hello) and
   // keeps whichever socket opens first.
   dropSockets() {
-    clearTimeout(this.timer);clearTimeout(this.deadline);clearInterval(this.heartbeatTimer);
+    clearTimeout(this.timer);clearTimeout(this.deadline);clearTimeout(this.probeTimer);clearInterval(this.heartbeatTimer);
     for (const socket of new Set([this.ws,...this.candidates])) if(socket) {socket.onclose=null;socket.onopen=null;socket.onmessage=null;try{socket.close();}catch{}}
-    this.candidates=[];this.ws=null;this.ok=false;
+    this.candidates=[];this.ws=null;this.ok=false;this.helloReceived=false;
   }
-  connect() {
+  connect(showWait = false) {
     if(this.dead || this.paused)return;
+    const wait = showWait === true || !!(showWait && (showWait.wait || showWait.showWait));
     const my=this.attempt=(this.attempt || 0)+1;
-    this.dropSockets();this.setState("wait");
-    const urls=[this.base,this.s.url,...(this.s.alts || [])].filter((u,i,a)=>u && a.indexOf(u)===i && (!this.s.url.startsWith("https://") || u.startsWith("https://")));
+    this.dropSockets();
+    if(wait)this.setState("wait");
+    else if(this.state==="on" || this.state==="nodesk")this.setState("off");
+    const requireHttps = !!(this.s.pin || this.s.url.startsWith("https://"));
+    const urls=[this.base,this.s.url,...(this.s.alts || [])]
+      .map(u=>normalizeRelayOrigin(u,requireHttps))
+      .filter((u,i,a)=>u && a.indexOf(u)===i);
     let winner=null,failed=0;
-    this.deadline=setTimeout(()=>{if(my===this.attempt && !winner){this.dropSockets();this.unreachable(my);}},7000);
+    this.deadline=setTimeout(()=>{if(my===this.attempt && !winner){this.dropSockets();this.unreachable(my);}},CONNECT_TIMEOUT_MS);
     for(const u of urls) {
       let w;
       try{w=Native?.openRelaySocket && this.s.pin ? new PinnedRelaySocket(this.s,u) : new WebSocket(u.replace(/^http/,"ws")+"/ws?t="+encodeURIComponent(this.s.token));}
@@ -234,13 +304,13 @@ class Conn {
   }
   attach(ws) {
     mark("open:" + this.s.id);
-    this.ws = ws; this.ok = true; this.backoff = 300;
+    this.ws = ws; this.ok = false; this.helloReceived = false; this.backoff = 300;
     this.lastMessage=Date.now();this.heartbeatSupported=false;
-    this.deadline=setTimeout(()=>{if(this.ws===ws && this.state==="wait")this.connect();},10000);
-    ws.onmessage = (e) => {if(this.ws!==ws)return;this.lastMessage=Date.now();this.onMessage(JSON.parse(e.data),e.data);};
+    this.deadline=setTimeout(()=>{if(this.ws===ws && !this.helloReceived){this.dropSockets();if(this.state!=="rejected")this.setState("off");this.connect(false);}},10000);
+    ws.onmessage = (e) => {if(this.ws!==ws)return;clearTimeout(this.probeTimer);this.lastMessage=Date.now();this.onMessage(JSON.parse(e.data),e.data);};
     this.heartbeatTimer=setInterval(()=>{
       if(this.ws!==ws)return;
-      if(this.heartbeatSupported && Date.now()-this.lastMessage>30000){this.connect();return;}
+      if(this.heartbeatSupported && Date.now()-this.lastMessage>30000){this.connect(false);return;}
       if(this.heartbeatSupported)this.send({op:"ping"});
     },10000);
     ws.onclose = () => {
@@ -249,8 +319,8 @@ class Conn {
       const pending=this.pending;this.pending={};
       for(const resolve of Object.values(pending))resolve({ok:false,msg:"Connection lost. Check the chat before sending again."});
       if (this.dead || this.paused) return;
-      this.setState("off");
-      this.timer = setTimeout(() => this.connect(), this.backoff);
+      if (this.state !== "rejected") this.setState("off");
+      this.timer = setTimeout(() => this.connect(false), this.backoff);
       this.backoff = Math.min(this.backoff * 2, 5000);
     };
     this.send({ op: "events", on: true });
@@ -261,19 +331,39 @@ class Conn {
     if (S.view === "project") this.send({ op: "project", cwd: S.cwd });
     if (S.view === "thread" && S.sid === this.s.id) this.send({ op: "open", id: S.id });
   }
+  probeConnection() {
+    if (this.dead || this.paused || !this.ws || this.ws.readyState !== 1 || !this.heartbeatSupported) return;
+    const ws = this.ws, sentAt = Date.now();
+    this.send({ op: "ping" });
+    clearTimeout(this.probeTimer);
+    this.probeTimer = setTimeout(() => {
+      if (this.ws === ws && !this.dead && !this.paused && this.lastMessage < sentAt) {
+        this.backoff = 300;
+        this.connect(false);
+      }
+    }, NETWORK_PROBE_TIMEOUT_MS);
+  }
   rememberSeen() {if(this.lastMessage){this.lastSeen=this.lastMessage;this.s.lastSeen=this.lastSeen;saveServers();}}
-  async unreachable(attempt=this.attempt) {
+  unreachable(attempt=this.attempt) {
     this.ok=false;
     if(this.dead || this.paused || attempt!==this.attempt)return;
-    let rejected=false;
-    try {
-      const r=await fetch(this.s.url+"/auth?t="+encodeURIComponent(this.s.token),{signal:AbortSignal.timeout(2000)});
-      rejected=r.status===401;
-    } catch {}
-    if(this.dead || this.paused || attempt!==this.attempt || this.ok)return;
-    this.setState(rejected ? "rejected" : "off");
-    this.timer=setTimeout(()=>this.connect(),this.backoff);
+    if(this.state!=="rejected")this.setState("off");
+    this.timer=setTimeout(()=>this.connect(false),this.backoff);
     this.backoff=Math.min(this.backoff*2,5000);
+    this.probeAuth(attempt);
+  }
+  probeAuth(attempt=this.attempt) {
+    if(typeof fetch!=="function")return;
+    const requireHttps = !!(this.s.pin || this.s.url.startsWith("https://"));
+    const target = normalizeRelayOrigin(this.base, requireHttps) || normalizeRelayOrigin(this.s.url, requireHttps);
+    if(!target)return;
+    fetch(target+"/auth?t="+encodeURIComponent(this.s.token),{signal:AbortSignal.timeout(AUTH_PROBE_TIMEOUT_MS)})
+      .then(r=>{
+        if(this.dead || this.paused || attempt!==this.attempt || this.ok || this.ws)return;
+        if(r?.status===401)this.setState("rejected");
+        else if(this.state==="rejected")this.setState("off");
+      })
+      .catch(()=>{});
   }
   // Project counts come from the whole database, refreshed at most every 30 s.
   refreshProjects(force) {
@@ -304,18 +394,31 @@ class Conn {
     if(here)window.cacheTranscriptMessage?.(this.s.id,provider,m,raw);
     if (window.onAgentMessage?.(this, m, provider)) return;
     switch (m.t) {
-      case "hello":
-        clearTimeout(this.deadline);this.recoveryPeers=Array.isArray(m.recoveryPeers) ? m.recoveryPeers : [];this.heartbeatSupported=!!m.heartbeat;if(m.platform)this.s.platform=m.platform;this.rememberSeen();
+      case "hello": {
+        clearTimeout(this.deadline);this.ok=true;this.helloReceived=true;
+        this.recoveryPeers=Array.isArray(m.recoveryPeers) ? m.recoveryPeers : [];this.heartbeatSupported=!!m.heartbeat;
+        let dirty=false;
+        if(m.platform && this.s.platform!==m.platform){this.s.platform=m.platform;dirty=true;}
         this.desktop = m.desktop;
         this.capabilities = m.providers || { codex:true, claude:false };
-        if (Array.isArray(m.addrs) && JSON.stringify(m.addrs) !== JSON.stringify(this.s.alts || [])) { this.s.alts = m.addrs; saveServers(); }
+        if (Array.isArray(m.addrs)) {
+          const merged = mergeRelayAddresses(this.s, m.addrs);
+          if (JSON.stringify(merged) !== JSON.stringify(this.s.alts || [])) { this.s.alts = merged; dirty=true; }
+        }
         // Show the name the Mac reports, unless the user named it.
-        if (m.host && !this.s.custom && this.s.name !== m.host) { this.s.name = m.host; saveServers(); scheduleRender(); }
+        if (m.host && !this.s.custom && this.s.name !== m.host) { this.s.name = m.host; dirty=true; scheduleRender(); }
+        if (this.lastMessage) this.rememberSeen();
+        else if (dirty) saveServers();
         this.setState(m.desktop ? "on" : "nodesk");
         window.reconnectAgentViewer?.(this);
         break;
+      }
       case "network":
-        if(Array.isArray(m.addrs)){this.s.alts=m.addrs;saveServers();refreshComputerStatus(this);}
+        if (Array.isArray(m.addrs)) {
+          const merged = mergeRelayAddresses(this.s, m.addrs);
+          if (JSON.stringify(merged) !== JSON.stringify(this.s.alts || [])) { this.s.alts = merged; saveServers(); }
+          refreshComputerStatus(this);
+        }
         break;
       case "pong": break;
       case "threads":
@@ -376,9 +479,63 @@ document.addEventListener("visibilitychange", () => {
     hiddenTimer = setTimeout(() => { for (const c of conns.values()) c.pause(); }, 15000);
     return;
   }
-  for (const c of conns.values()) if (c.paused || !c.ws || c.ws.readyState > 1) { c.paused = false; c.backoff = 300; c.connect(); }
+  if (Native) syncNativeDiscoveries();
+  for (const c of conns.values()) if (c.paused || !c.ws || c.ws.readyState > 1) { c.paused = false; c.backoff = 300; c.connect(false); }
 });
-window.addEventListener("online", () => { for (const c of conns.values()) { c.backoff = 300; c.connect(); } });
+function handleNetworkChange(detail = {}) {
+  if (detail && detail.online === false) return;
+  for (const c of conns.values()) {
+    if (c.dead || c.paused) continue;
+    if (!c.ok || !c.ws || c.ws.readyState > 1) {
+      c.backoff = 300;
+      c.connect(false);
+    } else {
+      c.probeConnection();
+    }
+  }
+}
+function handleRelayDiscovered(info) {
+  if (!info || typeof info !== "object") return false;
+  const targetId = info.serverId || info.id || "";
+  const server = S.servers.find((s) => s.id === targetId);
+  if (!server) return false;
+  const requireHttps = !!(server.pin || (typeof server.url === "string" && server.url.startsWith("https://")));
+  const incoming = [
+    info.url,
+    ...(Array.isArray(info.alts) ? info.alts : []),
+    ...(Array.isArray(info.urls) ? info.urls : []),
+  ];
+  const validIncoming = incoming.map((u) => normalizeRelayOrigin(u, requireHttps)).filter(Boolean);
+  if (!validIncoming.length) return false;
+  const merged = mergeRelayAddresses(server, validIncoming);
+  const changed = JSON.stringify(merged) !== JSON.stringify(server.alts || []);
+  if (changed) {
+    server.alts = merged;
+    saveServers();
+  }
+  const c = conns.get(server.id);
+  if (c && !c.dead && !c.paused && !c.ok) {
+    const preferred = normalizeRelayOrigin(info.url || "", requireHttps) || validIncoming[0];
+    const idle = !c.candidates.length && !c.ws;
+    if (changed || idle || (preferred && c.base !== preferred)) {
+      if (preferred) c.base = preferred;
+      c.backoff = 300;
+      c.connect(false);
+    }
+  }
+  return true;
+}
+function syncNativeDiscoveries() {
+  if (!Native?.getDiscoveredRelays) return;
+  try {
+    const list = JSON.parse(Native.getDiscoveredRelays());
+    if (Array.isArray(list)) for (const item of list) handleRelayDiscovered(item);
+  } catch {}
+}
+window.onNetworkChange = handleNetworkChange;
+window.onAndroidNetworkChange = handleNetworkChange;
+window.onRelayDiscovered = handleRelayDiscovered;
+window.addEventListener("online", () => handleNetworkChange({ reason: "available", online: true }));
 
 function onEvent(c, e) {
   if (e.kind === "started") return;
@@ -529,11 +686,10 @@ $("macs-btn").onclick = () => openSheet("macs");
 $("ask").onclick = () => openSheet("new", {});
 
 function renderMachines() {
-  const dotCls = (c) => ({ on: "on", nodesk: "on", off: "off", rejected: "off", bad: "off" }[c.state] || "wait");
   let h = S.servers.length > 1 ? `<button class="chip ${S.machine === "all" ? "on" : ""}" data-m="all">All Computers</button>` : "";
   for (const s of S.servers) {
     const c = conns.get(s.id);
-    h += `<button class="chip ${S.machine === s.id || S.servers.length === 1 ? "on" : ""}" data-m="${s.id}"><span class="dot ${dotCls(c)}"></span>${esc(s.name || hostOf(s.url))}</button>`;
+    h += `<button class="chip ${S.machine === s.id || S.servers.length === 1 ? "on" : ""}" data-m="${s.id}"><span class="dot ${computerDotClass(c)}"></span>${esc(s.name || hostOf(s.url))}</button>`;
   }
   h += `<button class="chip" data-m="+">Add Computer</button>`;
   $("machines").innerHTML = h;
@@ -672,7 +828,7 @@ function renderProject() {
   const threads = [...byId.values()].sort((a, b) => b.recency - a.recency);
   const sids = [...new Set(threads.map((t) => t.sid))];
   $("p-title").textContent = base(S.cwd) || "Home";
-  $("p-sub").innerHTML = sids.map((s) => { const c = conns.get(s); return `<span><span class="dot ${c && c.ok ? "on" : "off"}"></span> ${esc(serverName(s))}</span>`; }).join("") + `<span class="mono">${esc(S.cwd)}</span>`;
+  $("p-sub").innerHTML = sids.map((s) => { const c = conns.get(s); return `<span><span class="dot ${computerDotClass(c)}"></span> ${esc(serverName(s))}</span>`; }).join("") + `<span class="mono">${esc(S.cwd)}</span>`;
   const q = $("p-search").value.toLowerCase().trim();
   const rows = q ? threads.filter((t) => `${t.title} ${t.preview} ${t.lastMsg || ""}`.toLowerCase().includes(q)) : threads;
   $("project-list").innerHTML = rows.length ? `<div class="sec">Chats<span class="n">${rows.length}</span></div><div class="group">${window.sessionTreeRows ? sessionTreeRows(rows,threads,{project:false}) : rows.map(t=>threadRow(t,{project:false})).join("")}</div>`
@@ -747,7 +903,7 @@ function renderThreadHeader() {
   $("t-title").textContent = t.displayTitle || m.title || t.title || t.preview || "Thread";
   const c = conn();
   const cwd = m.cwd || t.cwd;
-  const mac = S.servers.length > 1 ? `<span><span class="dot ${c && c.ok ? "on" : "off"}"></span> ${esc(serverName(S.sid))}</span>` : c && !c.ok ? '<span><span class="dot off"></span> Offline</span>' : "";
+  const mac = S.servers.length > 1 ? `<span><span class="dot ${computerDotClass(c)}"></span> ${esc(serverName(S.sid))}</span>` : c && !c.ok ? `<span><span class="dot ${computerDotClass(c)}"></span> ${c.state === "wait" ? "Connecting" : "Offline"}</span>` : "";
   $("t-sub").innerHTML = (cwd ? `<span>${esc(base(cwd))}</span>` : "") + ((m.branch || t.branch) ? `<span class="mono">${esc(m.branch || t.branch)}</span>` : "") + mac;
 }
 $("t-title").onclick = () => {
@@ -2617,16 +2773,16 @@ const SHEETS = {
       const connected=c?.ok && c.state!=="wait",checking=c?.state==="wait",mac=!s.platform || s.platform==='darwin';
       const last=c?.lastSeen || s.lastSeen;
       const recovery=recoveryChoices(s),job=recoveryJobs.get(server);
-      const recoveryUI=`${job ? `<p role="status" class="hint">${job.busy ? loadingHTML(job.text) : esc(connected && job.text.startsWith('Recovery ran.') ? 'The computer is connected.' : job.text)}</p>` : ''}${!connected || job?.busy ? recovery.map(({helper,peer})=>`<button class="mi" data-recover-helper="${esc(helper.s.id)}" data-recover-peer="${esc(peer.id)}" ${job?.busy ? 'disabled' : ''}>${I.plug}<span class="txt">Restart via ${esc(serverName(helper.s.id))}<span class="d">Reconnect Tailscale and restart the relay over SSH</span></span>${I.chev}</button>`).join('') : ''}`;
-      const seen=last ? new Date(last).toLocaleString([], {dateStyle:"medium",timeStyle:"short"}) : "No connection recorded";
-      sh.innerHTML=`<div class="grip"></div><h2>${esc(s.name || hostOf(s.url))}</h2><div class="connection-body"><p class="connection-state" role="status"><span class="dot ${connected ? 'on' : checking ? 'wait' : 'off'}"></span>${checking ? loadingHTML('Connecting') : esc(computerStatus(c))}</p><dl class="connection-details"><dt>${connected ? 'Connected address' : 'Paired address'}</dt><dd>${esc(connected ? c.base : s.url)}</dd><dt>Last connected</dt><dd>${esc(connected ? 'Now' : seen)}</dd></dl>${connected ? '<p class="hint">The relay is responding. Usage and session controls are available.</p>' : '<p class="hint">Keep the computer awake. Away from home, connect Tailscale on both devices. If it stays offline, restart the relay on that computer. On a Mac, open fastcontrol Recovery in your home Applications folder.</p>'}${recoveryUI}<div class="sheet-actions"><button class="btn" data-connection-back>Computers</button><span class="grow"></span><button class="btn primary" data-connection-retry ${checking ? 'disabled' : ''}>${connected ? 'Reconnect' : 'Retry'}</button></div>${mac ? `<button class="mi" data-connection-copy>${I.copy}<span class="txt">Copy Mac recovery command<span class="d">Run in Terminal on ${esc(s.name || hostOf(s.url))}</span></span></button>` : ''}${connected ? `<button class="mi" data-connection-usage>${I.gear}<span class="txt">Usage and limits</span>${I.chev}</button>` : ''}</div>`;
+      const recoveryUI=`${job ? `<p role="status" class="hint">${job.busy ? loadingHTML(job.text) : esc(connected && job.text.startsWith('Recovery ran.') ? 'The computer is connected.' : job.text)}</p>` : ''}${!connected || job?.busy ? recovery.map(({helper,peer})=>`<button class="mi" data-recover-helper="${esc(helper.s.id)}" data-recover-peer="${esc(peer.id)}" ${job?.busy ? 'disabled' : ''}>${I.plug}<span class="txt">Restart Via ${esc(serverName(helper.s.id))}<span class="d">Reconnect Tailscale and restart the relay over SSH</span></span>${I.chev}</button>`).join('') : ''}`;
+      const seen=last ? new Date(last).toLocaleString([], {dateStyle:"medium",timeStyle:"short"}) : "No Connection Recorded";
+      sh.innerHTML=`<div class="grip"></div><h2>${esc(s.name || hostOf(s.url))}</h2><div class="connection-body"><p class="connection-state" role="status"><span class="dot ${computerDotClass(c)}"></span>${checking ? loadingHTML('Connecting') : esc(computerStatus(c))}</p><dl class="connection-details"><dt>${connected ? 'Connected Address' : 'Paired Address'}</dt><dd>${esc(connected ? c.base : s.url)}</dd><dt>Last Connected</dt><dd>${esc(connected ? 'Now' : seen)}</dd></dl>${connected ? '<p class="hint">The relay is responding. Usage and session controls are available.</p>' : '<p class="hint">Keep the computer awake. Away from home, connect Tailscale on both devices. If it stays offline, restart the relay on that computer. On a Mac, open fastcontrol Recovery in your home Applications folder.</p>'}${recoveryUI}<div class="sheet-actions"><button class="btn" data-connection-back>Computers</button><span class="grow"></span><button class="btn primary" data-connection-retry ${checking ? 'disabled' : ''}>${connected ? 'Reconnect' : 'Retry'}</button></div>${mac ? `<button class="mi" data-connection-copy>${I.copy}<span class="txt">Copy Mac Recovery Command<span class="d">Run in Terminal on ${esc(s.name || hostOf(s.url))}</span></span></button>` : ''}${connected ? `<button class="mi" data-connection-usage>${I.gear}<span class="txt">Usage And Limits</span>${I.chev}</button>` : ''}</div>`;
     };
     S.redraw=draw;draw();
     sh.onclick=e=>{
       const recover=e.target.closest('[data-recover-helper]');
       if(recover){recoverComputer(server,recover.dataset.recoverHelper,recover.dataset.recoverPeer);return;}
       if(e.target.closest('[data-connection-back]'))openSheet('macs');
-      if(e.target.closest('[data-connection-retry]')){const c=conns.get(server);if(c){c.paused=false;c.backoff=300;c.connect();}}
+      if(e.target.closest('[data-connection-retry]')){const c=conns.get(server);if(c){c.paused=false;c.backoff=300;c.connect(true);}}
       if(e.target.closest('[data-connection-copy]'))copyText('bash "$HOME/.fastcontrol/repair.command"');
       if(e.target.closest('[data-connection-usage]'))openUsage(server);
     };
@@ -2640,12 +2796,12 @@ const SHEETS = {
         S.servers.map((s) => {
           const c = conns.get(s.id);
           const link = `fastcontrol://pair?url=${encodeURIComponent(s.url)}&t=${encodeURIComponent(s.token)}&name=${encodeURIComponent(s.name || "")}${s.pin ? "&pin="+s.pin : ""}`;
-          return `<div class="mi"><span class="dot ${c && c.state === "on" ? "on" : c && c.state === "nodesk" ? "on" : "off"}"></span><span class="txt">${esc(s.name || hostOf(s.url))}<span class="d">${esc(s.url)}<span class="computer-status" data-computer-status="${esc(s.id)}">${esc(computerStatus(c))}</span></span></span>` +
+          return `<div class="mi"><span class="dot ${computerDotClass(c)}"></span><span class="txt">${esc(s.name || hostOf(s.url))}<span class="d">${esc(s.url)}<span class="computer-status" data-computer-status="${esc(s.id)}">${esc(computerStatus(c))}</span></span></span>` +
             (!Native ? `<a class="btn" style="text-decoration:none;font-size:13px;padding:7px 10px" href="${esc(link)}">Open In App</a>` : "") +
             `<button class="chip" data-connection="${esc(s.id)}">Connection</button><button class="icon-btn" data-del="${s.id}" aria-label="Remove Mac">${I.trash}</button></div>`;
         }).join("") +
         (Native ? `<div class="toggle"><div><div style="font-weight:650">Notifications</div><div class="hint" style="margin:0;font-size:13px;color:var(--faint)">Finished Turns And Approvals</div></div><button class="switch${notif ? " on" : ""}" data-x="notif" aria-label="Notifications"></button></div>` : "") +
-        (Native?.checkAppUpdates ? mi('app-updates',I.download,'Check for updates','fastcontrol '+esc(Native.appVersion()),I.chev) : '') +
+        (Native?.checkAppUpdates ? mi('app-updates',I.download,'Check For Updates','fastcontrol '+esc(Native.appVersion()),I.chev) : '') +
         `<h3>Add A Mac</h3><div class="field"><input id="sv-url" placeholder="Pairing Link Or http://100.64.0.2:8787" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="url"></div>` +
         `<div class="field"><input id="sv-token" placeholder="Token" autocomplete="off" autocapitalize="off" spellcheck="false"></div>` +
         `<div class="field"><input id="sv-name" placeholder="Name (Optional)" autocomplete="off"></div>` +
@@ -2782,9 +2938,13 @@ if(Native?.checkAppUpdates) {
 }
 
 adoptPairingLink();
+if (S.servers.length && Native?.getServers) {
+  try { mergeNativeServers(S.servers, JSON.parse(Native.getServers())); } catch {}
+}
 history.replaceState({view:"home",provider:S.provider}, "");
 syncConns();
 if (Native) saveServers();
+if (Native) syncNativeDiscoveries();
 selectProvider(S.provider,false);
 mark("firstRender");
 if (Native) window.onAndroidIntent();
