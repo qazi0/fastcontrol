@@ -101,16 +101,22 @@ input, textarea { font: inherit; color: inherit; }
 /* top app bars */
 .bar { display: flex; align-items: center; gap: 4px; min-height: 64px; padding: env(safe-area-inset-top) 4px 0 20px; flex: none; }
 .brand { font-size: 24px; font-weight: 700; margin: 0; }
-.head-text { flex: 1; min-width: 0; padding: 0 4px; }
-.h-title { font-weight: 500; font-size: 16px; line-height: 22px;  overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.h-sub { font-size: 12px; line-height: 18px; color: var(--muted); display: flex; align-items: center; gap: 12px; overflow: hidden; white-space: nowrap; }
-.h-sub span { overflow: hidden; text-overflow: ellipsis; }
+.head-text { flex: 1; min-width: 0; padding: 0 4px; display: flex; flex-direction: column; justify-content: center; gap: 2px; }
+.h-title { font-weight: 600; font-size: 16px; line-height: 20px; letter-spacing: -0.01em; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.h-sub { font-size: 12px; line-height: 16px; color: var(--muted); display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.h-sub > span:not(.h-sub-sep):not(.h-sub-host) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.h-sub-cwd { flex: 0 1 auto; min-width: 36px; }
+.h-sub-branch { flex: 0 2 auto; min-width: 0; color: var(--faint); }
+.h-sub-host { flex: 0 1 auto; min-width: 48px; display: inline-flex; align-items: center; gap: 5px; overflow: hidden; white-space: nowrap; }
+.h-sub-host-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.h-sub-sep { flex: none; color: var(--faint); opacity: 0.65; }
 .h-sub .mono { font-family: var(--mono); font-size: 11px; }
 #project .bar, .thread-bar { padding-left: 4px; }
-.thread-bar { box-shadow: inset 0 -1px 0 var(--line); }
-#t-title { display: block; width: 100%; min-height: 44px; text-align: left; padding: 6px 0; }
+.thread-bar { min-height: 58px; padding: calc(env(safe-area-inset-top) + 6px) 6px 8px 4px; gap: 2px; box-shadow: inset 0 -1px 0 var(--line); }
+.thread-bar .icon-btn { width: 42px; height: 42px; }
+#t-title { display: block; width: 100%; min-height: 0; text-align: left; padding: 1px 0; }
 .rename-error { min-height: 20px; color: var(--bad); font-size: 13px; }
-.thread-bar.title-expanded { align-items: flex-start; }
+.thread-bar.title-expanded { align-items: flex-start; padding-top: calc(env(safe-area-inset-top) + 8px); }
 .thread-bar.title-expanded #t-title { white-space: normal; overflow-wrap: anywhere; }
 .thread-bar.title-expanded #t-ring, .thread-bar.title-expanded #agents-btn { display: none; }
 .document-head { display: flex; align-items: center; gap: 8px; min-height: 72px; flex: none; padding: 6px 12px 6px 4px; border-bottom: 1px solid var(--line); }

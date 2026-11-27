@@ -177,8 +177,15 @@ test("Scan QR Code button renders on Android and calls Native.scanPairingQr", ()
 
   h.context.openSheet("macs");
   const sh = h.getEl("sheet");
+  assert.match(sh.innerHTML, /<h2>Settings<\/h2>/);
+  assert.match(sh.innerHTML, /<h3>Add A Computer<\/h3>/);
+  assert.doesNotMatch(sh.innerHTML, /Add A Mac|Remove Mac/);
   assert.match(sh.innerHTML, /data-x="scan-qr"/);
   assert.match(sh.innerHTML, /Scan QR Code/);
+
+  const html = fs.readFileSync(path.join(__dirname, "..", "web", "index.html"), "utf8");
+  assert.match(html, /id="macs-btn"[^>]*aria-label="Settings"/);
+  assert.doesNotMatch(html, /Macs And Notifications/);
 
   sh.onclick({
     target: {

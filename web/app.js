@@ -134,7 +134,7 @@ function addServer({ url, token, name, custom, pin = "", alts = [] }) {
   saveServers();syncConns();return s;
 }
 
-const serverName = (id) => { const s = S.servers.find((x) => x.id === id); return s ? s.name || hostOf(s.url) : "Mac"; };
+const serverName = (id) => { const s = S.servers.find((x) => x.id === id); return s ? s.name || hostOf(s.url) : "Computer"; };
 
 function adoptPairingLink() {
   // Pairing link printed by a relay: http://mac:8787/#t=TOKEN
@@ -968,7 +968,7 @@ $("p-new").onclick = () => {
 // ----------------------------------------------------------------- thread --
 
 function openThread(sidv, id, push) {
-  if (!conns.has(sidv)) { toast("That Mac Is No Longer Paired"); return; }
+  if (!conns.has(sidv)) { toast("That Computer Is No Longer Paired"); return; }
   if (push && typeof pushNavSnapshot === "function") pushNavSnapshot();
   if (push) history.pushState({ view: "thread", sid: sidv, id, provider:S.provider }, "");
   if (S.view === "thread" && (S.sid !== sidv || S.id !== id)) leaveThread();
@@ -1025,8 +1025,16 @@ function renderThreadHeader() {
   $("t-title").textContent = cleanThreadText(t.displayTitle) || cleanThreadText(m.title) || cleanThreadText(t.title) || cleanThreadText(t.preview) || "Thread";
   const c = conn();
   const cwd = m.cwd || t.cwd;
-  const mac = S.servers.length > 1 ? `<span><span class="dot ${computerDotClass(c)}"></span> ${esc(serverName(S.sid))}</span>` : c && !c.ok ? `<span><span class="dot ${computerDotClass(c)}"></span> ${c.state === "wait" ? "Connecting" : "Offline"}</span>` : "";
-  $("t-sub").innerHTML = (cwd ? `<span>${esc(base(cwd))}</span>` : "") + ((m.branch || t.branch) ? `<span class="mono">${esc(m.branch || t.branch)}</span>` : "") + mac;
+  const branch = m.branch || t.branch;
+  const parts = [];
+  if (cwd) parts.push(`<span class="h-sub-cwd">${esc(base(cwd))}</span>`);
+  if (branch) parts.push(`<span class="h-sub-branch mono">${esc(branch)}</span>`);
+  if (S.servers.length > 1) {
+    parts.push(`<span class="h-sub-host"><span class="dot ${computerDotClass(c)}"></span><span class="h-sub-host-name">${esc(serverName(S.sid))}</span></span>`);
+  } else if (c && !c.ok) {
+    parts.push(`<span class="h-sub-host"><span class="dot ${computerDotClass(c)}"></span><span class="h-sub-host-name">${c.state === "wait" ? "Connecting" : "Offline"}</span></span>`);
+  }
+  $("t-sub").innerHTML = parts.join('<span class="h-sub-sep" aria-hidden="true">&middot;</span>');
 }
 $("t-title").onclick = () => {
   const title=$("t-title"),expanded=title.getAttribute('aria-expanded')!=='true';
@@ -3457,7 +3465,7 @@ const SHEETS = {
       const recovery=recoveryChoices(s),job=recoveryJobs.get(server);
       const recoveryUI=`${job ? `<p role="status" class="hint">${job.busy ? loadingHTML(job.text) : esc(connected && job.text.startsWith('Recovery ran.') ? 'The computer is connected.' : job.text)}</p>` : ''}${!connected || job?.busy ? recovery.map(({helper,peer})=>`<button class="mi" data-recover-helper="${esc(helper.s.id)}" data-recover-peer="${esc(peer.id)}" ${job?.busy ? 'disabled' : ''}>${I.plug}<span class="txt">Restart Via ${esc(serverName(helper.s.id))}<span class="d">Reconnect Tailscale and restart the relay over SSH</span></span>${I.chev}</button>`).join('') : ''}`;
       const seen=last ? new Date(last).toLocaleString([], {dateStyle:"medium",timeStyle:"short"}) : "No Connection Recorded";
-      sh.innerHTML=`<div class="grip"></div><h2>${esc(s.name || hostOf(s.url))}</h2><div class="connection-body"><p class="connection-state" role="status"><span class="dot ${computerDotClass(c)}"></span>${checking ? loadingHTML('Connecting') : esc(computerStatus(c))}</p><dl class="connection-details"><dt>${connected ? 'Connected Address' : 'Paired Address'}</dt><dd>${esc(connected ? c.base : s.url)}</dd><dt>Last Connected</dt><dd>${esc(connected ? 'Now' : seen)}</dd></dl>${connected ? '<p class="hint">The relay is responding. Usage and session controls are available.</p>' : '<p class="hint">Keep the computer awake. Away from home, connect Tailscale on both devices. If it stays offline, restart the relay on that computer. On a Mac, open fastcontrol Recovery in your home Applications folder.</p>'}${recoveryUI}<div class="sheet-actions"><button class="btn" data-connection-back>Computers</button><span class="grow"></span><button class="btn primary" data-connection-retry ${checking ? 'disabled' : ''}>${connected ? 'Reconnect' : 'Retry'}</button></div>${mac ? `<button class="mi" data-connection-copy>${I.copy}<span class="txt">Copy Mac Recovery Command<span class="d">Run in Terminal on ${esc(s.name || hostOf(s.url))}</span></span></button>` : ''}${connected ? `<button class="mi" data-connection-usage>${I.gear}<span class="txt">Usage And Limits</span>${I.chev}</button>` : ''}</div>`;
+      sh.innerHTML=`<div class="grip"></div><h2>${esc(s.name || hostOf(s.url))}</h2><div class="connection-body"><p class="connection-state" role="status"><span class="dot ${computerDotClass(c)}"></span>${checking ? loadingHTML('Connecting') : esc(computerStatus(c))}</p><dl class="connection-details"><dt>${connected ? 'Connected Address' : 'Paired Address'}</dt><dd>${esc(connected ? c.base : s.url)}</dd><dt>Last Connected</dt><dd>${esc(connected ? 'Now' : seen)}</dd></dl>${connected ? '<p class="hint">The relay is responding. Usage and session controls are available.</p>' : '<p class="hint">Keep the computer awake. Away from home, connect Tailscale on both devices. If it stays offline, restart the relay on that computer. On a Mac, open fastcontrol Recovery in your home Applications folder.</p>'}${recoveryUI}<div class="sheet-actions"><button class="btn" data-connection-back>Settings</button><span class="grow"></span><button class="btn primary" data-connection-retry ${checking ? 'disabled' : ''}>${connected ? 'Reconnect' : 'Retry'}</button></div>${mac ? `<button class="mi" data-connection-copy>${I.copy}<span class="txt">Copy Mac Recovery Command<span class="d">Run in Terminal on ${esc(s.name || hostOf(s.url))}</span></span></button>` : ''}${connected ? `<button class="mi" data-connection-usage>${I.gear}<span class="txt">Usage And Limits</span>${I.chev}</button>` : ''}</div>`;
     };
     S.redraw=draw;draw();
     sh.onclick=e=>{
@@ -3488,13 +3496,14 @@ const SHEETS = {
           return `<div class="toggle${dim}"><div><div class="toggle-title">${item.title}</div><div class="toggle-desc">${item.desc}</div></div><button type="button" role="switch" aria-checked="${on}" class="switch${on ? " on" : ""}" data-notify-pref="${item.key}" aria-label="${item.title}"></button></div>`;
         }).join("");
 
-      sh.innerHTML = `<div class="grip"></div><h2>Computers</h2>` +
+      sh.innerHTML = `<div class="grip"></div><h2>Settings</h2>` +
+        (S.servers.length ? `<h3>Computers</h3>` : "") +
         S.servers.map((s) => {
           const c = conns.get(s.id);
           const link = `fastcontrol://pair?url=${encodeURIComponent(s.url)}&t=${encodeURIComponent(s.token)}&name=${encodeURIComponent(s.name || "")}${s.pin ? "&pin="+s.pin : ""}`;
           return `<div class="mi"><span class="dot ${computerDotClass(c)}"></span><span class="txt">${esc(s.name || hostOf(s.url))}<span class="d">${esc(s.url)}<span class="computer-status" data-computer-status="${esc(s.id)}">${esc(computerStatus(c))}</span></span></span>` +
             (!Native ? `<a class="btn" style="text-decoration:none;font-size:13px;padding:7px 10px" href="${esc(link)}">Open In App</a>` : "") +
-            `<button class="chip" data-connection="${esc(s.id)}">Connection</button><button class="icon-btn" data-del="${s.id}" aria-label="Remove Mac">${I.trash}</button></div>`;
+            `<button class="chip" data-connection="${esc(s.id)}">Connection</button><button class="icon-btn" data-del="${s.id}" aria-label="Remove Computer">${I.trash}</button></div>`;
         }).join("") +
         notifyControls +
         (Native?.checkAppUpdates ? mi('app-updates',I.download,'Check For Updates','fastcontrol '+esc(Native.appVersion()),I.chev) : '') +
