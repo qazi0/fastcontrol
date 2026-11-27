@@ -1346,22 +1346,27 @@ func TestAntigravityManagerWakeAppDataDirMoreAndIdleReap(t *testing.T) {
 	writeTestTranscript(t, antigravityTranscriptPath(h.geminiDir, antigravityAppDirCLI, "conv-cli-1"), lines, base.Add(45*time.Minute))
 	h.mgr.refresh()
 
-	// Offline open returns last 15 turns with hasOlder=true.
+	// Offline open (when ACP binary is absent) returns last 15 turns in tail mode with hasOlder=true.
+	savedBin := h.mgr.bin
+	h.mgr.bin = ""
 	h.send(h.client, map[string]any{"op": "open", "id": "conv-cli-1", "nonce": "open-off"})
 	openFrame := waitFrame(t, h.client, 2*time.Second, func(m map[string]any) bool {
 		return str(m, "t") == "open" && str(m, "id") == "conv-cli-1"
 	})
 	_ = waitAck(t, h.client, "open-off")
-	if len(arrayValue(openFrame["turns"])) != 15 || mapValue(openFrame["meta"])["hasOlder"] != true {
-		t.Fatalf("expected 15 turns with hasOlder=true, got turns=%d meta=%+v", len(arrayValue(openFrame["turns"])), openFrame["meta"])
+	if str(mapValue(openFrame["meta"]), "mode") != "tail" || len(arrayValue(openFrame["turns"])) != 15 || mapValue(openFrame["meta"])["hasOlder"] != true {
+		t.Fatalf("expected 15 tail turns with hasOlder=true, got turns=%d meta=%+v", len(arrayValue(openFrame["turns"])), openFrame["meta"])
 	}
+	h.mgr.bin = savedBin
 
 	// Wake loads ACP using exact appDataDir ("antigravity-cli") and does NOT duplicate replayed history!
 	var gotAppDataDir string
 	var closedSession atomic.Int32
+	var sharedClient *acpClient
 	h.mgr.dialACP = func(ctx context.Context, cfg acpClientConfig) (*acpClient, *acpInitResult, error) {
 		gotAppDataDir = cfg.AppDataDir
 		srv, cli := newMockACPServer(t, cfg)
+		sharedClient = cli
 		srv.on("initialize", func(msg mockACPRPCMessage) {
 			_ = srv.sendResult(msg.ID, mockInitResultPayload())
 		})
@@ -1418,17 +1423,29 @@ func TestAntigravityManagerWakeAppDataDirMoreAndIdleReap(t *testing.T) {
 			len(arrayValue(openMore["turns"])), openMore["meta"])
 	}
 
-	// Idle reaper closes idle session after idleSessionTimeout.
+	// Idle reaper MUST NOT reap while a client is actively watching the chat!
 	h.mgr.idleSessionTimeout = 10 * time.Minute
-	h.advance(5 * time.Minute)
+	h.advance(15 * time.Minute)
 	h.mgr.reapIdleSessions()
 	h.mgr.mu.Lock()
 	stillPresent := h.mgr.runs["conv-cli-1"] != nil
 	h.mgr.mu.Unlock()
-	if !stillPresent {
-		t.Fatalf("session should not be reaped before idle timeout")
+	if !stillPresent || closedSession.Load() != 0 {
+		t.Fatalf("watched session must never be reaped while client is viewing it")
 	}
 
+	// Close watch -> stamps unwatchedAt. Still kept alive within post-unwatch grace.
+	h.send(h.client, map[string]any{"op": "close", "id": "conv-cli-1"})
+	h.advance(5 * time.Minute)
+	h.mgr.reapIdleSessions()
+	h.mgr.mu.Lock()
+	stillPresent = h.mgr.runs["conv-cli-1"] != nil
+	h.mgr.mu.Unlock()
+	if !stillPresent {
+		t.Fatalf("session should not be reaped before post-unwatch idle timeout")
+	}
+
+	// Past post-unwatch idle timeout -> session/close ONLY without killing the shared acpClient!
 	h.advance(6 * time.Minute)
 	h.mgr.reapIdleSessions()
 	deadline := time.Now().Add(3 * time.Second)
@@ -1439,7 +1456,10 @@ func TestAntigravityManagerWakeAppDataDirMoreAndIdleReap(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if closedSession.Load() != 1 {
-		t.Fatalf("expected idle session to be reaped and closed, closedSession=%d", closedSession.Load())
+		t.Fatalf("expected unwatched idle session to be reaped via session/close, closedSession=%d", closedSession.Load())
+	}
+	if sharedClient == nil || sharedClient.Closed() {
+		t.Fatalf("expected shared acpClient daemon to remain alive after per-session idle reap")
 	}
 }
 
@@ -1933,5 +1953,852 @@ func TestAntigravityManagerNoDuplicateFailedEventOnAbruptDrop(t *testing.T) {
 				t.Fatalf("iter %d: received duplicate failed event: %+v", iter, extra)
 			}
 		}
+	}
+}
+
+func TestAntigravityManagerOpenAutoLiveWarmColdGhostAndSwitching(t *testing.T) {
+	h := newAgyTestHarness(t)
+	t.Setenv("HOME", h.home)
+	t.Setenv("USERPROFILE", h.home)
+	h.mgr.openFastWait = 60 * time.Millisecond
+
+	ws := filepath.Join(h.home, "ws-auto")
+	_ = os.MkdirAll(ws, 0700)
+
+	dbPath := antigravityDBPath(h.geminiDir, antigravityAppDirDesktop)
+	createAntigravityTestDB(t, dbPath, []antigravityTestRow{
+		{id: "conv-warm", title: "Warm Chat", lastMod: "2026-11-27T14:59:00Z", workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(ws)), status: "CASCADE_RUN_STATUS_IDLE"},
+		{id: "conv-cold", title: "Cold Chat", lastMod: "2026-11-27T14:58:00Z", workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(ws)), status: "CASCADE_RUN_STATUS_IDLE"},
+		{id: "conv-ghost", title: "Ghost Chat", lastMod: "2026-11-27T14:57:00Z", workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(ws)), status: "CASCADE_RUN_STATUS_IDLE"},
+		{id: "conv-switch-slow", title: "Slow Switch", lastMod: "2026-11-27T14:56:00Z", workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(ws)), status: "CASCADE_RUN_STATUS_IDLE"},
+	})
+	for _, cid := range []string{"conv-warm", "conv-cold", "conv-ghost", "conv-switch-slow"} {
+		writeTestTranscript(t, antigravityTranscriptPath(h.geminiDir, antigravityAppDirDesktop, cid), []string{
+			`{"step_index":0,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-27T14:50:00Z","content":"Hello"}`,
+			`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-27T14:50:05Z","content":"World"}`,
+		}, time.Now().Add(-5*time.Minute))
+	}
+	// Create .pb files for real sessions, deliberately omitting conv-ghost.pb.
+	convDir := filepath.Join(h.geminiDir, antigravityAppDirDesktop, "conversations")
+	_ = os.MkdirAll(convDir, 0700)
+	for _, cid := range []string{"conv-warm", "conv-cold", "conv-switch-slow"} {
+		if err := os.WriteFile(filepath.Join(convDir, cid+".pb"), []byte("pb"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.mgr.refresh()
+
+	var dials, resumeCalls, loadCalls atomic.Int32
+	releaseCold := make(chan struct{})
+	coldStarted := make(chan struct{})
+	releaseSwitch := make(chan struct{})
+	switchStarted := make(chan struct{})
+
+	h.mgr.dialACP = func(ctx context.Context, cfg acpClientConfig) (*acpClient, *acpInitResult, error) {
+		dials.Add(1)
+		srv, cli := newMockACPServer(t, cfg)
+		srv.on("initialize", func(msg mockACPRPCMessage) {
+			_ = srv.sendResult(msg.ID, mockInitResultPayload())
+		})
+		srv.on("session/resume", func(msg mockACPRPCMessage) {
+			resumeCalls.Add(1)
+			var p struct {
+				SessionID string `json:"sessionId"`
+			}
+			_ = json.Unmarshal(msg.Params, &p)
+			switch p.SessionID {
+			case "conv-warm":
+				_ = srv.sendNotify("session/update", map[string]any{
+					"sessionId": p.SessionID,
+					"update": map[string]any{
+						"sessionUpdate":     "available_commands_update",
+						"availableCommands": []map[string]any{{"name": "compact", "description": "Compact context"}},
+					},
+				})
+				_ = srv.sendResult(msg.ID, mockStandardSessionState(p.SessionID, "gemini-4-neon", "high", "default"))
+			case "conv-cold":
+				close(coldStarted)
+				<-releaseCold
+				_ = srv.sendResult(msg.ID, mockStandardSessionState(p.SessionID, "gemini-3.8-flash", "medium", "plan"))
+			case "conv-ghost":
+				_ = srv.sendError(msg.ID, -32603, "Failed to read session conv-ghost")
+			case "conv-switch-slow":
+				close(switchStarted)
+				<-releaseSwitch
+				_ = srv.sendResult(msg.ID, mockStandardSessionState(p.SessionID, "gemini-4-neon", "high", "default"))
+			}
+		})
+		srv.on("session/load", func(msg mockACPRPCMessage) {
+			loadCalls.Add(1)
+			_ = srv.sendError(msg.ID, -32002, "Session not found")
+		})
+		srv.on("session/close", func(msg mockACPRPCMessage) {
+			_ = srv.sendResult(msg.ID, map[string]any{})
+		})
+		srv.start()
+		initRes, err := cli.Initialize(ctx)
+		if err != nil {
+			_ = cli.Close()
+			return nil, nil, err
+		}
+		return cli, initRes, nil
+	}
+
+	// 1. Warm fast-path: first and ONLY open frame is already mode:"live", connecting:false, via session/resume.
+	drainFrames(h.client)
+	h.send(h.client, map[string]any{"op": "open", "id": "conv-warm", "nonce": "open-warm"})
+	var warmOpens []map[string]any
+	var ack map[string]any
+	deadline := time.After(3 * time.Second)
+	for ack == nil {
+		select {
+		case raw := <-h.client.out:
+			var f map[string]any
+			if json.Unmarshal(raw, &f) != nil {
+				continue
+			}
+			if str(f, "t") == "open" && str(f, "id") == "conv-warm" {
+				warmOpens = append(warmOpens, f)
+			} else if str(f, "t") == "ack" && str(f, "nonce") == "open-warm" {
+				ack = f
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for warm open + ack")
+		}
+	}
+	if ok, _ := ack["ok"].(bool); !ok {
+		t.Fatalf("warm open failed: %+v", ack)
+	}
+	if len(warmOpens) != 1 {
+		t.Fatalf("expected exactly 1 zero-flicker open frame for conv-warm, got %d (%+v)", len(warmOpens), warmOpens)
+	}
+	warmMeta := mapValue(warmOpens[0]["meta"])
+	if str(warmMeta, "mode") != "live" || warmMeta["connecting"] == true || str(warmMeta, "model") != "gemini-4-neon" {
+		t.Fatalf("expected live warm meta with zero flicker, got %+v", warmMeta)
+	}
+	if len(arrayValue(warmMeta["commands"])) != 1 {
+		t.Fatalf("expected slash commands in warm live open, got %+v", warmMeta["commands"])
+	}
+	if loadCalls.Load() != 0 {
+		t.Fatalf("expected session/resume without calling session/load, got loadCalls=%d", loadCalls.Load())
+	}
+
+	// 2. Cold/slow attach (>openFastWait): emits tail+connecting:true immediately, then upgrades to live.
+	drainFrames(h.client)
+	h.send(h.client, map[string]any{"op": "open", "id": "conv-cold", "nonce": "open-cold"})
+	<-coldStarted
+	firstCold := waitFrame(t, h.client, 2*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "open" && str(m, "id") == "conv-cold"
+	})
+	firstMeta := mapValue(firstCold["meta"])
+	if str(firstMeta, "mode") != "tail" || firstMeta["connecting"] != true {
+		t.Fatalf("expected initial cold frame mode=tail connecting=true, got %+v", firstMeta)
+	}
+	ack = waitAck(t, h.client, "open-cold")
+	if ok, _ := ack["ok"].(bool); !ok {
+		t.Fatalf("cold open ack failed: %+v", ack)
+	}
+	close(releaseCold)
+	liveCold := waitFrame(t, h.client, 3*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "open" && str(m, "id") == "conv-cold" && str(mapValue(m["meta"]), "mode") == "live"
+	})
+	liveMeta := mapValue(liveCold["meta"])
+	if liveMeta["connecting"] == true || str(liveMeta, "model") != "gemini-3.8-flash" || str(liveMeta, "permissionMode") != "plan" {
+		t.Fatalf("expected live upgraded cold meta, got %+v", liveMeta)
+	}
+
+	// 3. Ghost row (missing .pb): fails fast on session/resume without calling session/load, emits tail.
+	drainFrames(h.client)
+	h.send(h.client, map[string]any{"op": "open", "id": "conv-ghost", "nonce": "open-ghost"})
+	ghostOpen := waitFrame(t, h.client, 2*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "open" && str(m, "id") == "conv-ghost"
+	})
+	_ = waitAck(t, h.client, "open-ghost")
+	ghostMeta := mapValue(ghostOpen["meta"])
+	if str(ghostMeta, "mode") != "tail" || ghostMeta["connecting"] == true {
+		t.Fatalf("expected ghost row fallback mode=tail connecting=false, got %+v", ghostMeta)
+	}
+	if loadCalls.Load() != 0 {
+		t.Fatalf("ghost row must fast-fail without calling session/load, got loadCalls=%d", loadCalls.Load())
+	}
+
+	// 4. Rapid chat switching: close slow chat before attach completes -> no stale live frame emitted!
+	drainFrames(h.client)
+	h.send(h.client, map[string]any{"op": "open", "id": "conv-switch-slow", "nonce": "open-sw"})
+	<-switchStarted
+	_ = waitFrame(t, h.client, 2*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "open" && str(m, "id") == "conv-switch-slow" && mapValue(m["meta"])["connecting"] == true
+	})
+	_ = waitAck(t, h.client, "open-sw")
+
+	h.send(h.client, map[string]any{"op": "close", "id": "conv-switch-slow"})
+	drainFrames(h.client)
+	close(releaseSwitch)
+	time.Sleep(60 * time.Millisecond)
+	for _, f := range drainFrames(h.client) {
+		if str(f, "t") == "open" && str(f, "id") == "conv-switch-slow" {
+			t.Fatalf("received stale open frame after closing switched chat: %+v", f)
+		}
+	}
+	if dials.Load() != 1 {
+		t.Fatalf("expected all sessions on default appDataDir to share 1 daemon dial, got %d", dials.Load())
+	}
+}
+
+func TestAntigravityManagerSharedDaemonPoolAndDemux(t *testing.T) {
+	h := newAgyTestHarness(t)
+	t.Setenv("HOME", h.home)
+	t.Setenv("USERPROFILE", h.home)
+
+	wsA := filepath.Join(h.home, "repo-a")
+	wsB := filepath.Join(h.home, "repo-b")
+	_ = os.MkdirAll(wsA, 0700)
+	_ = os.MkdirAll(wsB, 0700)
+
+	dbPath := antigravityDBPath(h.geminiDir, antigravityAppDirDesktop)
+	createAntigravityTestDB(t, dbPath, []antigravityTestRow{
+		{id: "chat-a", title: "Chat A", lastMod: "2026-11-27T14:59:00Z", workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(wsA)), status: "CASCADE_RUN_STATUS_IDLE"},
+		{id: "chat-b", title: "Chat B", lastMod: "2026-11-27T14:58:00Z", workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(wsB)), status: "CASCADE_RUN_STATUS_IDLE"},
+	})
+	for _, cid := range []string{"chat-a", "chat-b"} {
+		writeTestTranscript(t, antigravityTranscriptPath(h.geminiDir, antigravityAppDirDesktop, cid), []string{
+			`{"step_index":0,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-27T14:50:00Z","content":"Start"}`,
+			`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-27T14:50:05Z","content":"Ready"}`,
+		}, time.Now().Add(-5*time.Minute))
+	}
+	h.mgr.refresh()
+
+	var (
+		dials      atomic.Int32
+		dialCwd    string
+		srvMu      sync.Mutex
+		sharedSrv  *mockACPServer
+		promptDone = make(chan struct{})
+	)
+	h.mgr.dialACP = func(ctx context.Context, cfg acpClientConfig) (*acpClient, *acpInitResult, error) {
+		dials.Add(1)
+		srvMu.Lock()
+		dialCwd = cfg.Cwd
+		srvMu.Unlock()
+		srv, cli := newMockACPServer(t, cfg)
+		srvMu.Lock()
+		sharedSrv = srv
+		srvMu.Unlock()
+		srv.on("initialize", func(msg mockACPRPCMessage) {
+			_ = srv.sendResult(msg.ID, mockInitResultPayload())
+		})
+		srv.on("session/resume", func(msg mockACPRPCMessage) {
+			var p struct {
+				SessionID string `json:"sessionId"`
+			}
+			_ = json.Unmarshal(msg.Params, &p)
+			_ = srv.sendResult(msg.ID, mockStandardSessionState(p.SessionID, "gemini-4-neon", "high", "default"))
+		})
+		srv.on("session/prompt", func(msg mockACPRPCMessage) {
+			<-promptDone
+			_ = srv.sendResult(msg.ID, map[string]any{"stopReason": "end_turn"})
+		})
+		srv.on("session/close", func(msg mockACPRPCMessage) {
+			_ = srv.sendResult(msg.ID, map[string]any{})
+		})
+		srv.start()
+		initRes, err := cli.Initialize(ctx)
+		if err != nil {
+			_ = cli.Close()
+			return nil, nil, err
+		}
+		return cli, initRes, nil
+	}
+
+	cA := &Client{hub: h.hub, out: make(chan []byte, 256), done: make(chan struct{})}
+	cB := &Client{hub: h.hub, out: make(chan []byte, 256), done: make(chan struct{})}
+	h.hub.addClient(cA)
+	h.hub.addClient(cB)
+	defer h.hub.removeClient(cA)
+	defer h.hub.removeClient(cB)
+
+	h.send(cA, map[string]any{"op": "open", "id": "chat-a", "nonce": "oa"})
+	_ = waitAck(t, cA, "oa")
+	h.send(cB, map[string]any{"op": "open", "id": "chat-b", "nonce": "ob"})
+	_ = waitAck(t, cB, "ob")
+
+	if dials.Load() != 1 {
+		t.Fatalf("expected 2 simultaneous chats in different cwds to share 1 daemon, got dials=%d", dials.Load())
+	}
+	srvMu.Lock()
+	gotDialCwd := dialCwd
+	srv := sharedSrv
+	srvMu.Unlock()
+	if gotDialCwd != h.home {
+		t.Fatalf("expected shared daemon cmd.Dir=%q (homeDir), got %q", h.home, gotDialCwd)
+	}
+
+	// Start prompt on chat-a only.
+	h.send(cA, map[string]any{"op": "send", "id": "chat-a", "text": "Work on A", "nonce": "sa"})
+	_ = waitAck(t, cA, "sa")
+
+	// Stream distinct updates to chat-a and chat-b over the single shared acpClient.
+	_ = srv.sendNotify("session/update", map[string]any{
+		"sessionId": "chat-a",
+		"update":    map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "Only For A"}},
+	})
+	_ = srv.sendNotify("session/update", map[string]any{
+		"sessionId": "chat-b",
+		"update":    map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "Only For B"}},
+	})
+
+	_ = waitFrame(t, cA, 3*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "turn" && str(m, "id") == "chat-a" && strings.Contains(string(mustJSON(m)), "Only For A")
+	})
+	_ = waitFrame(t, cB, 3*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "turn" && str(m, "id") == "chat-b" && strings.Contains(string(mustJSON(m)), "Only For B")
+	})
+
+	// Route permission strictly to chat-b, and elicitation with empty sessionId to chat-a (sole active prompt).
+	permResp, err := srv.sendServerRequest("perm-b", "session/request_permission", map[string]any{
+		"sessionId": "chat-b",
+		"toolCall":  map[string]any{"toolCallId": "tc-b", "name": "run_command", "kind": "execute"},
+		"options":   []map[string]any{{"optionId": "allow-b", "name": "Allow", "kind": "allow_once"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = waitFrame(t, cB, 3*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "meta" && str(m, "id") == "chat-b" && len(arrayValue(mapValue(m["meta"])["requests"])) == 1
+	})
+
+	elicitResp, err := srv.sendServerRequest("elicit-empty-sid", "elicitation/create", map[string]any{
+		"mode":    "form",
+		"message": "Need input for sole active prompt",
+		"requestedSchema": map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"ans": map[string]any{"type": "string"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = waitFrame(t, cA, 3*time.Second, func(m map[string]any) bool {
+		if str(m, "t") != "meta" || str(m, "id") != "chat-a" {
+			return false
+		}
+		reqs := arrayValue(mapValue(m["meta"])["requests"])
+		return len(reqs) == 1 && str(mapValue(reqs[0]), "id") == "elicit-empty-sid"
+	})
+
+	// Approve perm-b on chat-b and answer elicit on chat-a.
+	h.send(cB, map[string]any{"op": "approve", "id": "chat-b", "reqId": "perm-b", "optionId": "allow-b", "nonce": "app-b"})
+	_ = waitAck(t, cB, "app-b")
+	if p := <-permResp; !strings.Contains(string(p.Result), `"allow-b"`) {
+		t.Fatalf("unexpected perm-b response: %s", string(p.Result))
+	}
+	h.send(cA, map[string]any{"op": "answer", "id": "chat-a", "reqId": "elicit-empty-sid", "answers": map[string]any{"ans": []string{"yes"}}, "nonce": "ans-a"})
+	_ = waitAck(t, cA, "ans-a")
+	if e := <-elicitResp; !strings.Contains(string(e.Result), `"action":"accept"`) {
+		t.Fatalf("unexpected elicit response: %s", string(e.Result))
+	}
+
+	// Now finish chat-a's prompt -> with 0 active prompts, empty-sessionId permission & elicitation MUST auto-cancel!
+	close(promptDone)
+	_ = waitFrame(t, h.evClient, 3*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "event" && str(m, "id") == "chat-a" && str(m, "kind") == "completed"
+	})
+	ambigPermResp, err := srv.sendServerRequest("perm-ambig", "session/request_permission", map[string]any{
+		"toolCall": map[string]any{"toolCallId": "tc-ambig", "name": "run_command", "kind": "execute"},
+		"options":  []map[string]any{{"optionId": "allow-ambig", "name": "Allow", "kind": "allow_once"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case r := <-ambigPermResp:
+		if !strings.Contains(string(r.Result), `"cancelled"`) {
+			t.Fatalf("expected unroutable empty-sessionId permission to auto-cancel, got %s", string(r.Result))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for auto-cancel of unroutable permission")
+	}
+	ambigResp, err := srv.sendServerRequest("elicit-ambig", "elicitation/create", map[string]any{
+		"mode":    "form",
+		"message": "No active prompt",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case r := <-ambigResp:
+		if !strings.Contains(string(r.Result), `"action":"cancel"`) {
+			t.Fatalf("expected unroutable empty-sessionId elicitation to auto-cancel, got %s", string(r.Result))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for auto-cancel of unroutable elicitation")
+	}
+
+	// Verify zero cross-talk in cA/cB frames.
+	for _, f := range drainFrames(cA) {
+		if str(f, "id") == "chat-b" {
+			t.Fatalf("cA leaked frame for chat-b: %+v", f)
+		}
+	}
+	for _, f := range drainFrames(cB) {
+		if str(f, "id") == "chat-a" {
+			t.Fatalf("cB leaked frame for chat-a: %+v", f)
+		}
+	}
+}
+
+func TestAntigravityManagerWatcherSafeReapAndDaemonIdleLifecycle(t *testing.T) {
+	h := newAgyTestHarness(t)
+	h.mgr.idleSessionTimeout = 12 * time.Minute
+	h.mgr.daemonIdleTimeout = 30 * time.Minute
+
+	ws := filepath.Join(h.home, "ws-reap")
+	_ = os.MkdirAll(ws, 0700)
+	dbPath := antigravityDBPath(h.geminiDir, antigravityAppDirDesktop)
+	createAntigravityTestDB(t, dbPath, []antigravityTestRow{
+		{id: "conv-watch", title: "Watched Chat", lastMod: "2026-11-27T14:55:00Z", workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(ws)), status: "CASCADE_RUN_STATUS_IDLE"},
+	})
+	writeTestTranscript(t, antigravityTranscriptPath(h.geminiDir, antigravityAppDirDesktop, "conv-watch"), []string{
+		`{"step_index":0,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-27T14:50:00Z","content":"Hi"}`,
+		`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-27T14:50:05Z","content":"Hello"}`,
+	}, time.Now().Add(-5*time.Minute))
+	h.mgr.refresh()
+
+	var (
+		dials        atomic.Int32
+		closeSessCnt atomic.Int32
+		mu           sync.Mutex
+		clients      []*acpClient
+	)
+	h.mgr.dialACP = func(ctx context.Context, cfg acpClientConfig) (*acpClient, *acpInitResult, error) {
+		dials.Add(1)
+		srv, cli := newMockACPServer(t, cfg)
+		mu.Lock()
+		clients = append(clients, cli)
+		mu.Unlock()
+		srv.on("initialize", func(msg mockACPRPCMessage) {
+			_ = srv.sendResult(msg.ID, mockInitResultPayload())
+		})
+		srv.on("session/resume", func(msg mockACPRPCMessage) {
+			_ = srv.sendResult(msg.ID, mockStandardSessionState("conv-watch", "gemini-4-neon", "high", "default"))
+		})
+		srv.on("session/close", func(msg mockACPRPCMessage) {
+			closeSessCnt.Add(1)
+			_ = srv.sendResult(msg.ID, map[string]any{})
+		})
+		srv.start()
+		initRes, err := cli.Initialize(ctx)
+		if err != nil {
+			_ = cli.Close()
+			return nil, nil, err
+		}
+		return cli, initRes, nil
+	}
+
+	c2 := &Client{hub: h.hub, out: make(chan []byte, 256), done: make(chan struct{})}
+	h.hub.addClient(c2)
+
+	h.send(h.client, map[string]any{"op": "open", "id": "conv-watch", "nonce": "w1"})
+	_ = waitAck(t, h.client, "w1")
+	h.send(c2, map[string]any{"op": "open", "id": "conv-watch", "nonce": "w2"})
+	_ = waitAck(t, c2, "w2")
+
+	// Disconnect first client -> c2 still watching -> never reaped even after 20m!
+	h.hub.removeClient(h.client)
+	h.advance(20 * time.Minute)
+	h.mgr.reapIdleSessions()
+	h.mgr.mu.Lock()
+	aliveWhileWatched := h.mgr.runs["conv-watch"] != nil
+	h.mgr.mu.Unlock()
+	if !aliveWhileWatched || closeSessCnt.Load() != 0 {
+		t.Fatalf("expected run to stay alive while second client watches")
+	}
+
+	// Disconnect last client -> stamps unwatchedAt.
+	h.hub.removeClient(c2)
+	h.advance(6 * time.Minute)
+	h.mgr.reapIdleSessions()
+	h.mgr.mu.Lock()
+	aliveDuringGrace := h.mgr.runs["conv-watch"] != nil
+	h.mgr.mu.Unlock()
+	if !aliveDuringGrace {
+		t.Fatalf("expected run to stay alive during 12m post-unwatch grace")
+	}
+
+	// Past 12m post-unwatch -> reaped via session/close ONLY, daemon stays open!
+	h.advance(7 * time.Minute)
+	h.mgr.reapIdleSessions()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && closeSessCnt.Load() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if closeSessCnt.Load() != 1 {
+		t.Fatalf("expected session/close after post-unwatch timeout, got %d", closeSessCnt.Load())
+	}
+	mu.Lock()
+	cli := clients[0]
+	mu.Unlock()
+	if cli.Closed() {
+		t.Fatalf("shared daemon must NOT be closed when reaping a single idle session")
+	}
+
+	// Daemon idle release after 30m with 0 runs and 0 watchers.
+	h.mgr.reapIdleSessions() // starts daemon idleSince now that runs == 0
+	h.advance(31 * time.Minute)
+	h.mgr.reapIdleSessions()
+	select {
+	case <-cli.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatalf("expected idle daemon with 0 runs and 0 watchers to release after 30m")
+	}
+	if dials.Load() != 1 {
+		t.Fatalf("expected 1 total dial, got %d", dials.Load())
+	}
+}
+
+func TestAntigravityManagerDaemonCrashAutoReconnectAndWatchdog(t *testing.T) {
+	h := newAgyTestHarness(t)
+	h.mgr.reconnectBackoff = []time.Duration{15 * time.Millisecond, 15 * time.Millisecond, 15 * time.Millisecond}
+	h.mgr.keepaliveInterval = 45 * time.Second
+	h.mgr.keepaliveTimeout = 80 * time.Millisecond
+
+	ws := filepath.Join(h.home, "ws-rec")
+	_ = os.MkdirAll(ws, 0700)
+	dbPath := antigravityDBPath(h.geminiDir, antigravityAppDirDesktop)
+	createAntigravityTestDB(t, dbPath, []antigravityTestRow{
+		{id: "conv-rec", title: "Reconnect Chat", lastMod: "2026-11-27T14:55:00Z", workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(ws)), status: "CASCADE_RUN_STATUS_IDLE"},
+	})
+	writeTestTranscript(t, antigravityTranscriptPath(h.geminiDir, antigravityAppDirDesktop, "conv-rec"), []string{
+		`{"step_index":0,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-27T14:50:00Z","content":"Keep alive"}`,
+		`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-27T14:50:05Z","content":"On it"}`,
+	}, time.Now().Add(-5*time.Minute))
+	h.mgr.refresh()
+
+	var (
+		mu             sync.Mutex
+		dialCount      int
+		servers        []*mockACPServer
+		wedgeList      bool
+		failAllDials   bool
+		listProbeCount atomic.Int32
+	)
+	h.mgr.dialACP = func(ctx context.Context, cfg acpClientConfig) (*acpClient, *acpInitResult, error) {
+		mu.Lock()
+		dialCount++
+		n := dialCount
+		shouldFail := failAllDials || n == 2 // Dial #2 fails transiently to test backoff retry -> #3 succeeds!
+		wedge := wedgeList
+		mu.Unlock()
+		if shouldFail {
+			return nil, nil, errors.New("transient daemon boot error")
+		}
+		srv, cli := newMockACPServer(t, cfg)
+		mu.Lock()
+		servers = append(servers, srv)
+		mu.Unlock()
+		srv.on("initialize", func(msg mockACPRPCMessage) {
+			_ = srv.sendResult(msg.ID, mockInitResultPayload())
+		})
+		srv.on("session/resume", func(msg mockACPRPCMessage) {
+			_ = srv.sendResult(msg.ID, mockStandardSessionState("conv-rec", "gemini-4-neon", "high", "default"))
+		})
+		srv.on("session/list", func(msg mockACPRPCMessage) {
+			listProbeCount.Add(1)
+			mu.Lock()
+			isWedged := wedge || wedgeList
+			mu.Unlock()
+			if isWedged {
+				// Simulate a wedged daemon that never replies to session/list.
+				<-srv.done
+				return
+			}
+			_ = srv.sendResult(msg.ID, map[string]any{"sessions": []any{}})
+		})
+		srv.on("session/close", func(msg mockACPRPCMessage) {
+			_ = srv.sendResult(msg.ID, map[string]any{})
+		})
+		srv.start()
+		initRes, err := cli.Initialize(ctx)
+		if err != nil {
+			_ = cli.Close()
+			return nil, nil, err
+		}
+		return cli, initRes, nil
+	}
+
+	// Open -> instant live on dial #1.
+	h.send(h.client, map[string]any{"op": "open", "id": "conv-rec", "nonce": "rec-open"})
+	_ = waitFrame(t, h.client, 3*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "open" && str(m, "id") == "conv-rec" && str(mapValue(m["meta"]), "mode") == "live"
+	})
+	_ = waitAck(t, h.client, "rec-open")
+
+	// 1. Unexpected daemon crash while watched -> broadcasts connecting:true, retries past dial #2 failure, recovers on dial #3!
+	drainFrames(h.client)
+	mu.Lock()
+	srv1 := servers[0]
+	mu.Unlock()
+	srv1.close()
+
+	_ = waitFrame(t, h.client, 3*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "meta" && str(m, "id") == "conv-rec" &&
+			str(mapValue(m["meta"]), "mode") == "tail" && mapValue(m["meta"])["connecting"] == true
+	})
+	_ = waitFrame(t, h.client, 3*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "open" && str(m, "id") == "conv-rec" &&
+			str(mapValue(m["meta"]), "mode") == "live" && mapValue(m["meta"])["connecting"] != true
+	})
+
+	// 2. Watchdog health check on wedged daemon closes it and auto-recovers back to live!
+	drainFrames(h.client)
+	mu.Lock()
+	wedgeList = true
+	mu.Unlock()
+	h.advance(50 * time.Second)
+	h.mgr.checkDaemonHealth()
+	// Wait for watchdog timeout to trigger Connecting: true, then unwedge future daemons for recovery.
+	_ = waitFrame(t, h.client, 3*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "meta" && str(m, "id") == "conv-rec" && mapValue(m["meta"])["connecting"] == true
+	})
+	mu.Lock()
+	wedgeList = false
+	mu.Unlock()
+	_ = waitFrame(t, h.client, 3*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "open" && str(m, "id") == "conv-rec" && str(mapValue(m["meta"]), "mode") == "live"
+	})
+	if listProbeCount.Load() == 0 {
+		t.Fatalf("expected watchdog session/list probe to run")
+	}
+
+	// 3. If all 3 reconnect retries fail, clears connecting:false so user can tap Reconnect.
+	drainFrames(h.client)
+	mu.Lock()
+	failAllDials = true
+	lastSrv := servers[len(servers)-1]
+	mu.Unlock()
+	lastSrv.close()
+
+	_ = waitFrame(t, h.client, 3*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "meta" && str(m, "id") == "conv-rec" && mapValue(m["meta"])["connecting"] == true
+	})
+	_ = waitFrame(t, h.client, 3*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "meta" && str(m, "id") == "conv-rec" &&
+			str(mapValue(m["meta"]), "mode") == "tail" && mapValue(m["meta"])["connecting"] != true
+	})
+}
+
+func TestAntigravityManagerExternalDesktopDiskSyncWhileLive(t *testing.T) {
+	h := newAgyTestHarness(t)
+	ws := filepath.Join(h.home, "ws-ext")
+	_ = os.MkdirAll(ws, 0700)
+
+	dbPath := antigravityDBPath(h.geminiDir, antigravityAppDirDesktop)
+	transcriptPath := antigravityTranscriptPath(h.geminiDir, antigravityAppDirDesktop, "conv-ext")
+	base := time.Date(2026, 11, 27, 14, 50, 0, 0, time.UTC)
+
+	createAntigravityTestDB(t, dbPath, []antigravityTestRow{
+		{id: "conv-ext", title: "Desktop Coexist", lastMod: "2026-11-27T14:51:00Z", workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(ws)), status: "CASCADE_RUN_STATUS_IDLE"},
+	})
+	writeTestTranscript(t, transcriptPath, []string{
+		`{"step_index":0,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-27T14:50:00Z","content":"Turn 1 Q"}`,
+		`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-27T14:50:10Z","content":"Turn 1 A"}`,
+	}, base.Add(1*time.Minute))
+	h.mgr.refresh()
+
+	h.mgr.dialACP = func(ctx context.Context, cfg acpClientConfig) (*acpClient, *acpInitResult, error) {
+		srv, cli := newMockACPServer(t, cfg)
+		srv.on("initialize", func(msg mockACPRPCMessage) {
+			_ = srv.sendResult(msg.ID, mockInitResultPayload())
+		})
+		srv.on("session/resume", func(msg mockACPRPCMessage) {
+			_ = srv.sendResult(msg.ID, mockStandardSessionState("conv-ext", "gemini-4-neon", "high", "default"))
+		})
+		srv.on("session/close", func(msg mockACPRPCMessage) {
+			_ = srv.sendResult(msg.ID, map[string]any{})
+		})
+		srv.start()
+		initRes, err := cli.Initialize(ctx)
+		if err != nil {
+			_ = cli.Close()
+			return nil, nil, err
+		}
+		return cli, initRes, nil
+	}
+
+	h.send(h.client, map[string]any{"op": "open", "id": "conv-ext", "nonce": "ext-open"})
+	_ = waitFrame(t, h.client, 3*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "open" && str(m, "id") == "conv-ext" && str(mapValue(m["meta"]), "mode") == "live"
+	})
+	_ = waitAck(t, h.client, "ext-open")
+
+	// External Antigravity Desktop starts Turn 2 while run is idle & live!
+	drainFrames(h.client)
+	_ = os.Remove(dbPath)
+	_ = os.Remove(dbPath + "-wal")
+	_ = os.Remove(dbPath + "-shm")
+	nowRFC := time.Now().UTC().Format(time.RFC3339)
+	createAntigravityTestDB(t, dbPath, []antigravityTestRow{
+		{id: "conv-ext", title: "Desktop Coexist", lastMod: nowRFC, workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(ws)), status: "CASCADE_RUN_STATUS_RUNNING"},
+	})
+	writeTestTranscript(t, transcriptPath, []string{
+		`{"step_index":0,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-27T14:50:00Z","content":"Turn 1 Q"}`,
+		`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-27T14:50:10Z","content":"Turn 1 A"}`,
+		`{"step_index":2,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-27T14:59:50Z","content":"Desktop Followup"}`,
+		`{"step_index":3,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-27T14:59:55Z","content":"Desktop Reply Live"}`,
+	}, time.Now())
+
+	h.mgr.refresh()
+	h.mgr.pollWatchedThreads()
+
+	_ = waitFrame(t, h.client, 3*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "turn" && str(m, "id") == "conv-ext" && strings.Contains(string(mustJSON(m)), "Desktop Reply Live")
+	})
+	metaFrame := waitFrame(t, h.client, 3*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "meta" && str(m, "id") == "conv-ext" && mapValue(m["meta"])["running"] == true
+	})
+	if str(mapValue(metaFrame["meta"]), "mode") != "live" {
+		t.Fatalf("expected live mode preserved during external desktop sync, got %+v", metaFrame["meta"])
+	}
+
+	// External Desktop finishes -> running returns to false while staying live.
+	drainFrames(h.client)
+	_ = os.Remove(dbPath)
+	_ = os.Remove(dbPath + "-wal")
+	_ = os.Remove(dbPath + "-shm")
+	createAntigravityTestDB(t, dbPath, []antigravityTestRow{
+		{id: "conv-ext", title: "Desktop Coexist", lastMod: time.Now().Add(2 * time.Second).UTC().Format(time.RFC3339), workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(ws)), status: "CASCADE_RUN_STATUS_IDLE"},
+	})
+	h.mgr.refresh()
+	h.mgr.pollWatchedThreads()
+
+	idleMeta := waitFrame(t, h.client, 3*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "meta" && str(m, "id") == "conv-ext" && mapValue(m["meta"])["running"] == false
+	})
+	if str(mapValue(idleMeta["meta"]), "mode") != "live" {
+		t.Fatalf("expected live mode after external desktop idle, got %+v", idleMeta["meta"])
+	}
+}
+
+func TestAntigravityManagerPrewarmAndPooledCleanShutdown(t *testing.T) {
+	h := newAgyTestHarness(t)
+	ws := filepath.Join(h.home, "ws-pool-sd")
+	_ = os.MkdirAll(ws, 0700)
+
+	createAntigravityTestDB(t, antigravityDBPath(h.geminiDir, antigravityAppDirDesktop), []antigravityTestRow{
+		{id: "conv-p1", title: "Desktop Pool", lastMod: "2026-11-27T14:55:00Z", workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(ws)), status: "CASCADE_RUN_STATUS_IDLE"},
+	})
+	createAntigravityTestDB(t, antigravityDBPath(h.geminiDir, antigravityAppDirCLI), []antigravityTestRow{
+		{id: "conv-p2", title: "CLI Pool", lastMod: "2026-11-27T14:54:00Z", workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(ws)), status: "CASCADE_RUN_STATUS_IDLE", appDataDir: antigravityAppDirCLI},
+	})
+	writeTestTranscript(t, antigravityTranscriptPath(h.geminiDir, antigravityAppDirDesktop, "conv-p1"), []string{
+		`{"step_index":0,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-27T14:50:00Z","content":"P1"}`,
+	}, time.Now().Add(-2*time.Minute))
+	writeTestTranscript(t, antigravityTranscriptPath(h.geminiDir, antigravityAppDirCLI, "conv-p2"), []string{
+		`{"step_index":0,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-27T14:50:00Z","content":"P2"}`,
+	}, time.Now().Add(-2*time.Minute))
+
+	var (
+		mu          sync.Mutex
+		clients     []*acpClient
+		closedSIDs  []string
+		prewarmList = make(chan struct{}, 2)
+	)
+	h.mgr.dialACP = func(ctx context.Context, cfg acpClientConfig) (*acpClient, *acpInitResult, error) {
+		srv, cli := newMockACPServer(t, cfg)
+		mu.Lock()
+		clients = append(clients, cli)
+		mu.Unlock()
+		srv.on("initialize", func(msg mockACPRPCMessage) {
+			_ = srv.sendResult(msg.ID, mockInitResultPayload())
+		})
+		srv.on("session/list", func(msg mockACPRPCMessage) {
+			select {
+			case prewarmList <- struct{}{}:
+			default:
+			}
+			_ = srv.sendResult(msg.ID, map[string]any{"sessions": []any{}})
+		})
+		srv.on("session/resume", func(msg mockACPRPCMessage) {
+			var p struct {
+				SessionID string `json:"sessionId"`
+			}
+			_ = json.Unmarshal(msg.Params, &p)
+			_ = srv.sendResult(msg.ID, mockStandardSessionState(p.SessionID, "gemini-4-neon", "high", "default"))
+		})
+		srv.on("session/close", func(msg mockACPRPCMessage) {
+			var p struct {
+				SessionID string `json:"sessionId"`
+			}
+			_ = json.Unmarshal(msg.Params, &p)
+			mu.Lock()
+			closedSIDs = append(closedSIDs, p.SessionID)
+			mu.Unlock()
+			_ = srv.sendResult(msg.ID, map[string]any{})
+		})
+		srv.start()
+		initRes, err := cli.Initialize(ctx)
+		if err != nil {
+			_ = cli.Close()
+			return nil, nil, err
+		}
+		return cli, initRes, nil
+	}
+
+	h.mgr.prewarmOnStart = true
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		h.mgr.run(runCtx)
+	}()
+
+	// Pre-warm dials default ("antigravity", false) daemon and finishes session/list asynchronously.
+	select {
+	case <-prewarmList:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("expected async pre-warm session/list on run() startup")
+	}
+
+	// Open both desktop (reuses pre-warmed daemon!) and CLI (spawns second keyed daemon).
+	h.send(h.client, map[string]any{"op": "open", "id": "conv-p1", "nonce": "p1"})
+	_ = waitAck(t, h.client, "p1")
+	h.send(h.client, map[string]any{"op": "open", "id": "conv-p2", "nonce": "p2"})
+	_ = waitAck(t, h.client, "p2")
+
+	mu.Lock()
+	gotClients := append([]*acpClient(nil), clients...)
+	mu.Unlock()
+	if len(gotClients) != 2 {
+		t.Fatalf("expected 2 pooled daemons (desktop prewarmed + cli), got %d", len(gotClients))
+	}
+
+	// Shutdown closes all loaded sessions AND terminates all pooled daemons cleanly.
+	cancelRun()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("AntigravityManager.run did not shut down cleanly")
+	}
+
+	for i, cli := range gotClients {
+		select {
+		case <-cli.Done():
+		case <-time.After(2 * time.Second):
+			t.Fatalf("pooled daemon %d was not closed cleanly on shutdown", i)
+		}
+	}
+
+	mu.Lock()
+	gotClosed := append([]string(nil), closedSIDs...)
+	mu.Unlock()
+	if !contains(gotClosed, "conv-p1") || !contains(gotClosed, "conv-p2") {
+		t.Fatalf("expected session/close for both conv-p1 and conv-p2 on shutdown, got %v", gotClosed)
+	}
+	h.mgr.mu.Lock()
+	remRuns := len(h.mgr.runs)
+	remDaemons := len(h.mgr.daemons)
+	h.mgr.mu.Unlock()
+	if remRuns != 0 || remDaemons != 0 {
+		t.Fatalf("expected 0 remaining runs and daemons after shutdown, got runs=%d daemons=%d", remRuns, remDaemons)
 	}
 }

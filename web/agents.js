@@ -3,7 +3,7 @@
 const agentLists = new Map();
 let agentView = null, agentListView = null, agentFrame = 0;
 const agentListKey = (server, parent, provider = S.provider) => JSON.stringify([server,provider,parent]);
-const agentLabel = agent => (agent.provider === "claude" || agent.provider === "antigravity") ? agent.agentName || agent.title || "Subagent" : base(agent.agentPath) || agent.agentName || agent.title || "Subagent";
+const agentLabel = agent => (agent.provider === "claude" || agent.provider === "antigravity" || agent.provider === "grok") ? agent.agentName || agent.title || "Subagent" : base(agent.agentPath) || agent.agentName || agent.title || "Subagent";
 const agentStatus = agent => ({running:"Working",queued:"Queued",completed:"Done",failed:"Failed",stopped:"Stopped",saved:"Saved",unavailable:"Output Unavailable"}[agent.agentState] || (agent.lastErr ? "Stopped" : agent.running ? "Working" : "Done"));
 
 async function readAgents(server, parent, force = false, provider = S.provider) {
@@ -52,7 +52,7 @@ async function refreshAgentList(opts, force = false) { paintAgentList(opts, awai
 SHEETS.agents = (sh, opts) => {
   opts.provider ||= S.provider;
   agentListView = opts;
-  const heading = opts.provider === "claude" ? "Background Work" : opts.provider === "antigravity" ? "Antigravity Subagents" : "Subagents";
+  const heading = opts.provider === "claude" ? "Background Work" : opts.provider === "antigravity" ? "Antigravity Subagents" : opts.provider === "grok" ? "Grok Subagents" : "Subagents";
   sh.innerHTML = `<header class="diff-head"><button class="icon-btn" data-agent-back aria-label="Back">${svg('<path d="M15 5l-7 7 7 7"/>')}</button><h2>${heading}</h2><button class="icon-btn" data-agent-refresh aria-label="Refresh Subagents">${svg('<path d="M20 8a8 8 0 10.2 7M20 3v5h-5"/>')}</button></header><main id="agent-list" class="scroll agent-list">${loadingHTML("Loading Subagents")}</main>`;
   sh.onclick = event => {
     if (event.target.closest("[data-agent-back]")) { if (opts.backAgent) openSheet("agent",opts.backAgent); else closeSheet(); return; }

@@ -6,7 +6,7 @@ let usageServer = "", usageRenderedServer = "";
 const usageViewState = new Map();
 const usageNumber = (value) => new Intl.NumberFormat(undefined, {notation: "compact", maximumFractionDigits: 1}).format(value || 0);
 const usageMoney = (value) => value == null ? "Unavailable" : new Intl.NumberFormat(undefined, {style: "currency", currency: "USD"}).format(value);
-const usageLogo = (provider) => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${AGENT_LOGOS[provider === 'claude' ? 'claude' : provider === 'antigravity' ? 'antigravity' : 'openai']}"/></svg>`;
+const usageLogo = (provider) => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${AGENT_LOGOS[provider === 'claude' ? 'claude' : provider === 'antigravity' ? 'antigravity' : provider === 'grok' ? 'grok' : 'openai']}"/></svg>`;
 function usageReset(timestamp) {
   const minutes = Math.max(0, Math.ceil((timestamp * 1000 - Date.now()) / 60000));
   if (!minutes) return "Reset Due";
@@ -28,7 +28,7 @@ function usageCost(total) {
   return money + (total.unpricedTokens && total.costUsd != null ? '+' : '');
 }
 function usageProvider(provider) {
-  const name = provider.provider === 'claude' ? 'Claude Code' : provider.provider === 'antigravity' ? 'Antigravity' : 'Codex';
+  const name = provider.provider === 'claude' ? 'Claude Code' : provider.provider === 'antigravity' ? 'Antigravity' : provider.provider === 'grok' ? 'Grok' : 'Codex';
   const plan = provider.plan ? provider.plan.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()).replace(/\bAi\b/g,'AI') : '';
   const today = provider.today || {}, month = provider.days30 || {};
   const windows=provider.windows || [],models=provider.models || [];
@@ -38,12 +38,14 @@ function usageProvider(provider) {
   const localTokens=value=>localPending ? pending : tokens(value);
   const localCost=total=>localPending ? pending : esc(usageCost(total));
   const tokens = (value) => `<span title="${Number(value || 0).toLocaleString()} Tokens" aria-label="${Number(value || 0).toLocaleString()} Tokens">${usageNumber(value)}</span>`;
+  const costLabel = provider.provider === 'grok' ? 'Cost' : 'Est. API Cost';
+  const costNote = provider.provider === 'grok' ? 'Recorded from local Grok session usage. Subscription charges are separate.' : 'API-equivalent estimate. Subscription charges are separate.';
   const extras = [];
   if (provider.resetCredits != null) extras.push(`<div class="usage-extra"><span>Available Resets</span><b>${provider.resetCredits}</b></div>`);
   if (provider.credits != null && provider.credits > 0) extras.push(`<div class="usage-extra"><span>Credits Remaining</span><b>${Number(provider.credits).toLocaleString()}</b></div>`);
   return `<section class="usage-provider" aria-label="${name} Usage"><header class="usage-provider-head">${usageLogo(provider.provider)}<h2>${name}</h2>${plan ? `<span class="usage-plan">${esc(plan)}</span>` : ''}</header>`+
     `<div class="usage-limits">${windows.length ? windows.map(usageWindow).join('') : quotaPending ? `<p class="usage-pending" role="status">${pending} Checking Limits</p>` : `<p class="usage-unavailable">${esc(provider.quotaError || 'Subscription Limits Unavailable')}</p>`}${windows.length && !quotaPending && provider.quotaError ? `<p class="usage-unavailable">${esc(provider.quotaError)}</p>` : ''}${quotaPending && windows.length ? `<p class="usage-pending" role="status">${pending} Updating Limits</p>` : ''}</div>${extras.join('')}`+
-    `<table class="usage-totals"><caption>Local Activity</caption><thead><tr><td></td><th scope="col">Today</th><th scope="col">30 Days</th></tr></thead><tbody><tr><th scope="row">Tokens</th><td>${localTokens(today.tokens)}</td><td>${localTokens(month.tokens)}</td></tr><tr><th scope="row">Est. API Cost</th><td>${localCost(today)}</td><td>${localCost(month)}</td></tr></tbody></table><p class="usage-cost-note">API-equivalent estimate. Subscription charges are separate.</p>${provider.localLoading ? `<p class="usage-pending" role="status">${pending} Reading Local Activity</p>` : ''}`+
+    `<table class="usage-totals"><caption>Local Activity</caption><thead><tr><td></td><th scope="col">Today</th><th scope="col">30 Days</th></tr></thead><tbody><tr><th scope="row">Tokens</th><td>${localTokens(today.tokens)}</td><td>${localTokens(month.tokens)}</td></tr><tr><th scope="row">${costLabel}</th><td>${localCost(today)}</td><td>${localCost(month)}</td></tr></tbody></table><p class="usage-cost-note">${costNote}</p>${provider.localLoading ? `<p class="usage-pending" role="status">${pending} Reading Local Activity</p>` : ''}`+
     (provider.localError || provider.skipped || month.unpricedTokens ? `<p class="usage-coverage">${esc(provider.localError || (provider.skipped ? 'Some large log entries were skipped.' : ''))}${month.unpricedTokens ? `${provider.localError || provider.skipped ? ' ' : ''}${usageNumber(month.unpricedTokens)} tokens have no published rate. Their cost is excluded.` : ''}</p>` : '')+
     (models.length ? `<details class="usage-models" data-usage-provider="${esc(provider.provider)}"><summary>30-Day Breakdown ${I.down}</summary><table><thead><tr><th scope="col">Model</th><th scope="col">Tokens</th><th scope="col">Cost</th></tr></thead><tbody>${models.map(model=>`<tr><th scope="row">${esc(model.model || 'Model Unrecorded')}</th><td>${tokens(model.tokens)}</td><td>${esc(usageCost(model))}</td></tr>`).join('')}</tbody></table><div class="usage-token-types"><span>Input <b>${usageNumber(month.input)}</b></span><span>Cached <b>${usageNumber(month.cached)}</b></span><span>Cache Writes <b>${usageNumber(month.writes)}</b></span><span>Output <b>${usageNumber(month.output)}</b></span></div></details>` : '')+
     `</section>`;
@@ -103,7 +105,7 @@ function weeklyQuotaEntry(window) {
 function weeklyQuota(report, provider) {
   const account = report?.providers?.find(value => value.provider === provider);
   const rawWindows = account?.windows || [];
-  if (provider === 'antigravity') {
+  if (provider === 'antigravity' || provider === 'grok') {
     const matches = rawWindows.filter(value => /\bweekly\b/i.test(value.label || '')).map(weeklyQuotaEntry).filter(Boolean);
     if (!matches.length) return { account };
     const exact = matches.find(entry => /^weekly$/i.test(entry.window.label || ''));

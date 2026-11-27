@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,13 +20,54 @@ import (
 const (
 	defaultAntigravityRecencyBroadcastInterval = 15 * time.Second
 	defaultAntigravityIdleSessionTimeout       = 12 * time.Minute
+	defaultAntigravityDaemonIdleTimeout        = 30 * time.Minute
+	defaultAntigravityKeepaliveInterval        = 45 * time.Second
+	defaultAntigravityKeepaliveTimeout         = 10 * time.Second
+	defaultAntigravityOpenFastWait             = 150 * time.Millisecond
 	defaultAntigravityModelsCacheTTL           = 5 * time.Minute
 	defaultAntigravityPollInterval             = time.Second
 	defaultAntigravityWorkPollInterval         = 500 * time.Millisecond
 	defaultAntigravityFlushInterval            = 60 * time.Millisecond
 	defaultAntigravityCallTimeout              = 30 * time.Second
 	antigravityDrainBarrierKind                = "__fc_drain_barrier"
+	acpDaemonMaxEarlyUpdates                   = 256
 )
+
+var defaultAntigravityReconnectBackoff = []time.Duration{
+	1 * time.Second,
+	2 * time.Second,
+	5 * time.Second,
+}
+
+type acpDaemonKey struct {
+	appDataDir      string
+	skipPermissions bool
+}
+
+type acpDaemonDial struct {
+	done   chan struct{}
+	daemon *acpDaemon
+	err    error
+}
+
+type acpDaemon struct {
+	manager *AntigravityManager
+	key     acpDaemonKey
+	client  *acpClient
+	initRes *acpInitResult
+
+	mu           sync.Mutex
+	runs         map[string]*antigravityRun
+	barriers     map[string]chan struct{}
+	earlyUpdates map[string][]acpSessionUpdate
+	pendingNew   int
+	lastRPCAt    time.Time
+	lastProbeAt  time.Time
+	idleSince    time.Time
+	probing      bool
+	closed       bool
+	closeErr     error
+}
 
 type antigravityGate struct {
 	mu    sync.Mutex
@@ -74,18 +116,19 @@ type antigravityPendingElicit struct {
 }
 
 type antigravityListState struct {
-	alive     bool
-	running   bool
-	attention bool
-	turnAt    int64
-	recency   int64
-	title     string
-	cwd       string
-	model     string
-	effort    string
-	mode      string
-	lastMsg   string
-	lastErr   string
+	alive        bool
+	running      bool
+	localRunning bool
+	attention    bool
+	turnAt       int64
+	recency      int64
+	title        string
+	cwd          string
+	model        string
+	effort       string
+	mode         string
+	lastMsg      string
+	lastErr      string
 }
 
 func antigravityListSignature(list []ThreadInfo, groups []OrganizationGroup) [32]byte {
@@ -126,11 +169,17 @@ type AntigravityManager struct {
 	customGeminiDir          bool
 	state                    *antigravityState
 	allowFullAccess          bool
+	prewarmOnStart           bool
 	supportsACP              func(string) bool
 	dialACP                  func(context.Context, acpClientConfig) (*acpClient, *acpInitResult, error)
 	now                      func() time.Time
 	recencyBroadcastInterval time.Duration
 	idleSessionTimeout       time.Duration
+	daemonIdleTimeout        time.Duration
+	keepaliveInterval        time.Duration
+	keepaliveTimeout         time.Duration
+	openFastWait             time.Duration
+	reconnectBackoff         []time.Duration
 	modelsCacheTTL           time.Duration
 	pollInterval             time.Duration
 	workPollInterval         time.Duration
@@ -139,10 +188,16 @@ type AntigravityManager struct {
 	records          map[string]antigravityRecord
 	recordSlice      []antigravityRecord
 	runs             map[string]*antigravityRun
+	daemons          map[acpDaemonKey]*acpDaemon
+	daemonDial       map[acpDaemonKey]*acpDaemonDial
 	watch            map[*Client]map[string]int
+	watchGen         map[*Client]map[string]uint64
+	watchSeq         uint64
 	workWatch        map[*Client]map[string]antigravityWorkWatch
 	watchedStamp     map[string]antigravityWatchStamp
 	gates            map[string]*antigravityGate
+	reconnecting     map[string]bool
+	prewarmStarted   bool
 	lastList         []byte
 	lastBroadcast    []byte
 	lastBroadcastSig [32]byte
@@ -151,7 +206,10 @@ type AntigravityManager struct {
 	prevStates       map[string]threadState
 	catalog          antigravityModelCatalog
 	shuttingDown     bool
+	stopCtx          context.Context
+	stopCancel       context.CancelFunc
 
+	bgWG       sync.WaitGroup
 	refreshMu  sync.Mutex
 	refreshJob atomic.Bool
 	modelsMu   sync.Mutex
@@ -165,25 +223,37 @@ func newAntigravityManager(h *Hub) *AntigravityManager {
 			data: emptyAntigravityStateData(),
 		}
 	}
+	stopCtx, stopCancel := context.WithCancel(context.Background())
 	return &AntigravityManager{
 		hub:                      h,
 		bin:                      agyBinary(),
 		geminiDir:                antigravityGeminiDir(""),
 		state:                    state,
+		prewarmOnStart:           true,
 		supportsACP:              agySupportsACP,
 		dialACP:                  dialACPClient,
 		recencyBroadcastInterval: defaultAntigravityRecencyBroadcastInterval,
 		idleSessionTimeout:       defaultAntigravityIdleSessionTimeout,
+		daemonIdleTimeout:        defaultAntigravityDaemonIdleTimeout,
+		keepaliveInterval:        defaultAntigravityKeepaliveInterval,
+		keepaliveTimeout:         defaultAntigravityKeepaliveTimeout,
+		openFastWait:             defaultAntigravityOpenFastWait,
 		modelsCacheTTL:           defaultAntigravityModelsCacheTTL,
 		pollInterval:             defaultAntigravityPollInterval,
 		workPollInterval:         defaultAntigravityWorkPollInterval,
 		records:                  map[string]antigravityRecord{},
 		runs:                     map[string]*antigravityRun{},
+		daemons:                  map[acpDaemonKey]*acpDaemon{},
+		daemonDial:               map[acpDaemonKey]*acpDaemonDial{},
 		watch:                    map[*Client]map[string]int{},
+		watchGen:                 map[*Client]map[string]uint64{},
 		workWatch:                map[*Client]map[string]antigravityWorkWatch{},
 		watchedStamp:             map[string]antigravityWatchStamp{},
 		gates:                    map[string]*antigravityGate{},
+		reconnecting:             map[string]bool{},
 		orgState:                 emptyOrganization(),
+		stopCtx:                  stopCtx,
+		stopCancel:               stopCancel,
 	}
 }
 
@@ -215,11 +285,94 @@ func (m *AntigravityManager) idleTimeout() time.Duration {
 	return defaultAntigravityIdleSessionTimeout
 }
 
+func (m *AntigravityManager) daemonIdleDuration() time.Duration {
+	if m.daemonIdleTimeout > 0 {
+		return m.daemonIdleTimeout
+	}
+	return defaultAntigravityDaemonIdleTimeout
+}
+
+func (m *AntigravityManager) keepaliveEvery() time.Duration {
+	if m.keepaliveInterval > 0 {
+		return m.keepaliveInterval
+	}
+	return defaultAntigravityKeepaliveInterval
+}
+
+func (m *AntigravityManager) keepaliveCallTimeout() time.Duration {
+	if m.keepaliveTimeout > 0 {
+		return m.keepaliveTimeout
+	}
+	return defaultAntigravityKeepaliveTimeout
+}
+
+func (m *AntigravityManager) openFastWaitDuration() time.Duration {
+	if m.openFastWait > 0 {
+		return m.openFastWait
+	}
+	return defaultAntigravityOpenFastWait
+}
+
+func (m *AntigravityManager) reconnectSchedule() []time.Duration {
+	if len(m.reconnectBackoff) > 0 {
+		return m.reconnectBackoff
+	}
+	return defaultAntigravityReconnectBackoff
+}
+
 func (m *AntigravityManager) modelsTTL() time.Duration {
 	if m.modelsCacheTTL > 0 {
 		return m.modelsCacheTTL
 	}
 	return defaultAntigravityModelsCacheTTL
+}
+
+func (m *AntigravityManager) baseContextLocked() context.Context {
+	if m.stopCtx == nil {
+		m.stopCtx, m.stopCancel = context.WithCancel(context.Background())
+		if m.shuttingDown {
+			m.stopCancel()
+		}
+	}
+	return m.stopCtx
+}
+
+func (m *AntigravityManager) baseContext() context.Context {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.baseContextLocked()
+}
+
+func normalizeAntigravityAppDataDir(appDir string) string {
+	if !antigravityValidAppDataDir(appDir) {
+		return acpDefaultAppDataDir
+	}
+	return appDir
+}
+
+func antigravityConversationPBPath(geminiDir, appDataDir, id string) string {
+	return filepath.Join(geminiDir, appDataDir, "conversations", id+".pb")
+}
+
+func antigravityConversationsDirExists(geminiDir, appDataDir string) bool {
+	if !antigravityValidAppDataDir(appDataDir) {
+		return false
+	}
+	st, err := os.Stat(filepath.Join(geminiDir, appDataDir, "conversations"))
+	return err == nil && st.IsDir()
+}
+
+func antigravityHasConversationPB(geminiDir, appDataDir, id string) bool {
+	if !antigravityValidAppDataDir(appDataDir) || !antigravityValidConversationID(id) {
+		return false
+	}
+	st, err := os.Stat(antigravityConversationPBPath(geminiDir, appDataDir, id))
+	return err == nil && st.Mode().IsRegular()
+}
+
+func isACPMethodNotFound(err error) bool {
+	var rpcErr *acpRPCError
+	return errors.As(err, &rpcErr) && rpcErr.Code == -32601
 }
 
 func (m *AntigravityManager) checkSupportsACP(bin string) bool {
@@ -276,6 +429,460 @@ func (m *AntigravityManager) dialClient(ctx context.Context, cfg acpClientConfig
 		return m.dialACP(ctx, cfg)
 	}
 	return dialACPClient(ctx, cfg)
+}
+
+func (m *AntigravityManager) ensureDaemon(ctx context.Context, key acpDaemonKey) (*acpDaemon, error) {
+	key.appDataDir = normalizeAntigravityAppDataDir(key.appDataDir)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := m.requireACP(); err != nil {
+		return nil, err
+	}
+
+	for {
+		m.mu.Lock()
+		if m.shuttingDown {
+			m.mu.Unlock()
+			return nil, errors.New("Relay Is Shutting Down")
+		}
+		if m.daemons == nil {
+			m.daemons = map[acpDaemonKey]*acpDaemon{}
+		}
+		if d := m.daemons[key]; d != nil && d.isAlive() {
+			m.mu.Unlock()
+			return d, nil
+		}
+		if m.daemonDial == nil {
+			m.daemonDial = map[acpDaemonKey]*acpDaemonDial{}
+		}
+		if inflight := m.daemonDial[key]; inflight != nil {
+			m.mu.Unlock()
+			select {
+			case <-inflight.done:
+				if inflight.err != nil {
+					return nil, inflight.err
+				}
+				if inflight.daemon != nil && inflight.daemon.isAlive() {
+					return inflight.daemon, nil
+				}
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+
+		dial := &acpDaemonDial{done: make(chan struct{})}
+		m.daemonDial[key] = dial
+		baseCtx := m.baseContextLocked()
+		m.bgWG.Add(1)
+		m.mu.Unlock()
+
+		go func() {
+			defer m.bgWG.Done()
+			defer close(dial.done)
+
+			dialCtx, dialCancel := context.WithTimeout(baseCtx, defaultAntigravityCallTimeout)
+			defer dialCancel()
+
+			homeDir, _ := os.UserHomeDir()
+			if homeDir != "" {
+				if st, statErr := os.Stat(homeDir); statErr != nil || !st.IsDir() {
+					homeDir = ""
+				}
+			}
+
+			now := m.nowTime()
+			d := &acpDaemon{
+				manager:      m,
+				key:          key,
+				runs:         map[string]*antigravityRun{},
+				barriers:     map[string]chan struct{}{},
+				earlyUpdates: map[string][]acpSessionUpdate{},
+				lastRPCAt:    now,
+			}
+
+			client, initRes, err := m.dialClient(dialCtx, acpClientConfig{
+				AppDataDir:                 key.appDataDir,
+				Cwd:                        homeDir,
+				DangerouslySkipPermissions: key.skipPermissions,
+				DisableTelemetry:           true,
+				CallTimeout:                defaultAntigravityCallTimeout,
+				OnUpdate:                   d.onUpdate,
+				OnPermission:               d.onPermission,
+				OnElicitation:              d.onElicitation,
+				OnClose:                    d.onClose,
+			})
+			if err != nil {
+				m.mu.Lock()
+				if m.daemonDial[key] == dial {
+					delete(m.daemonDial, key)
+				}
+				m.mu.Unlock()
+				dial.err = err
+				return
+			}
+
+			d.mu.Lock()
+			d.client = client
+			d.initRes = initRes
+			d.lastRPCAt = m.nowTime()
+			alreadyClosed := d.closed || client.Closed()
+			d.mu.Unlock()
+
+			m.mu.Lock()
+			if m.daemonDial[key] == dial {
+				delete(m.daemonDial, key)
+			}
+			if m.shuttingDown {
+				m.mu.Unlock()
+				_ = client.Close()
+				dial.err = errors.New("Relay Is Shutting Down")
+				return
+			}
+			if alreadyClosed {
+				m.mu.Unlock()
+				_ = client.Close()
+				dial.err = errors.New("Antigravity ACP Daemon Closed During Startup")
+				return
+			}
+			if m.daemons == nil {
+				m.daemons = map[acpDaemonKey]*acpDaemon{}
+			}
+			m.daemons[key] = d
+			m.mu.Unlock()
+
+			dial.daemon = d
+		}()
+
+		select {
+		case <-dial.done:
+			if dial.err != nil {
+				return nil, dial.err
+			}
+			if dial.daemon != nil && dial.daemon.isAlive() {
+				return dial.daemon, nil
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func (d *acpDaemon) isAlive() bool {
+	if d == nil {
+		return false
+	}
+	d.mu.Lock()
+	closed := d.closed
+	client := d.client
+	d.mu.Unlock()
+	if closed || client == nil {
+		return false
+	}
+	return !client.Closed()
+}
+
+func (d *acpDaemon) touchActivity(now time.Time) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	if now.After(d.lastRPCAt) {
+		d.lastRPCAt = now
+	}
+	d.idleSince = time.Time{}
+	d.mu.Unlock()
+}
+
+func (d *acpDaemon) attachRun(id string, run *antigravityRun) bool {
+	if d == nil || id == "" || run == nil {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed || d.client == nil || d.client.Closed() {
+		return false
+	}
+	if d.runs == nil {
+		d.runs = map[string]*antigravityRun{}
+	}
+	d.runs[id] = run
+	d.idleSince = time.Time{}
+	d.lastRPCAt = d.manager.nowTime()
+	return true
+}
+
+func (d *acpDaemon) detachRun(id string, run *antigravityRun) {
+	if d == nil || id == "" {
+		return
+	}
+	d.mu.Lock()
+	if d.runs[id] == run {
+		delete(d.runs, id)
+	}
+	if d.earlyUpdates != nil {
+		delete(d.earlyUpdates, id)
+	}
+	d.mu.Unlock()
+}
+
+func (d *acpDaemon) hasRun(id string) bool {
+	if d == nil || id == "" {
+		return false
+	}
+	d.mu.Lock()
+	_, ok := d.runs[id]
+	d.mu.Unlock()
+	return ok
+}
+
+func (d *acpDaemon) beginNewSession() {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	d.pendingNew++
+	d.idleSince = time.Time{}
+	d.mu.Unlock()
+}
+
+func (d *acpDaemon) endNewSession(keepSID string) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	if d.pendingNew > 0 {
+		d.pendingNew--
+	}
+	if d.pendingNew == 0 && len(d.earlyUpdates) > 0 {
+		for sid := range d.earlyUpdates {
+			if sid != keepSID {
+				delete(d.earlyUpdates, sid)
+			}
+		}
+	}
+	d.mu.Unlock()
+}
+
+// drainDispatchForSession inserts a FIFO sentinel into client.eventQueue and
+// waits until acpClient.dispatchLoop has processed every earlier notification.
+// Never call this from inside an ACP callback.
+func (d *acpDaemon) drainDispatchForSession(sessionID string) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	client := d.client
+	closed := d.closed
+	d.mu.Unlock()
+	if closed || client == nil || client.Closed() {
+		return
+	}
+
+	token := uuid()
+	ch := make(chan struct{})
+	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return
+	}
+	if d.barriers == nil {
+		d.barriers = map[string]chan struct{}{}
+	}
+	d.barriers[token] = ch
+	d.mu.Unlock()
+
+	defer func() {
+		d.mu.Lock()
+		delete(d.barriers, token)
+		d.mu.Unlock()
+	}()
+
+	client.enqueueEvent(acpDispatchEvent{
+		update: &acpSessionUpdate{
+			SessionID: sessionID,
+			Kind:      antigravityDrainBarrierKind,
+			Text:      token,
+		},
+	})
+	select {
+	case <-ch:
+	case <-client.Done():
+	}
+}
+
+func (d *acpDaemon) onUpdate(u acpSessionUpdate) {
+	if u.Kind == antigravityDrainBarrierKind {
+		var target *antigravityRun
+		var early []acpSessionUpdate
+		d.mu.Lock()
+		if u.SessionID != "" {
+			if r := d.runs[u.SessionID]; r != nil && len(d.earlyUpdates[u.SessionID]) > 0 {
+				target = r
+				early = d.earlyUpdates[u.SessionID]
+				delete(d.earlyUpdates, u.SessionID)
+			}
+		}
+		ch := d.barriers[u.Text]
+		delete(d.barriers, u.Text)
+		d.mu.Unlock()
+		if target != nil {
+			for _, eu := range early {
+				target.onUpdate(eu)
+			}
+		}
+		if ch != nil {
+			close(ch)
+		}
+		return
+	}
+
+	now := d.manager.nowTime()
+	var target *antigravityRun
+	var early []acpSessionUpdate
+
+	d.mu.Lock()
+	d.lastRPCAt = now
+	if u.SessionID != "" {
+		target = d.runs[u.SessionID]
+		if target != nil {
+			if buf := d.earlyUpdates[u.SessionID]; len(buf) > 0 {
+				early = buf
+				delete(d.earlyUpdates, u.SessionID)
+			}
+		} else if d.pendingNew > 0 {
+			if d.earlyUpdates == nil {
+				d.earlyUpdates = map[string][]acpSessionUpdate{}
+			}
+			if len(d.earlyUpdates[u.SessionID]) < acpDaemonMaxEarlyUpdates {
+				d.earlyUpdates[u.SessionID] = append(d.earlyUpdates[u.SessionID], u)
+			}
+		}
+	} else if len(d.runs) == 1 {
+		for _, r := range d.runs {
+			target = r
+		}
+	}
+	d.mu.Unlock()
+
+	if target != nil {
+		for _, eu := range early {
+			target.onUpdate(eu)
+		}
+		target.onUpdate(u)
+	}
+}
+
+func (d *acpDaemon) onPermission(req acpPermissionRequest) {
+	now := d.manager.nowTime()
+	var target *antigravityRun
+	var candidates []*antigravityRun
+
+	d.mu.Lock()
+	d.lastRPCAt = now
+	client := d.client
+	if req.SessionID != "" {
+		target = d.runs[req.SessionID]
+	} else {
+		for _, r := range d.runs {
+			candidates = append(candidates, r)
+		}
+	}
+	d.mu.Unlock()
+
+	if target == nil && req.SessionID == "" {
+		var active []*antigravityRun
+		for _, r := range candidates {
+			if r.hasActivePrompts() {
+				active = append(active, r)
+			}
+		}
+		if len(active) == 1 {
+			target = active[0]
+		}
+	}
+
+	if target != nil {
+		target.onPermission(req)
+		return
+	}
+	if client != nil {
+		_ = client.RespondPermission(req.RequestID, "", true)
+	}
+}
+
+func (d *acpDaemon) onElicitation(req acpElicitationRequest) {
+	now := d.manager.nowTime()
+	var target *antigravityRun
+	var candidates []*antigravityRun
+
+	d.mu.Lock()
+	d.lastRPCAt = now
+	client := d.client
+	if req.SessionID != "" {
+		target = d.runs[req.SessionID]
+	} else {
+		for _, r := range d.runs {
+			candidates = append(candidates, r)
+		}
+	}
+	d.mu.Unlock()
+
+	if target == nil && req.SessionID == "" {
+		var active []*antigravityRun
+		for _, r := range candidates {
+			if r.hasActivePrompts() {
+				active = append(active, r)
+			}
+		}
+		if len(active) == 1 {
+			target = active[0]
+		}
+	}
+
+	if target != nil {
+		target.onElicitation(req)
+		return
+	}
+	if client != nil {
+		_ = client.RespondElicitation(req.RequestID, "cancel", nil)
+	}
+}
+
+// onClose runs inside acpClient.dispatchLoop; NEVER call client.Close() here!
+func (d *acpDaemon) onClose(closeErr error) {
+	d.mu.Lock()
+	d.closed = true
+	d.closeErr = closeErr
+	runs := make([]*antigravityRun, 0, len(d.runs))
+	for _, r := range d.runs {
+		runs = append(runs, r)
+	}
+	d.runs = map[string]*antigravityRun{}
+	d.earlyUpdates = nil
+	barriers := d.barriers
+	d.barriers = nil
+	d.mu.Unlock()
+
+	for _, ch := range barriers {
+		close(ch)
+	}
+
+	m := d.manager
+	m.mu.Lock()
+	if m.daemons[d.key] == d {
+		delete(m.daemons, d.key)
+	}
+	shuttingDown := m.shuttingDown
+	m.mu.Unlock()
+
+	for _, r := range runs {
+		r.onTransportClose(closeErr, shuttingDown)
+	}
 }
 
 func (m *AntigravityManager) lockThread(id string) func() {
@@ -353,18 +960,109 @@ func (m *AntigravityManager) event(id, kind, title, text, cwd string) {
 	}
 }
 
-func (m *AntigravityManager) removeClient(c *Client) {
+func (m *AntigravityManager) hasWatchersLocked(id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, ids := range m.watch {
+		if _, ok := ids[id]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *AntigravityManager) hasAnyWatchersLocked() bool {
+	for _, ids := range m.watch {
+		if len(ids) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *AntigravityManager) reserveWatchGen(c *Client, id string) uint64 {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.watchSeq++
+	gen := m.watchSeq
+	if m.watchGen == nil {
+		m.watchGen = map[*Client]map[string]uint64{}
+	}
+	if m.watchGen[c] == nil {
+		m.watchGen[c] = map[string]uint64{}
+	}
+	m.watchGen[c][id] = gen
+	return gen
+}
+
+func (m *AntigravityManager) clearWatchGen(c *Client, id string, gen uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.watchGen[c] != nil && m.watchGen[c][id] == gen {
+		delete(m.watchGen[c], id)
+	}
+}
+
+func (m *AntigravityManager) isWatchCurrent(c *Client, id string, gen uint64) bool {
+	if m.hub != nil {
+		m.hub.mu.Lock()
+		connected := m.hub.clients[c]
+		if !connected {
+			m.hub.mu.Unlock()
+			return false
+		}
+		defer m.hub.mu.Unlock()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.shuttingDown || m.watch[c] == nil {
+		return false
+	}
+	if _, ok := m.watch[c][id]; !ok {
+		return false
+	}
+	if gen == 0 {
+		return true
+	}
+	return m.watchGen[c] != nil && m.watchGen[c][id] == gen
+}
+
+func (m *AntigravityManager) removeClient(c *Client) {
+	now := m.nowTime()
+	var unwatched []*antigravityRun
+	m.mu.Lock()
+	watched := m.watch[c]
 	delete(m.watch, c)
+	delete(m.watchGen, c)
 	delete(m.workWatch, c)
+	for id := range watched {
+		if !m.hasWatchersLocked(id) {
+			if r := m.runs[id]; r != nil {
+				unwatched = append(unwatched, r)
+			}
+		}
+	}
 	m.mu.Unlock()
+	for _, r := range unwatched {
+		r.markUnwatched(now)
+	}
 }
 
 func (m *AntigravityManager) requestRefresh() {
 	if !m.refreshJob.CompareAndSwap(false, true) {
 		return
 	}
+	m.mu.Lock()
+	if m.shuttingDown {
+		m.mu.Unlock()
+		m.refreshJob.Store(false)
+		return
+	}
+	m.bgWG.Add(1)
+	m.mu.Unlock()
 	go func() {
+		defer m.bgWG.Done()
 		defer m.refreshJob.Store(false)
 		m.refresh()
 	}()
@@ -389,7 +1087,7 @@ func (m *AntigravityManager) effectiveRecordsLocked(dbRecords []antigravityRecor
 	out := make([]antigravityRecord, 0, len(dbRecords)+len(runStates))
 	for _, rec := range dbRecords {
 		if st, ok := runStates[rec.ID]; ok {
-			rec.Running = st.running
+			rec.Running = rec.Running || st.localRunning
 			if st.recency > rec.Recency {
 				rec.Recency = st.recency
 			}
@@ -462,9 +1160,9 @@ func (m *AntigravityManager) refresh() {
 		t := &list[i]
 		if st, ok := runStates[t.ID]; ok {
 			t.Live = st.alive
-			t.Running = st.running
+			t.Running = t.Running || st.localRunning
 			t.Attention = st.attention
-			if st.alive || st.running {
+			if st.alive || t.Running {
 				t.Active = true
 			}
 			if st.turnAt > 0 {
@@ -566,9 +1264,45 @@ func (m *AntigravityManager) refresh() {
 	}
 }
 
+func (m *AntigravityManager) maybePrewarm() {
+	if !m.prewarmOnStart || !m.acpAvailable() {
+		return
+	}
+	if len(m.snapshotRecords()) == 0 && !antigravityHasDB(m.geminiRoot()) {
+		return
+	}
+	m.mu.Lock()
+	if m.shuttingDown || m.prewarmStarted {
+		m.mu.Unlock()
+		return
+	}
+	m.prewarmStarted = true
+	baseCtx := m.baseContextLocked()
+	m.bgWG.Add(1)
+	m.mu.Unlock()
+
+	go func() {
+		defer m.bgWG.Done()
+		warmCtx, cancel := context.WithTimeout(baseCtx, 25*time.Second)
+		defer cancel()
+		d, err := m.ensureDaemon(warmCtx, acpDaemonKey{
+			appDataDir:      acpDefaultAppDataDir,
+			skipPermissions: false,
+		})
+		if err != nil || d == nil {
+			return
+		}
+		// Run lightweight session/list to finish lazy internal backend boot before
+		// the user opens any chat.
+		_, _ = d.client.ListSessions(warmCtx)
+		d.touchActivity(m.nowTime())
+	}()
+}
+
 func (m *AntigravityManager) run(ctx context.Context) {
 	go m.followWork(ctx)
 	m.refresh()
+	m.maybePrewarm()
 
 	interval := m.pollInterval
 	if interval <= 0 {
@@ -586,6 +1320,7 @@ func (m *AntigravityManager) run(ctx context.Context) {
 			m.refresh()
 			m.pollWatchedThreads()
 			m.reapIdleSessions()
+			m.checkDaemonHealth()
 		}
 	}
 }
@@ -593,47 +1328,115 @@ func (m *AntigravityManager) run(ctx context.Context) {
 func (m *AntigravityManager) shutdown() {
 	m.mu.Lock()
 	m.shuttingDown = true
+	if m.stopCancel != nil {
+		m.stopCancel()
+	}
 	runs := make([]*antigravityRun, 0, len(m.runs))
 	for id, r := range m.runs {
 		runs = append(runs, r)
 		delete(m.runs, id)
 	}
-	m.mu.Unlock()
-
-	var wg sync.WaitGroup
-	for _, r := range runs {
-		wg.Add(1)
-		go func(run *antigravityRun) {
-			defer wg.Done()
-			run.shutdown(500 * time.Millisecond)
-		}(r)
+	daemons := make([]*acpDaemon, 0, len(m.daemons))
+	for k, d := range m.daemons {
+		daemons = append(daemons, d)
+		delete(m.daemons, k)
 	}
-	wg.Wait()
-}
-
-func (m *AntigravityManager) pollWatchedThreads() {
-	m.mu.Lock()
-	watchedIDs := map[string]bool{}
-	for _, ids := range m.watch {
-		for id := range ids {
-			watchedIDs[id] = true
+	dials := make([]chan struct{}, 0, len(m.daemonDial))
+	for _, dial := range m.daemonDial {
+		if dial != nil && dial.done != nil {
+			dials = append(dials, dial.done)
 		}
 	}
 	m.mu.Unlock()
 
-	for id := range watchedIDs {
+	// 1. Send session/close for all loaded runs within a 500ms budget.
+	var runWG sync.WaitGroup
+	for _, r := range runs {
+		runWG.Add(1)
+		go func(run *antigravityRun) {
+			defer runWG.Done()
+			run.detachAndCloseSession(500 * time.Millisecond)
+		}(r)
+	}
+	runWG.Wait()
+
+	// 2. Close every pooled ACP daemon cleanly so zero orphan agy processes remain.
+	var daemonWG sync.WaitGroup
+	for _, d := range daemons {
+		daemonWG.Add(1)
+		go func(daemon *acpDaemon) {
+			defer daemonWG.Done()
+			daemon.mu.Lock()
+			daemon.closed = true
+			client := daemon.client
+			daemon.mu.Unlock()
+			if client != nil {
+				_ = client.Close()
+			}
+		}(d)
+	}
+	daemonWG.Wait()
+
+	// 3. Wait for any cancelled in-flight dials and background tasks to finish.
+	for _, ch := range dials {
+		<-ch
+	}
+	m.bgWG.Wait()
+}
+
+func (m *AntigravityManager) pollWatchedThreads() {
+	m.mu.Lock()
+	watched := map[string]int{}
+	for _, ids := range m.watch {
+		for id, w := range ids {
+			if w > watched[id] {
+				watched[id] = w
+			}
+		}
+	}
+	m.mu.Unlock()
+
+	for id, maxWindow := range watched {
+		if maxWindow <= 0 {
+			maxWindow = antigravityDefaultWindow
+		}
 		m.mu.Lock()
 		run := m.runs[id]
 		rec, ok := m.records[id]
 		prevStamp := m.watchedStamp[id]
 		m.mu.Unlock()
-		if run != nil || !ok {
+		if !ok {
+			continue
+		}
+		if run != nil && run.isRunning() {
 			continue
 		}
 		stamp := m.computeWatchStamp(rec)
 		if stamp == prevStamp {
 			continue
 		}
+
+		if run != nil && run.isAlive() {
+			hist, err := m.readRecordTranscript(rec, maxWindow)
+			if err != nil {
+				continue
+			}
+			m.mu.Lock()
+			if m.watchedStamp == nil {
+				m.watchedStamp = map[string]antigravityWatchStamp{}
+			}
+			m.watchedStamp[id] = stamp
+			m.mu.Unlock()
+
+			changed, fullOpen := run.syncExternalDiskState(hist, rec.Running)
+			if fullOpen {
+				m.pushLiveToWatchers(id, run)
+			} else if changed {
+				run.publish(true)
+			}
+			continue
+		}
+
 		m.mu.Lock()
 		if m.watchedStamp == nil {
 			m.watchedStamp = map[string]antigravityWatchStamp{}
@@ -647,7 +1450,7 @@ func (m *AntigravityManager) pollWatchedThreads() {
 		}
 		m.mu.Unlock()
 		for _, c := range clients {
-			_ = m.open(c, id, false)
+			_ = m.emitTailOpen(c, id, false)
 		}
 	}
 }
@@ -670,37 +1473,360 @@ func (m *AntigravityManager) computeWatchStamp(rec antigravityRecord) antigravit
 func (m *AntigravityManager) reapIdleSessions() {
 	now := m.nowTime()
 	timeout := m.idleTimeout()
-	if timeout <= 0 {
+	if timeout > 0 {
+		m.mu.Lock()
+		type reapCandidate struct {
+			id  string
+			run *antigravityRun
+		}
+		candidates := make([]reapCandidate, 0, len(m.runs))
+		for id, run := range m.runs {
+			if m.hasWatchersLocked(id) {
+				continue
+			}
+			candidates = append(candidates, reapCandidate{id: id, run: run})
+		}
+		m.mu.Unlock()
+
+		for _, cand := range candidates {
+			if !cand.run.canReap(now, timeout) {
+				continue
+			}
+			m.mu.Lock()
+			if m.runs[cand.id] == cand.run && !m.hasWatchersLocked(cand.id) && cand.run.canReap(now, timeout) {
+				delete(m.runs, cand.id)
+				m.mu.Unlock()
+				go func(r *antigravityRun) {
+					r.detachAndCloseSession(2 * time.Second)
+					m.requestRefresh()
+				}(cand.run)
+			} else {
+				m.mu.Unlock()
+			}
+		}
+	}
+
+	m.reapIdleDaemons(now)
+}
+
+func (m *AntigravityManager) reapIdleDaemons(now time.Time) {
+	daemonTimeout := m.daemonIdleDuration()
+	if daemonTimeout <= 0 {
 		return
 	}
 
 	m.mu.Lock()
-	type reapCandidate struct {
-		id  string
-		run *antigravityRun
+	if m.shuttingDown {
+		m.mu.Unlock()
+		return
 	}
-	candidates := make([]reapCandidate, 0, len(m.runs))
-	for id, run := range m.runs {
-		candidates = append(candidates, reapCandidate{id: id, run: run})
+	hasWatchers := m.hasAnyWatchersLocked()
+	daemons := make([]*acpDaemon, 0, len(m.daemons))
+	for _, d := range m.daemons {
+		daemons = append(daemons, d)
 	}
 	m.mu.Unlock()
 
-	for _, cand := range candidates {
-		if !cand.run.canReap(now, timeout) {
+	if hasWatchers {
+		for _, d := range daemons {
+			d.mu.Lock()
+			d.idleSince = time.Time{}
+			d.mu.Unlock()
+		}
+		return
+	}
+
+	for _, d := range daemons {
+		d.mu.Lock()
+		if d.closed || len(d.runs) > 0 || d.pendingNew > 0 || d.probing {
+			d.idleSince = time.Time{}
+			d.mu.Unlock()
 			continue
 		}
+		if d.idleSince.IsZero() {
+			d.idleSince = now
+			d.mu.Unlock()
+			continue
+		}
+		idleFor := now.Sub(d.idleSince)
+		d.mu.Unlock()
+
+		if idleFor < daemonTimeout {
+			continue
+		}
+
+		var clientToClose *acpClient
 		m.mu.Lock()
-		if m.runs[cand.id] == cand.run && cand.run.canReap(now, timeout) {
-			delete(m.runs, cand.id)
-			m.mu.Unlock()
-			go func(r *antigravityRun) {
-				r.shutdown(2 * time.Second)
-				m.requestRefresh()
-			}(cand.run)
-		} else {
-			m.mu.Unlock()
+		if !m.shuttingDown && !m.hasAnyWatchersLocked() && m.daemons[d.key] == d {
+			d.mu.Lock()
+			if !d.closed && len(d.runs) == 0 && d.pendingNew == 0 && !d.probing && !d.idleSince.IsZero() && now.Sub(d.idleSince) >= daemonTimeout {
+				d.closed = true
+				clientToClose = d.client
+				delete(m.daemons, d.key)
+			}
+			d.mu.Unlock()
+		}
+		m.mu.Unlock()
+
+		if clientToClose != nil {
+			go func(cli *acpClient) {
+				_ = cli.Close()
+			}(clientToClose)
 		}
 	}
+}
+
+func (m *AntigravityManager) checkDaemonHealth() {
+	now := m.nowTime()
+	interval := m.keepaliveEvery()
+	if interval <= 0 {
+		return
+	}
+
+	m.mu.Lock()
+	if m.shuttingDown {
+		m.mu.Unlock()
+		return
+	}
+	hasWatchers := m.hasAnyWatchersLocked()
+	baseCtx := m.baseContextLocked()
+	daemons := make([]*acpDaemon, 0, len(m.daemons))
+	for _, d := range m.daemons {
+		daemons = append(daemons, d)
+	}
+	m.mu.Unlock()
+
+	for _, d := range daemons {
+		d.mu.Lock()
+		if d.closed || d.probing || d.client == nil || d.client.Closed() {
+			d.mu.Unlock()
+			continue
+		}
+		if len(d.runs) == 0 && !hasWatchers {
+			d.mu.Unlock()
+			continue
+		}
+		lastAct := d.lastRPCAt
+		if d.lastProbeAt.After(lastAct) {
+			lastAct = d.lastProbeAt
+		}
+		if now.Sub(lastAct) < interval {
+			d.mu.Unlock()
+			continue
+		}
+		d.probing = true
+		d.lastProbeAt = now
+		client := d.client
+		d.mu.Unlock()
+
+		m.mu.Lock()
+		if m.shuttingDown {
+			m.mu.Unlock()
+			d.mu.Lock()
+			d.probing = false
+			d.mu.Unlock()
+			return
+		}
+		m.bgWG.Add(1)
+		m.mu.Unlock()
+
+		go func(daemon *acpDaemon, cli *acpClient) {
+			defer m.bgWG.Done()
+			defer func() {
+				daemon.mu.Lock()
+				daemon.probing = false
+				daemon.mu.Unlock()
+			}()
+
+			ctx, cancel := context.WithTimeout(baseCtx, m.keepaliveCallTimeout())
+			_, err := cli.ListSessions(ctx)
+			cancel()
+
+			if err == nil {
+				daemon.touchActivity(m.nowTime())
+				return
+			}
+			var rpcErr *acpRPCError
+			if errors.As(err, &rpcErr) {
+				// Any valid JSON-RPC response proves the transport is responsive.
+				daemon.touchActivity(m.nowTime())
+				return
+			}
+			m.mu.Lock()
+			shuttingDown := m.shuttingDown
+			m.mu.Unlock()
+			if shuttingDown || baseCtx.Err() != nil {
+				return
+			}
+			// Transport or timeout error: close wedged daemon so OnClose drives recovery.
+			_ = cli.Close()
+		}(d, client)
+	}
+}
+
+func (m *AntigravityManager) startReconnect(id string) {
+	if strings.TrimSpace(id) == "" || !m.acpAvailable() {
+		return
+	}
+	m.mu.Lock()
+	if m.shuttingDown || !m.hasWatchersLocked(id) {
+		m.mu.Unlock()
+		return
+	}
+	if existing := m.runs[id]; existing != nil && existing.isAlive() {
+		m.mu.Unlock()
+		return
+	}
+	if m.reconnecting == nil {
+		m.reconnecting = map[string]bool{}
+	}
+	if m.reconnecting[id] {
+		m.mu.Unlock()
+		return
+	}
+	m.reconnecting[id] = true
+	baseCtx := m.baseContextLocked()
+	m.bgWG.Add(1)
+	m.mu.Unlock()
+
+	go func() {
+		defer m.bgWG.Done()
+		defer func() {
+			m.mu.Lock()
+			delete(m.reconnecting, id)
+			m.mu.Unlock()
+		}()
+
+		backoffs := m.reconnectSchedule()
+		for _, delay := range backoffs {
+			if delay > 0 {
+				t := time.NewTimer(delay)
+				select {
+				case <-baseCtx.Done():
+					t.Stop()
+					return
+				case <-t.C:
+				}
+			}
+
+			m.mu.Lock()
+			if m.shuttingDown || !m.hasWatchersLocked(id) {
+				m.mu.Unlock()
+				return
+			}
+			existing := m.runs[id]
+			m.mu.Unlock()
+			if existing != nil && existing.isAlive() {
+				existing.touch()
+				m.pushLiveToWatchers(id, existing)
+				return
+			}
+
+			attemptCtx, cancel := context.WithTimeout(baseCtx, defaultAntigravityCallTimeout)
+			run, err := m.ensureRun(attemptCtx, id)
+			cancel()
+			if err == nil && run != nil {
+				run.touch()
+				m.pushLiveToWatchers(id, run)
+				return
+			}
+			if baseCtx.Err() != nil {
+				return
+			}
+		}
+
+		m.clearConnectingForWatchers(id)
+	}()
+}
+
+func (m *AntigravityManager) pushLiveToWatchers(id string, run *antigravityRun) {
+	if run == nil {
+		return
+	}
+	m.mu.Lock()
+	if m.shuttingDown {
+		m.mu.Unlock()
+		return
+	}
+	rec, exists := m.records[id]
+	var clients []*Client
+	maxWindow := antigravityDefaultWindow
+	for c, ids := range m.watch {
+		if w, ok := ids[id]; ok {
+			clients = append(clients, c)
+			if w > maxWindow {
+				maxWindow = w
+			}
+		}
+	}
+	m.mu.Unlock()
+
+	if len(clients) == 0 {
+		return
+	}
+	if maxWindow > antigravityDefaultWindow && exists && rec.TranscriptPath != "" {
+		if hist, err := readAntigravityTranscriptForRecord(m.geminiRoot(), rec, maxWindow); err == nil {
+			run.mergeOlderDiskHistory(hist)
+		}
+	}
+	if exists {
+		stamp := m.computeWatchStamp(rec)
+		m.mu.Lock()
+		if m.watchedStamp == nil {
+			m.watchedStamp = map[string]antigravityWatchStamp{}
+		}
+		m.watchedStamp[id] = stamp
+		m.mu.Unlock()
+	}
+
+	meta, turns := m.snapshotRunForEmit(id, run)
+	payload := mustJSON(map[string]any{
+		"t":        "open",
+		"provider": "antigravity",
+		"id":       id,
+		"meta":     meta,
+		"turns":    turns,
+		"more":     false,
+	})
+	for _, c := range clients {
+		c.push(payload)
+	}
+}
+
+func (m *AntigravityManager) clearConnectingForWatchers(id string) {
+	m.mu.Lock()
+	if m.shuttingDown || !m.hasWatchersLocked(id) {
+		m.mu.Unlock()
+		return
+	}
+	if existing := m.runs[id]; existing != nil && existing.isAlive() {
+		m.mu.Unlock()
+		return
+	}
+	rec, exists := m.records[id]
+	m.mu.Unlock()
+
+	meta := Meta{
+		Provider:   "antigravity",
+		Mode:       "tail",
+		Connecting: false,
+	}
+	if exists {
+		meta.Title = antigravityFirstNonEmpty(m.state.Title(id), rec.Title, rec.AnnotationTitle, clipPlain(rec.Preview, 120))
+		meta.Cwd = rec.Cwd
+		meta.Running = rec.Running
+	}
+	pref := m.state.Pref(id)
+	if pref.Model != "" {
+		meta.Model = pref.Model
+	}
+	if pref.Effort != "" {
+		meta.Effort = pref.Effort
+	}
+	if pref.PermissionMode != "" {
+		meta.PermissionMode = pref.PermissionMode
+	}
+	m.broadcast(id, map[string]any{"t": "meta", "meta": meta})
 }
 
 func (m *AntigravityManager) followWork(ctx context.Context) {
@@ -946,15 +2072,19 @@ type antigravityRun struct {
 	appDataDir string
 	cwd        string
 
+	daemon *acpDaemon
 	client *acpClient
 
 	mu               sync.Mutex
 	alive            bool
 	running          bool
+	externalRunning  bool
+	connecting       bool
 	loading          bool
 	activePrompts    int
 	cancelled        bool
 	lastActivity     time.Time
+	unwatchedAt      time.Time
 	recency          int64
 	turnSeq          int64
 	activeTurnKey    string
@@ -1040,34 +2170,70 @@ func (r *antigravityRun) isRunning() bool {
 	return r.running
 }
 
+func (r *antigravityRun) isExternalRunning() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.externalRunning
+}
+
+func (r *antigravityRun) hasActivePrompts() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.activePrompts > 0
+}
+
+func (r *antigravityRun) touch() {
+	now := r.manager.nowTime()
+	r.mu.Lock()
+	if now.After(r.lastActivity) {
+		r.lastActivity = now
+	}
+	r.unwatchedAt = time.Time{}
+	r.connecting = false
+	r.mu.Unlock()
+}
+
+func (r *antigravityRun) markUnwatched(now time.Time) {
+	r.mu.Lock()
+	if r.unwatchedAt.IsZero() {
+		r.unwatchedAt = now
+	}
+	r.mu.Unlock()
+}
+
 func (r *antigravityRun) canReap(now time.Time, timeout time.Duration) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !r.alive || r.running || r.activePrompts > 0 || r.loading {
+	if !r.alive || r.running || r.externalRunning || r.activePrompts > 0 || r.loading {
 		return false
 	}
 	if len(r.permissions) > 0 || len(r.elicitations) > 0 {
 		return false
 	}
-	return now.Sub(r.lastActivity) >= timeout
+	since := r.lastActivity
+	if !r.unwatchedAt.IsZero() && r.unwatchedAt.After(since) {
+		since = r.unwatchedAt
+	}
+	return now.Sub(since) >= timeout
 }
 
 func (r *antigravityRun) listState() antigravityListState {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return antigravityListState{
-		alive:     r.alive,
-		running:   r.running,
-		attention: len(r.permissions) > 0 || len(r.elicitations) > 0,
-		turnAt:    r.turnStartedAt,
-		recency:   r.recency,
-		title:     r.title,
-		cwd:       r.cwd,
-		model:     r.model,
-		effort:    r.effort,
-		mode:      r.permissionMode,
-		lastMsg:   r.lastMsg,
-		lastErr:   r.lastErr,
+		alive:        r.alive,
+		running:      r.running || r.externalRunning,
+		localRunning: r.running,
+		attention:    len(r.permissions) > 0 || len(r.elicitations) > 0,
+		turnAt:       r.turnStartedAt,
+		recency:      r.recency,
+		title:        r.title,
+		cwd:          r.cwd,
+		model:        r.model,
+		effort:       r.effort,
+		mode:         r.permissionMode,
+		lastMsg:      r.lastMsg,
+		lastErr:      r.lastErr,
 	}
 }
 
@@ -1081,6 +2247,10 @@ func (r *antigravityRun) seedFromTranscript(v *antigravityTranscript) {
 	r.diskDiffs = map[string]string{}
 	for k, d := range v.Diffs {
 		r.diskDiffs[k] = d
+	}
+	r.lastPublished = map[string][]byte{}
+	for _, t := range r.diskTurns {
+		r.lastPublished[t.Key] = mustJSON(t)
 	}
 	r.hasOlder = v.More
 	if r.title == "" && v.Meta.Title != "" {
@@ -1098,6 +2268,113 @@ func (r *antigravityRun) seedFromTranscript(v *antigravityTranscript) {
 	if r.ctxMax == 0 && v.Meta.CtxMax > 0 {
 		r.ctxMax = v.Meta.CtxMax
 	}
+}
+
+func antigravityLastAssistantText(turns []Turn) string {
+	for i := len(turns) - 1; i >= 0; i-- {
+		for j := len(turns[i].Items) - 1; j >= 0; j-- {
+			if turns[i].Items[j].K == "assistant" && strings.TrimSpace(turns[i].Items[j].Text) != "" {
+				return turns[i].Items[j].Text
+			}
+		}
+	}
+	return ""
+}
+
+func antigravityTurnUserText(t Turn) string {
+	for _, it := range t.Items {
+		if it.K == "user" && strings.TrimSpace(it.Text) != "" {
+			return strings.TrimSpace(it.Text)
+		}
+	}
+	return ""
+}
+
+func (r *antigravityRun) syncExternalDiskState(v *antigravityTranscript, externalRunning bool) (bool, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.alive || r.running {
+		return false, false
+	}
+	changed := false
+	fullOpen := false
+	if r.externalRunning != externalRunning {
+		r.externalRunning = externalRunning
+		changed = true
+	}
+	if v == nil {
+		return changed, false
+	}
+	if v.Meta.Title != "" && r.title == "" {
+		r.title = v.Meta.Title
+		changed = true
+	}
+	if v.Meta.Model != "" && r.model == "" {
+		r.model = v.Meta.Model
+		changed = true
+	}
+	if v.Meta.CtxUsed > r.ctxUsed {
+		r.ctxUsed = v.Meta.CtxUsed
+		changed = true
+	}
+	if v.Meta.CtxMax > r.ctxMax {
+		r.ctxMax = v.Meta.CtxMax
+		changed = true
+	}
+	if r.hasOlder != v.More {
+		r.hasOlder = v.More
+		changed = true
+	}
+	for k, d := range v.Diffs {
+		if r.diskDiffs[k] != d {
+			r.diskDiffs[k] = d
+			changed = true
+		}
+	}
+	if len(v.Turns) > 0 {
+		if len(r.liveTurns) == 0 {
+			newDisk := cloneTurns(v.Turns)
+			if !bytes.Equal(mustJSON(r.diskTurns), mustJSON(newDisk)) {
+				r.diskTurns = newDisk
+				if last := newDisk[len(newDisk)-1]; last.StartedAt > r.recency {
+					r.recency = last.StartedAt
+				}
+				if msg := antigravityLastAssistantText(newDisk); msg != "" {
+					r.lastMsg = clipPlain(msg, 200)
+				}
+				changed = true
+			}
+		} else {
+			lastDisk := v.Turns[len(v.Turns)-1]
+			lastLive := r.liveTurns[len(r.liveTurns)-1]
+			grewBeyondLive := len(v.Turns) > len(r.diskTurns)+len(r.liveTurns)
+			newerExternal := lastDisk.StartedAt > lastLive.StartedAt &&
+				antigravityTurnUserText(lastDisk) != "" &&
+				antigravityTurnUserText(lastDisk) != antigravityTurnUserText(lastLive)
+			if grewBeyondLive || newerExternal {
+				newDisk := cloneTurns(v.Turns)
+				r.diskTurns = newDisk
+				r.liveTurns = nil
+				r.activeTurnKey = ""
+				r.streamMsgIdx = -1
+				r.streamThoughtIdx = -1
+				r.streamUserIdx = -1
+				r.lastPublished = map[string][]byte{}
+				for _, t := range newDisk {
+					r.lastPublished[t.Key] = mustJSON(t)
+				}
+				if last := newDisk[len(newDisk)-1]; last.StartedAt > r.recency {
+					r.recency = last.StartedAt
+				}
+				if msg := antigravityLastAssistantText(newDisk); msg != "" {
+					r.lastMsg = clipPlain(msg, 200)
+				}
+				changed = true
+				fullOpen = true
+			}
+		}
+	}
+	return changed, fullOpen
 }
 
 func (r *antigravityRun) applySessionState(state *acpSessionState) {
@@ -1148,6 +2425,12 @@ func (r *antigravityRun) mergeOlderDiskHistory(v *antigravityTranscript) {
 			r.diskDiffs[k] = d
 		}
 	}
+	if r.lastPublished == nil {
+		r.lastPublished = map[string][]byte{}
+	}
+	for _, t := range r.diskTurns {
+		r.lastPublished[t.Key] = mustJSON(t)
+	}
 	r.hasOlder = v.More
 }
 
@@ -1167,6 +2450,7 @@ func (r *antigravityRun) snapshotLocked() (Meta, []Turn) {
 		mode = "tail"
 	}
 	meta := Meta{
+		Connecting:     r.connecting,
 		Provider:       "antigravity",
 		Mode:           mode,
 		Title:          title,
@@ -1178,7 +2462,7 @@ func (r *antigravityRun) snapshotLocked() (Meta, []Turn) {
 		CtxMax:         r.ctxMax,
 		TurnAt:         r.turnStartedAt,
 		HasOlder:       r.hasOlder,
-		Running:        r.running,
+		Running:        r.running || r.externalRunning,
 	}
 	if len(r.commands) > 0 {
 		meta.Commands = append([]SlashCommand(nil), r.commands...)
@@ -1293,6 +2577,14 @@ func (r *antigravityRun) ensureLiveTurnLocked(nowMs int64) *Turn {
 // acpClient.dispatchLoop has processed every earlier notification. Never call
 // this from inside an ACP callback.
 func (r *antigravityRun) drainDispatch(client *acpClient) {
+	r.mu.Lock()
+	daemon := r.daemon
+	sid := r.id
+	r.mu.Unlock()
+	if daemon != nil {
+		daemon.drainDispatchForSession(sid)
+		return
+	}
 	if client == nil || client.Closed() {
 		return
 	}
@@ -1961,14 +3253,15 @@ func (r *antigravityRun) onElicitation(req acpElicitationRequest) {
 	}
 }
 
-// onClose runs inside acpClient.dispatchLoop; NEVER call client.Close() here!
-func (r *antigravityRun) onClose(closeErr error) {
+// onTransportClose runs inside acpClient.dispatchLoop; NEVER call client.Close() here!
+func (r *antigravityRun) onTransportClose(closeErr error, shuttingDown bool) {
 	r.mu.Lock()
 	sid := r.id
 	wasRunning := r.running
 	wasCancelled := r.cancelled
 	r.alive = false
 	r.running = false
+	r.externalRunning = false
 	r.activePrompts = 0
 	r.permissions = map[string]antigravityPendingPerm{}
 	r.elicitations = map[string]antigravityPendingElicit{}
@@ -2003,8 +3296,18 @@ func (r *antigravityRun) onClose(closeErr error) {
 	if sid != "" && r.manager.runs[sid] == r {
 		delete(r.manager.runs, sid)
 	}
-	shuttingDown := r.manager.shuttingDown
+	if r.manager.shuttingDown {
+		shuttingDown = true
+	}
+	watched := !shuttingDown && sid != "" && r.manager.hasWatchersLocked(sid)
 	r.manager.mu.Unlock()
+
+	shouldReconnect := watched && r.manager.acpAvailable()
+	if shouldReconnect {
+		r.mu.Lock()
+		r.connecting = true
+		r.mu.Unlock()
+	}
 
 	r.closeOnce.Do(func() { close(r.done) })
 
@@ -2015,28 +3318,42 @@ func (r *antigravityRun) onClose(closeErr error) {
 			if wasRunning && !wasCancelled {
 				r.manager.event(sid, "failed", title, antigravityFirstNonEmpty(errText, "Antigravity Session Stopped"), cwd)
 			}
+			if shouldReconnect {
+				r.manager.startReconnect(sid)
+			}
 		}()
 	}
 }
 
-func (r *antigravityRun) shutdown(closeSessionTimeout time.Duration) {
+// detachAndCloseSession releases only this session via session/close without
+// terminating the shared ACP daemon process.
+func (r *antigravityRun) detachAndCloseSession(closeSessionTimeout time.Duration) {
 	r.mu.Lock()
+	r.alive = false
+	r.running = false
+	r.externalRunning = false
 	if r.flushTimer != nil {
 		r.flushTimer.Stop()
 		r.flushTimer = nil
 		r.flushScheduled = false
 	}
+	daemon := r.daemon
 	client := r.client
 	sid := r.id
 	r.mu.Unlock()
 
+	if daemon != nil && sid != "" {
+		daemon.detachRun(sid, r)
+	}
 	if client != nil && !client.Closed() {
 		if sid != "" && closeSessionTimeout > 0 {
 			ctx, cancel := context.WithTimeout(context.Background(), closeSessionTimeout)
 			_ = client.CloseSession(ctx, sid)
 			cancel()
 		}
-		_ = client.Close()
+		if daemon == nil {
+			_ = client.Close()
+		}
 	}
 	r.closeOnce.Do(func() { close(r.done) })
 }
@@ -2052,6 +3369,7 @@ func (r *antigravityRun) startPrompt(text string, images []string, blocks []acpC
 	}
 	steering := r.running
 	r.running = true
+	r.externalRunning = false
 	r.activePrompts++
 	r.cancelled = false
 	r.lastActivity = now
@@ -2085,12 +3403,14 @@ func (r *antigravityRun) startPrompt(text string, images []string, blocks []acpC
 	}
 	title := antigravityFirstNonEmpty(r.manager.state.Title(r.id), r.title, clipPlain(text, 120))
 	cwd := r.cwd
+	daemon := r.daemon
 	client := r.client
 	sid := r.id
 	turnKey := turn.Key
 	startedAt := turn.StartedAt
 	r.mu.Unlock()
 
+	daemon.touchActivity(now)
 	r.publish(true)
 	r.manager.requestRefresh()
 	if !steering {
@@ -2099,6 +3419,7 @@ func (r *antigravityRun) startPrompt(text string, images []string, blocks []acpC
 
 	go func() {
 		res, err := client.Prompt(context.Background(), sid, blocks)
+		daemon.touchActivity(r.manager.nowTime())
 		r.drainDispatch(client)
 		r.finishPrompt(turnKey, startedAt, res, err)
 	}()
@@ -2194,10 +3515,12 @@ func (r *antigravityRun) cancelTurn(ctx context.Context) error {
 	r.reqOrder = nil
 	r.lastActivity = r.manager.nowTime()
 	client := r.client
+	daemon := r.daemon
 	sid := r.id
 	r.mu.Unlock()
 
 	err := client.Cancel(ctx, sid)
+	daemon.touchActivity(r.manager.nowTime())
 	r.publish(true)
 	r.manager.requestRefresh()
 	return err
@@ -2297,6 +3620,7 @@ func (r *antigravityRun) approvePermission(reqID, optionID, decision string) err
 	reqID = strings.TrimSpace(reqID)
 	r.mu.Lock()
 	perm, ok := r.permissions[reqID]
+	daemon := r.daemon
 	client := r.client
 	r.mu.Unlock()
 	if !ok {
@@ -2309,10 +3633,12 @@ func (r *antigravityRun) approvePermission(reqID, optionID, decision string) err
 	if err := client.RespondPermission(reqID, chosen, cancelled); err != nil {
 		return err
 	}
+	now := r.manager.nowTime()
 	r.mu.Lock()
 	r.removeRequestLocked(reqID)
-	r.lastActivity = r.manager.nowTime()
+	r.lastActivity = now
 	r.mu.Unlock()
+	daemon.touchActivity(now)
 	r.publish(true)
 	r.manager.requestRefresh()
 	return nil
@@ -2363,6 +3689,7 @@ func (r *antigravityRun) answerElicitation(reqID, action string, answers map[str
 
 	r.mu.Lock()
 	elicit, ok := r.elicitations[reqID]
+	daemon := r.daemon
 	client := r.client
 	r.mu.Unlock()
 	if !ok {
@@ -2373,10 +3700,12 @@ func (r *antigravityRun) answerElicitation(reqID, action string, answers map[str
 		if err := client.RespondElicitation(reqID, action, nil); err != nil {
 			return err
 		}
+		now := r.manager.nowTime()
 		r.mu.Lock()
 		r.removeRequestLocked(reqID)
-		r.lastActivity = r.manager.nowTime()
+		r.lastActivity = now
 		r.mu.Unlock()
+		daemon.touchActivity(now)
 		r.publish(true)
 		r.manager.requestRefresh()
 		return nil
@@ -2426,10 +3755,12 @@ func (r *antigravityRun) answerElicitation(reqID, action string, answers map[str
 	if err := client.RespondElicitation(reqID, "accept", content); err != nil {
 		return err
 	}
+	now := r.manager.nowTime()
 	r.mu.Lock()
 	r.removeRequestLocked(reqID)
-	r.lastActivity = r.manager.nowTime()
+	r.lastActivity = now
 	r.mu.Unlock()
+	daemon.touchActivity(now)
 	r.publish(true)
 	r.manager.requestRefresh()
 	return nil

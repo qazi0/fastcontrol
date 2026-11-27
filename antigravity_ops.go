@@ -85,13 +85,29 @@ func (m *AntigravityManager) handle(c *Client, raw []byte) {
 			ack(m.moreWork(c, id, op == "more"), nil)
 			return
 		}
-		ack(m.open(c, id, op == "more"), nil)
+		gen := m.reserveWatchGen(c, id)
+		go m.handleOpen(c, id, op == "more", gen, ack)
 
 	case "close":
+		now := m.nowTime()
+		var unwatchedRun *antigravityRun
 		m.mu.Lock()
-		delete(m.watch[c], id)
-		delete(m.workWatch[c], id)
+		if m.watch[c] != nil {
+			delete(m.watch[c], id)
+		}
+		if m.watchGen[c] != nil {
+			delete(m.watchGen[c], id)
+		}
+		if m.workWatch[c] != nil {
+			delete(m.workWatch[c], id)
+		}
+		if id != "" && !m.hasWatchersLocked(id) {
+			unwatchedRun = m.runs[id]
+		}
 		m.mu.Unlock()
+		if unwatchedRun != nil {
+			unwatchedRun.markUnwatched(now)
+		}
 
 	case "diff":
 		go m.handleDiff(c, id, str(v, "key"), ack)
@@ -264,6 +280,10 @@ func (m *AntigravityManager) discoverModels(ctx context.Context) error {
 		if antigravityRecordIsSubagent(rec) || rec.Running || activeRunIDs[rec.ID] {
 			continue
 		}
+		recAppDir := normalizeAntigravityAppDataDir(rec.AppDataDir)
+		if antigravityConversationsDirExists(m.geminiRoot(), recAppDir) && !antigravityHasConversationPB(m.geminiRoot(), recAppDir, rec.ID) {
+			continue
+		}
 		if probeRec == nil || (probeRec.AppDataDir != acpDefaultAppDataDir && rec.AppDataDir == acpDefaultAppDataDir) {
 			cp := rec
 			probeRec = &cp
@@ -281,29 +301,37 @@ func (m *AntigravityManager) discoverModels(ctx context.Context) error {
 		appDir = probeRec.AppDataDir
 	}
 
-	client, initRes, err := m.dialClient(probeCtx, acpClientConfig{
-		AppDataDir:       appDir,
-		DisableTelemetry: true,
-		CallTimeout:      15 * time.Second,
+	daemon, err := m.ensureDaemon(probeCtx, acpDaemonKey{
+		appDataDir:      appDir,
+		skipPermissions: false,
 	})
 	if err != nil {
 		return err
 	}
-	defer client.Close()
+	client := daemon.client
 
 	var state *acpSessionState
 	if probeRec != nil {
-		cwd := probeRec.Cwd
-		if cwd == "" {
-			cwd = os.TempDir()
-		} else if st, statErr := os.Stat(cwd); statErr != nil || !st.IsDir() {
-			cwd = os.TempDir()
+		unlockProbe := m.lockThread(probeRec.ID)
+		m.mu.Lock()
+		alreadyLive := m.runs[probeRec.ID] != nil
+		m.mu.Unlock()
+		if !alreadyLive {
+			cwd := probeRec.Cwd
+			if cwd == "" {
+				cwd = os.TempDir()
+			} else if st, statErr := os.Stat(cwd); statErr != nil || !st.IsDir() {
+				cwd = os.TempDir()
+			}
+			loaded, loadErr := client.LoadSession(probeCtx, probeRec.ID, cwd)
+			if loadErr == nil && loaded != nil {
+				state = loaded
+				if !daemon.hasRun(probeRec.ID) {
+					_ = client.CloseSession(probeCtx, probeRec.ID)
+				}
+			}
 		}
-		loaded, loadErr := client.LoadSession(probeCtx, probeRec.ID, cwd)
-		if loadErr == nil && loaded != nil {
-			state = loaded
-			_ = client.CloseSession(probeCtx, probeRec.ID)
-		}
+		unlockProbe()
 	}
 
 	if state == nil {
@@ -312,17 +340,18 @@ func (m *AntigravityManager) discoverModels(ctx context.Context) error {
 			return newErr
 		}
 		state = created
-		if created.SessionID != "" {
+		if created.SessionID != "" && !daemon.hasRun(created.SessionID) {
 			_ = client.CloseSession(probeCtx, created.SessionID)
 		}
 	}
 
-	m.updateCatalogFromState(state, initRes)
+	daemon.touchActivity(m.nowTime())
+	m.updateCatalogFromState(state, daemon.initRes)
 	return nil
 }
 
 func (m *AntigravityManager) handleModels(c *Client) {
-	err := m.discoverModels(context.Background())
+	err := m.discoverModels(m.baseContext())
 	cat := m.catalogSnapshot()
 	models := cat.Models
 	if models == nil {
@@ -359,7 +388,376 @@ func (m *AntigravityManager) handleModels(c *Client) {
 	m.emit(c, result)
 }
 
-func (m *AntigravityManager) open(c *Client, id string, more bool) error {
+func (m *AntigravityManager) snapshotRunForEmit(id string, run *antigravityRun) (Meta, []Turn) {
+	meta, turns := run.snapshot()
+	pref := m.state.Pref(id)
+	if meta.Model == "" && pref.Model != "" {
+		meta.Model = pref.Model
+	}
+	if meta.PermissionMode == "" {
+		meta.PermissionMode = antigravityFirstNonEmpty(pref.PermissionMode, "default")
+	}
+	return meta, turns
+}
+
+func (m *AntigravityManager) buildDiskOpenMeta(id string, rec antigravityRecord, view *antigravityTranscript, connecting bool) Meta {
+	var meta Meta
+	if view != nil {
+		meta = view.Meta
+	}
+	if custom := m.state.Title(id); custom != "" {
+		meta.Title = custom
+	} else if meta.Title == "" {
+		meta.Title = antigravityFirstNonEmpty(rec.Title, rec.AnnotationTitle, clipPlain(rec.Preview, 120))
+	}
+	if meta.Cwd == "" {
+		meta.Cwd = rec.Cwd
+	}
+	pref := m.state.Pref(id)
+	if pref.Model != "" {
+		meta.Model = pref.Model
+	}
+	if pref.Effort != "" {
+		meta.Effort = pref.Effort
+	}
+	if pref.PermissionMode != "" {
+		meta.PermissionMode = pref.PermissionMode
+	}
+	meta.Provider = "antigravity"
+	meta.Mode = "tail"
+	meta.Connecting = connecting
+	meta.Running = rec.Running
+	return meta
+}
+
+func (m *AntigravityManager) handleOpen(c *Client, id string, more bool, gen uint64, ack func(error, map[string]any)) {
+	if strings.TrimSpace(id) == "" {
+		m.clearWatchGen(c, id, gen)
+		ack(errors.New("Antigravity Session Not Found"), nil)
+		return
+	}
+	m.mu.Lock()
+	run := m.runs[id]
+	rec, exists := m.records[id]
+	m.mu.Unlock()
+
+	if run == nil && !exists {
+		m.refresh()
+		m.mu.Lock()
+		run = m.runs[id]
+		rec, exists = m.records[id]
+		m.mu.Unlock()
+	}
+	if run == nil && !exists {
+		m.clearWatchGen(c, id, gen)
+		ack(errors.New("Antigravity Session Not Found"), nil)
+		return
+	}
+	if exists && antigravityRecordIsSubagent(rec) {
+		m.clearWatchGen(c, id, gen)
+		ack(errors.New("Open This Subagent From Its Parent Chat"), nil)
+		return
+	}
+
+	window := antigravityDefaultWindow
+	if m.hub != nil {
+		m.hub.mu.Lock()
+		if !m.hub.clients[c] {
+			m.hub.mu.Unlock()
+			ack(nil, nil)
+			return
+		}
+	}
+	m.mu.Lock()
+	if m.shuttingDown || m.watchGen[c] == nil || m.watchGen[c][id] != gen {
+		m.mu.Unlock()
+		if m.hub != nil {
+			m.hub.mu.Unlock()
+		}
+		ack(nil, nil)
+		return
+	}
+	run = m.runs[id]
+	rec, exists = m.records[id]
+	if exists && antigravityRecordIsSubagent(rec) {
+		delete(m.watchGen[c], id)
+		m.mu.Unlock()
+		if m.hub != nil {
+			m.hub.mu.Unlock()
+		}
+		ack(errors.New("Open This Subagent From Its Parent Chat"), nil)
+		return
+	}
+	if m.watch == nil {
+		m.watch = map[*Client]map[string]int{}
+	}
+	if m.watch[c] == nil {
+		m.watch[c] = map[string]int{}
+	}
+	if prev := m.watch[c][id]; prev > 0 {
+		window = prev
+	}
+	if more {
+		window += antigravityDefaultWindow
+	}
+	m.watch[c][id] = window
+	m.mu.Unlock()
+	if m.hub != nil {
+		m.hub.mu.Unlock()
+	}
+
+	// Live fast-path: session already active on a pooled daemon.
+	if run != nil && run.isAlive() {
+		run.touch()
+		if more && exists && rec.TranscriptPath != "" {
+			if hist, err := readAntigravityTranscriptForRecord(m.geminiRoot(), rec, window); err == nil {
+				run.mergeOlderDiskHistory(hist)
+			}
+		}
+		if exists {
+			stamp := m.computeWatchStamp(rec)
+			m.mu.Lock()
+			if m.watchedStamp == nil {
+				m.watchedStamp = map[string]antigravityWatchStamp{}
+			}
+			m.watchedStamp[id] = stamp
+			m.mu.Unlock()
+		}
+		if m.isWatchCurrent(c, id, gen) {
+			meta, turns := m.snapshotRunForEmit(id, run)
+			m.emit(c, map[string]any{"t": "open", "id": id, "meta": meta, "turns": turns, "more": more})
+		}
+		ack(nil, nil)
+		return
+	}
+
+	// Read-only tail fallback when ACP is unavailable on this computer.
+	if !m.acpAvailable() {
+		view, err := m.readRecordTranscript(rec, window)
+		if err != nil {
+			ack(err, nil)
+			return
+		}
+		meta := m.buildDiskOpenMeta(id, rec, view, false)
+		stamp := m.computeWatchStamp(rec)
+		m.mu.Lock()
+		if m.watchedStamp == nil {
+			m.watchedStamp = map[string]antigravityWatchStamp{}
+		}
+		m.watchedStamp[id] = stamp
+		m.mu.Unlock()
+		if m.isWatchCurrent(c, id, gen) {
+			m.emit(c, map[string]any{"t": "open", "id": id, "meta": meta, "turns": view.Turns, "more": more})
+		}
+		ack(nil, nil)
+		return
+	}
+
+	// ACP available: auto-activate in background, waiting up to openFastWait (150ms)
+	// so warm resumes emit a single live frame with zero banner flicker.
+	type openAttachResult struct {
+		run *antigravityRun
+		err error
+	}
+	m.mu.Lock()
+	if m.shuttingDown {
+		m.mu.Unlock()
+		ack(errors.New("Relay Is Shutting Down"), nil)
+		return
+	}
+	baseCtx := m.baseContextLocked()
+	m.bgWG.Add(1)
+	m.mu.Unlock()
+
+	attachCh := make(chan openAttachResult, 1)
+	go func() {
+		defer m.bgWG.Done()
+		attachCtx, cancel := context.WithTimeout(baseCtx, defaultAntigravityCallTimeout)
+		defer cancel()
+		r, err := m.ensureRun(attachCtx, id)
+		attachCh <- openAttachResult{run: r, err: err}
+	}()
+
+	fastTimer := time.NewTimer(m.openFastWaitDuration())
+	select {
+	case res := <-attachCh:
+		if !fastTimer.Stop() {
+			select {
+			case <-fastTimer.C:
+			default:
+			}
+		}
+		if res.err == nil && res.run != nil {
+			if window > antigravityDefaultWindow && exists && rec.TranscriptPath != "" {
+				if hist, err := readAntigravityTranscriptForRecord(m.geminiRoot(), rec, window); err == nil {
+					res.run.mergeOlderDiskHistory(hist)
+				}
+			}
+			if exists {
+				stamp := m.computeWatchStamp(rec)
+				m.mu.Lock()
+				if m.watchedStamp == nil {
+					m.watchedStamp = map[string]antigravityWatchStamp{}
+				}
+				m.watchedStamp[id] = stamp
+				m.mu.Unlock()
+			}
+			if m.isWatchCurrent(c, id, gen) {
+				res.run.touch()
+				meta, turns := m.snapshotRunForEmit(id, res.run)
+				m.emit(c, map[string]any{"t": "open", "id": id, "meta": meta, "turns": turns, "more": more})
+			} else {
+				m.markRunUnwatchedIfIdle(id, res.run)
+			}
+			ack(nil, nil)
+			return
+		}
+
+		// Attach failed quickly (e.g. missing .pb ghost row): fall back cleanly to disk tail.
+		view, err := m.readRecordTranscript(rec, window)
+		if err != nil {
+			ack(err, nil)
+			return
+		}
+		meta := m.buildDiskOpenMeta(id, rec, view, false)
+		stamp := m.computeWatchStamp(rec)
+		m.mu.Lock()
+		if m.watchedStamp == nil {
+			m.watchedStamp = map[string]antigravityWatchStamp{}
+		}
+		m.watchedStamp[id] = stamp
+		m.mu.Unlock()
+		if m.isWatchCurrent(c, id, gen) {
+			m.emit(c, map[string]any{"t": "open", "id": id, "meta": meta, "turns": view.Turns, "more": more})
+		}
+		ack(nil, nil)
+		return
+
+	case <-fastTimer.C:
+		// Cold/slow attach (>150ms): emit disk transcript immediately with Connecting: true
+		// so the client renders "Connecting To Chat" without flashing Resume.
+		view, err := m.readRecordTranscript(rec, window)
+		if err != nil {
+			ack(err, nil)
+			return
+		}
+		meta := m.buildDiskOpenMeta(id, rec, view, true)
+		stamp := m.computeWatchStamp(rec)
+		m.mu.Lock()
+		if m.watchedStamp == nil {
+			m.watchedStamp = map[string]antigravityWatchStamp{}
+		}
+		m.watchedStamp[id] = stamp
+		m.mu.Unlock()
+		if m.isWatchCurrent(c, id, gen) {
+			m.emit(c, map[string]any{"t": "open", "id": id, "meta": meta, "turns": view.Turns, "more": more})
+		}
+		ack(nil, nil)
+
+		select {
+		case res := <-attachCh:
+			if !m.isWatchCurrent(c, id, gen) {
+				if res.run != nil {
+					m.markRunUnwatchedIfIdle(id, res.run)
+				}
+				return
+			}
+			if res.err == nil && res.run != nil {
+				m.mu.Lock()
+				curWindow := m.watch[c][id]
+				m.mu.Unlock()
+				if curWindow > antigravityDefaultWindow && exists && rec.TranscriptPath != "" {
+					if hist, readErr := readAntigravityTranscriptForRecord(m.geminiRoot(), rec, curWindow); readErr == nil {
+						res.run.mergeOlderDiskHistory(hist)
+					}
+				}
+				res.run.touch()
+				if exists {
+					stamp := m.computeWatchStamp(rec)
+					m.mu.Lock()
+					if m.watchedStamp == nil {
+						m.watchedStamp = map[string]antigravityWatchStamp{}
+					}
+					m.watchedStamp[id] = stamp
+					m.mu.Unlock()
+				}
+				if m.isWatchCurrent(c, id, gen) {
+					liveMeta, turns := m.snapshotRunForEmit(id, res.run)
+					m.emit(c, map[string]any{"t": "open", "id": id, "meta": liveMeta, "turns": turns, "more": false})
+				}
+				return
+			}
+			// Slow attach failed: clear Connecting so the saved transcript stays readable.
+			fallbackMeta := m.buildDiskOpenMeta(id, rec, view, false)
+			if m.isWatchCurrent(c, id, gen) {
+				m.emit(c, map[string]any{"t": "meta", "id": id, "meta": fallbackMeta})
+			}
+		case <-baseCtx.Done():
+			return
+		}
+
+	case <-baseCtx.Done():
+		if !fastTimer.Stop() {
+			select {
+			case <-fastTimer.C:
+			default:
+			}
+		}
+		ack(errors.New("Relay Is Shutting Down"), nil)
+		return
+	}
+}
+
+func (m *AntigravityManager) markRunUnwatchedIfIdle(id string, run *antigravityRun) {
+	if run == nil {
+		return
+	}
+	m.mu.Lock()
+	watched := m.hasWatchersLocked(id)
+	m.mu.Unlock()
+	if !watched {
+		run.markUnwatched(m.nowTime())
+	}
+}
+
+// emitTailOpen refreshes a tail-only watched chat from disk without triggering ACP attach.
+func (m *AntigravityManager) emitTailOpen(c *Client, id string, more bool) error {
+	if m.hub != nil {
+		m.hub.mu.Lock()
+		connected := m.hub.clients[c]
+		m.hub.mu.Unlock()
+		if !connected {
+			return nil
+		}
+	}
+	m.mu.Lock()
+	if m.shuttingDown || m.watch[c] == nil {
+		m.mu.Unlock()
+		return nil
+	}
+	window, watching := m.watch[c][id]
+	rec, exists := m.records[id]
+	run := m.runs[id]
+	m.mu.Unlock()
+	if !watching || !exists || antigravityRecordIsSubagent(rec) || (run != nil && run.isAlive()) {
+		return nil
+	}
+	if window <= 0 {
+		window = antigravityDefaultWindow
+	}
+	view, err := m.readRecordTranscript(rec, window)
+	if err != nil {
+		return err
+	}
+	meta := m.buildDiskOpenMeta(id, rec, view, false)
+	if m.isWatchCurrent(c, id, 0) {
+		m.emit(c, map[string]any{"t": "open", "id": id, "meta": meta, "turns": view.Turns, "more": more})
+	}
+	return nil
+}
+
+// emitCurrentOpen pushes the current live or disk view to c without starting a new ACP attach.
+func (m *AntigravityManager) emitCurrentOpen(c *Client, id string, more bool) error {
 	if strings.TrimSpace(id) == "" {
 		return errors.New("Antigravity Session Not Found")
 	}
@@ -367,7 +765,6 @@ func (m *AntigravityManager) open(c *Client, id string, more bool) error {
 	run := m.runs[id]
 	rec, exists := m.records[id]
 	m.mu.Unlock()
-
 	if run == nil && !exists {
 		m.refresh()
 		m.mu.Lock()
@@ -418,20 +815,23 @@ func (m *AntigravityManager) open(c *Client, id string, more bool) error {
 		m.hub.mu.Unlock()
 	}
 
-	if run != nil {
+	if run != nil && run.isAlive() {
+		run.touch()
 		if more && exists && rec.TranscriptPath != "" {
 			if hist, err := readAntigravityTranscriptForRecord(m.geminiRoot(), rec, window); err == nil {
 				run.mergeOlderDiskHistory(hist)
 			}
 		}
-		meta, turns := run.snapshot()
-		pref := m.state.Pref(id)
-		if meta.Model == "" && pref.Model != "" {
-			meta.Model = pref.Model
+		if exists {
+			stamp := m.computeWatchStamp(rec)
+			m.mu.Lock()
+			if m.watchedStamp == nil {
+				m.watchedStamp = map[string]antigravityWatchStamp{}
+			}
+			m.watchedStamp[id] = stamp
+			m.mu.Unlock()
 		}
-		if meta.PermissionMode == "" {
-			meta.PermissionMode = antigravityFirstNonEmpty(pref.PermissionMode, "default")
-		}
+		meta, turns := m.snapshotRunForEmit(id, run)
 		m.emit(c, map[string]any{"t": "open", "id": id, "meta": meta, "turns": turns, "more": more})
 		return nil
 	}
@@ -440,23 +840,7 @@ func (m *AntigravityManager) open(c *Client, id string, more bool) error {
 	if err != nil {
 		return err
 	}
-	if custom := m.state.Title(id); custom != "" {
-		view.Meta.Title = custom
-	}
-	pref := m.state.Pref(id)
-	if pref.Model != "" {
-		view.Meta.Model = pref.Model
-	}
-	if pref.Effort != "" {
-		view.Meta.Effort = pref.Effort
-	}
-	if pref.PermissionMode != "" {
-		view.Meta.PermissionMode = pref.PermissionMode
-	}
-	view.Meta.Provider = "antigravity"
-	view.Meta.Mode = "tail"
-	view.Meta.Running = rec.Running
-
+	meta := m.buildDiskOpenMeta(id, rec, view, false)
 	stamp := m.computeWatchStamp(rec)
 	m.mu.Lock()
 	if m.watchedStamp == nil {
@@ -465,7 +849,7 @@ func (m *AntigravityManager) open(c *Client, id string, more bool) error {
 	m.watchedStamp[id] = stamp
 	m.mu.Unlock()
 
-	m.emit(c, map[string]any{"t": "open", "id": id, "meta": view.Meta, "turns": view.Turns, "more": more})
+	m.emit(c, map[string]any{"t": "open", "id": id, "meta": meta, "turns": view.Turns, "more": more})
 	return nil
 }
 
@@ -623,33 +1007,23 @@ func (m *AntigravityManager) handleNew(v map[string]any, ack func(error, map[str
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(m.baseContext(), 30*time.Second)
 	defer cancel()
 
-	run := newAntigravityRun(m, "", acpDefaultAppDataDir, cwd)
-	client, initRes, err := m.dialClient(ctx, acpClientConfig{
-		AppDataDir:                 acpDefaultAppDataDir,
-		Cwd:                        cwd,
-		DangerouslySkipPermissions: permMode == "full-access" && m.allowFullAccess,
-		DisableTelemetry:           true,
-		CallTimeout:                defaultAntigravityCallTimeout,
-		OnUpdate:                   run.onUpdate,
-		OnPermission:               run.onPermission,
-		OnElicitation:              run.onElicitation,
-		OnClose:                    run.onClose,
+	daemon, err := m.ensureDaemon(ctx, acpDaemonKey{
+		appDataDir:      acpDefaultAppDataDir,
+		skipPermissions: permMode == "full-access" && m.allowFullAccess,
 	})
 	if err != nil {
 		ack(err, nil)
 		return
 	}
+	client := daemon.client
 
-	run.mu.Lock()
-	run.client = client
-	run.mu.Unlock()
-
+	daemon.beginNewSession()
 	sessionState, err := client.NewSession(ctx, cwd, nil)
 	if err != nil || sessionState == nil || strings.TrimSpace(sessionState.SessionID) == "" {
-		_ = client.Close()
+		daemon.endNewSession("")
 		if err == nil {
 			err = errors.New("Antigravity Did Not Return A Session ID")
 		}
@@ -657,25 +1031,47 @@ func (m *AntigravityManager) handleNew(v map[string]any, ack func(error, map[str
 		return
 	}
 	sid := strings.TrimSpace(sessionState.SessionID)
+	daemon.touchActivity(m.nowTime())
 
+	run := newAntigravityRun(m, sid, acpDefaultAppDataDir, cwd)
 	run.mu.Lock()
-	run.id = sid
+	run.daemon = daemon
+	run.client = client
 	run.mu.Unlock()
-	run.drainDispatch(client)
+
+	if !daemon.attachRun(sid, run) {
+		daemon.endNewSession("")
+		ack(errors.New("Antigravity Daemon Closed"), nil)
+		return
+	}
+	daemon.endNewSession(sid)
+
+	daemon.drainDispatchForSession(sid)
 	run.applySessionState(sessionState)
-	m.updateCatalogFromState(sessionState, initRes)
+	m.updateCatalogFromState(sessionState, daemon.initRes)
 
 	if err := m.applySessionPreferences(ctx, run, sid, model, effort, permMode, true); err != nil {
-		_ = client.Close()
+		daemon.detachRun(sid, run)
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = client.CloseSession(closeCtx, sid)
+		closeCancel()
 		ack(err, nil)
 		return
 	}
 
 	m.mu.Lock()
-	if m.shuttingDown {
+	if m.shuttingDown || !run.isAlive() {
+		shuttingDown := m.shuttingDown
 		m.mu.Unlock()
-		_ = client.Close()
-		ack(errors.New("Relay Is Shutting Down"), nil)
+		daemon.detachRun(sid, run)
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = client.CloseSession(closeCtx, sid)
+		closeCancel()
+		if shuttingDown {
+			ack(errors.New("Relay Is Shutting Down"), nil)
+		} else {
+			ack(errors.New("Antigravity Session Has Stopped"), nil)
+		}
 		return
 	}
 	m.runs[sid] = run
@@ -731,10 +1127,7 @@ func (m *AntigravityManager) ensureRun(ctx context.Context, id string) (*antigra
 		return nil, err
 	}
 
-	appDir := rec.AppDataDir
-	if !antigravityValidAppDataDir(appDir) {
-		appDir = acpDefaultAppDataDir
-	}
+	appDir := normalizeAntigravityAppDataDir(rec.AppDataDir)
 	cwd := rec.Cwd
 	if cwd == "" {
 		cwd, _ = os.UserHomeDir()
@@ -749,44 +1142,86 @@ func (m *AntigravityManager) ensureRun(ctx context.Context, id string) (*antigra
 	}
 	run.mu.Lock()
 	run.loading = true
+	run.externalRunning = rec.Running
 	if run.title == "" {
 		run.title = antigravityFirstNonEmpty(rec.Title, rec.AnnotationTitle, clipPlain(rec.Preview, 120))
 	}
+	hasDiskTurns := len(run.diskTurns) > 0
 	run.mu.Unlock()
 
-	client, initRes, err := m.dialClient(ctx, acpClientConfig{
-		AppDataDir:                 appDir,
-		Cwd:                        cwd,
-		DangerouslySkipPermissions: pref.PermissionMode == "full-access" && m.allowFullAccess,
-		DisableTelemetry:           true,
-		CallTimeout:                defaultAntigravityCallTimeout,
-		OnUpdate:                   run.onUpdate,
-		OnPermission:               run.onPermission,
-		OnElicitation:              run.onElicitation,
-		OnClose:                    run.onClose,
+	daemon, err := m.ensureDaemon(ctx, acpDaemonKey{
+		appDataDir:      appDir,
+		skipPermissions: pref.PermissionMode == "full-access" && m.allowFullAccess,
 	})
 	if err != nil {
 		return nil, err
 	}
+	client := daemon.client
 
 	run.mu.Lock()
+	run.daemon = daemon
 	run.client = client
 	run.mu.Unlock()
 
-	state, err := client.LoadSession(ctx, id, cwd)
-	if err != nil {
-		// Fall back to session/resume if session/load is unavailable.
-		resumed, resumeErr := client.ResumeSession(ctx, id, cwd)
-		if resumeErr != nil {
-			_ = client.Close()
-			return nil, err
-		}
-		state = resumed
+	if !daemon.attachRun(id, run) {
+		return nil, errors.New("Antigravity Daemon Closed")
 	}
+	attached := true
+	defer func() {
+		if attached {
+			daemon.detachRun(id, run)
+		}
+	}()
+
+	supportsResume := daemon.initRes != nil && daemon.initRes.AgentCapabilities.SessionCapabilities.Resume
+	hasPB := antigravityHasConversationPB(m.geminiRoot(), appDir, id)
+	hasConvDir := antigravityConversationsDirExists(m.geminiRoot(), appDir)
+
+	var state *acpSessionState
+	if hasDiskTurns && supportsResume {
+		state, err = client.ResumeSession(ctx, id, cwd)
+		if err != nil {
+			if !isACPMethodNotFound(err) && hasConvDir && !hasPB {
+				// Missing conversations/<id>.pb ghost row: fail fast without 6.9s session/load hang.
+				return nil, err
+			}
+			loaded, loadErr := client.LoadSession(ctx, id, cwd)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			state = loaded
+		}
+	} else if supportsResume && hasConvDir && !hasPB {
+		// Ghost row without disk transcript: probe fast via session/resume to avoid 6.9s load hang.
+		state, err = client.ResumeSession(ctx, id, cwd)
+		if err != nil {
+			if !isACPMethodNotFound(err) {
+				return nil, err
+			}
+			loaded, loadErr := client.LoadSession(ctx, id, cwd)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			state = loaded
+		}
+	} else {
+		state, err = client.LoadSession(ctx, id, cwd)
+		if err != nil {
+			if !isACPMethodNotFound(err) && hasConvDir && !hasPB {
+				return nil, err
+			}
+			resumed, resumeErr := client.ResumeSession(ctx, id, cwd)
+			if resumeErr != nil {
+				return nil, err
+			}
+			state = resumed
+		}
+	}
+	daemon.touchActivity(m.nowTime())
 
 	// Wait for dispatchLoop to drain all replay notifications emitted during
 	// session/load or session/resume before flipping loading to false.
-	run.drainDispatch(client)
+	daemon.drainDispatchForSession(id)
 
 	run.mu.Lock()
 	run.loading = false
@@ -795,13 +1230,17 @@ func (m *AntigravityManager) ensureRun(ctx context.Context, id string) (*antigra
 		for k, d := range run.replayDiffs {
 			run.diskDiffs[k] = d
 		}
+		run.lastPublished = map[string][]byte{}
+		for _, t := range run.diskTurns {
+			run.lastPublished[t.Key] = mustJSON(t)
+		}
 	}
 	run.replayTurns = nil
 	run.replayDiffs = map[string]string{}
 	run.mu.Unlock()
 
 	run.applySessionState(state)
-	m.updateCatalogFromState(state, initRes)
+	m.updateCatalogFromState(state, daemon.initRes)
 
 	// Re-apply saved preferences if they differ from the loaded session's defaults.
 	if pref != (antigravityThreadPref{}) {
@@ -809,13 +1248,27 @@ func (m *AntigravityManager) ensureRun(ctx context.Context, id string) (*antigra
 	}
 
 	m.mu.Lock()
-	if m.shuttingDown {
+	if m.shuttingDown || !run.isAlive() {
+		shuttingDown := m.shuttingDown
 		m.mu.Unlock()
-		_ = client.Close()
-		return nil, errors.New("Relay Is Shutting Down")
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = client.CloseSession(closeCtx, id)
+		closeCancel()
+		if shuttingDown {
+			return nil, errors.New("Relay Is Shutting Down")
+		}
+		return nil, errors.New("Antigravity Session Has Stopped")
 	}
 	m.runs[id] = run
+	watched := m.hasWatchersLocked(id)
+	attached = false
 	m.mu.Unlock()
+
+	if watched {
+		run.touch()
+	} else {
+		run.markUnwatched(m.nowTime())
+	}
 
 	m.requestRefresh()
 	return run, nil
@@ -878,7 +1331,7 @@ func (m *AntigravityManager) handleSend(id, text string, images []string, ack fu
 		ack(err, nil)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(m.baseContext(), 30*time.Second)
 	run, err := m.ensureRun(ctx, id)
 	cancel()
 	if err != nil {
@@ -903,11 +1356,11 @@ func (m *AntigravityManager) handleStop(id string, ack func(error, map[string]an
 }
 
 func (m *AntigravityManager) handleWake(c *Client, id string, ack func(error, map[string]any)) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(m.baseContext(), 30*time.Second)
 	_, err := m.ensureRun(ctx, id)
 	cancel()
 	if err == nil {
-		err = m.open(c, id, false)
+		err = m.emitCurrentOpen(c, id, false)
 	}
 	ack(err, nil)
 }
@@ -979,6 +1432,7 @@ func (m *AntigravityManager) handleSettings(c *Client, id string, raw []byte, ac
 		defer cancel()
 
 		run.mu.Lock()
+		daemon := run.daemon
 		client := run.client
 		run.mu.Unlock()
 
@@ -1020,6 +1474,7 @@ func (m *AntigravityManager) handleSettings(c *Client, id string, raw []byte, ac
 			run.permissionMode = pref.PermissionMode
 			run.mu.Unlock()
 		}
+		daemon.touchActivity(m.nowTime())
 		run.publish(true)
 	}
 
@@ -1027,7 +1482,7 @@ func (m *AntigravityManager) handleSettings(c *Client, id string, raw []byte, ac
 		ack(err, nil)
 		return
 	}
-	_ = m.open(c, id, false)
+	_ = m.emitCurrentOpen(c, id, false)
 	ack(nil, nil)
 	m.requestRefresh()
 }
@@ -1127,7 +1582,7 @@ func (m *AntigravityManager) handleArchive(id string, archive bool, ack func(err
 		return
 	}
 	if archive {
-		if (run != nil && run.isRunning()) || (run == nil && exists && rec.Running) {
+		if (run != nil && (run.isRunning() || run.isExternalRunning())) || (run == nil && exists && rec.Running) {
 			ack(errors.New("Stop This Session Before Archiving"), nil)
 			return
 		}
@@ -1142,7 +1597,7 @@ func (m *AntigravityManager) handleArchive(id string, archive bool, ack func(err
 			delete(m.runs, id)
 		}
 		m.mu.Unlock()
-		go run.shutdown(2 * time.Second)
+		go run.detachAndCloseSession(2 * time.Second)
 	}
 	m.refresh()
 	ack(nil, nil)

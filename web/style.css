@@ -84,6 +84,10 @@ input, textarea { font: inherit; color: inherit; }
 .provider-option { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 84px; padding: 18px 4px; font-size: 24px; border-bottom: 1px solid var(--line); }
 .provider-option > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .provider-option .ico { color: var(--muted); }
+@media (max-height: 680px) {
+  .provider-choice { justify-content: flex-start; padding: 16px 24px; }
+  .provider-option { min-height: 68px; padding: 14px 4px; font-size: 22px; }
+}
 #provider-switch { margin-left: 10px; font-size: 12px; height: 32px; padding: 0 10px; }
 .scroll { flex: 1; overflow-y: auto; overscroll-behavior: contain; }
 
@@ -634,6 +638,9 @@ textarea, input { caret-color: var(--ink); }
 .usage-loading > span:last-child { color: var(--muted); font-size: 13px; }
 .usage-error { padding: 24px 0; }
 .usage-error p { color: var(--muted); }
+@media (max-width: 380px) {
+  .usage-body { padding-left: 16px; padding-right: 16px; }
+}
 @media (min-width: 620px) {
   .usage-providers { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px 32px; }
   .usage-provider + .usage-provider { padding-top: 0; border-top: 0; }
@@ -686,3 +693,6 @@ textarea, input { caret-color: var(--ink); }
 .context-weekly-item .usage-track > span { background: var(--done); }
 .context-weekly-item.caution .usage-track > span { background: var(--run); }
 .context-weekly-item.critical .usage-track > span { background: var(--bad); }
+.card-b .plan-preview { max-height: 220px; overflow-y: auto; overscroll-behavior: contain; padding: 12px 14px; margin: 0 0 12px; border-radius: 14px; background: var(--bg); font-size: 14px; line-height: 1.5; }
+.card-b .plan-preview > :first-child { margin-top: 0; }
+.card-b .plan-preview > :last-child { margin-bottom: 0; }

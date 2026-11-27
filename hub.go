@@ -60,6 +60,7 @@ type Hub struct {
 	links        *sessionLinks
 	claude       *ClaudeManager
 	antigravity  *AntigravityManager
+	grok         *GrokManager
 	headless     *HeadlessCodex
 	recovery     *recoveryManager
 	ipc          *IPCClient
@@ -177,6 +178,9 @@ func (h *Hub) removeClient(c *Client) {
 	}
 	if h.antigravity != nil {
 		h.antigravity.removeClient(c)
+	}
+	if h.grok != nil {
+		h.grok.removeClient(c)
 	}
 	for _, s := range subs {
 		s.unsubscribe(c)
@@ -401,7 +405,15 @@ func (h *Hub) handle(c *Client, raw []byte) {
 		h.antigravity.handle(c, raw)
 		return
 	}
-	if route.Provider != "" && route.Provider != "codex" && route.Provider != "claude" && route.Provider != "antigravity" {
+	if route.Provider == "grok" && route.Op != "events" {
+		if h.grok == nil {
+			c.push(mustJSON(map[string]any{"t": "ack", "op": route.Op, "id": route.ID, "nonce": route.Nonce, "provider": "grok", "ok": false, "msg": "Grok Is Unavailable"}))
+			return
+		}
+		h.grok.handle(c, raw)
+		return
+	}
+	if route.Provider != "" && route.Provider != "codex" && route.Provider != "claude" && route.Provider != "antigravity" && route.Provider != "grok" {
 		c.push(mustJSON(map[string]any{"t": "ack", "op": route.Op, "nonce": route.Nonce, "ok": false, "msg": "Unknown Provider"}))
 		return
 	}
