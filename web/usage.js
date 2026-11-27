@@ -6,7 +6,7 @@ let usageServer = "", usageRenderedServer = "";
 const usageViewState = new Map();
 const usageNumber = (value) => new Intl.NumberFormat(undefined, {notation: "compact", maximumFractionDigits: 1}).format(value || 0);
 const usageMoney = (value) => value == null ? "Unavailable" : new Intl.NumberFormat(undefined, {style: "currency", currency: "USD"}).format(value);
-const usageLogo = (provider) => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${AGENT_LOGOS[provider === 'claude' ? 'claude' : 'openai']}"/></svg>`;
+const usageLogo = (provider) => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${AGENT_LOGOS[provider === 'claude' ? 'claude' : provider === 'antigravity' ? 'antigravity' : 'openai']}"/></svg>`;
 function usageReset(timestamp) {
   const minutes = Math.max(0, Math.ceil((timestamp * 1000 - Date.now()) / 60000));
   if (!minutes) return "Reset Due";
@@ -20,15 +20,16 @@ function usageReset(timestamp) {
 function usageWindow(window) {
   const remaining = Math.max(0,Math.min(100,Number(window.remaining)));
   const percentage = new Intl.NumberFormat(undefined,{maximumFractionDigits:1}).format(remaining);
-  return `<div class="usage-window${remaining < 10 ? ' near-limit' : ''}"><div class="usage-window-head"><span>${esc(window.label || 'Usage Window')}</span><strong>${percentage}<small>% Left</small></strong></div><div class="usage-track" role="meter" aria-label="${esc(window.label)} Remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${remaining}"><span style="width:${remaining}%"></span></div><div class="usage-reset" ${window.resetAt ? `data-reset-at="${window.resetAt}" title="${esc(new Date(window.resetAt*1000).toLocaleString())}"` : ''}>${window.resetAt ? esc(usageReset(window.resetAt)) : 'Reset Time Unavailable'}</div></div>`;
+  const resetText = window.resetAt ? usageReset(window.resetAt) : remaining >= 100 ? 'No Active Window' : 'Reset Time Unavailable';
+  return `<div class="usage-window${remaining < 10 ? ' near-limit' : ''}"><div class="usage-window-head"><span>${esc(window.label || 'Usage Window')}</span><strong>${percentage}<small>% Left</small></strong></div><div class="usage-track" role="meter" aria-label="${esc(window.label)} Remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${remaining}"><span style="width:${remaining}%"></span></div><div class="usage-reset" ${window.resetAt ? `data-reset-at="${window.resetAt}" title="${esc(new Date(window.resetAt*1000).toLocaleString())}"` : ''}>${esc(resetText)}</div></div>`;
 }
 function usageCost(total) {
   const money = usageMoney(total.costUsd);
   return money + (total.unpricedTokens && total.costUsd != null ? '+' : '');
 }
 function usageProvider(provider) {
-  const name = provider.provider === 'claude' ? 'Claude Code' : 'Codex';
-  const plan = provider.plan ? provider.plan.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()) : '';
+  const name = provider.provider === 'claude' ? 'Claude Code' : provider.provider === 'antigravity' ? 'Antigravity' : 'Codex';
+  const plan = provider.plan ? provider.plan.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()).replace(/\bAi\b/g,'AI') : '';
   const today = provider.today || {}, month = provider.days30 || {};
   const windows=provider.windows || [],models=provider.models || [];
   const localPending=provider.localLoading && !provider.localAt;
@@ -41,8 +42,8 @@ function usageProvider(provider) {
   if (provider.resetCredits != null) extras.push(`<div class="usage-extra"><span>Available Resets</span><b>${provider.resetCredits}</b></div>`);
   if (provider.credits != null && provider.credits > 0) extras.push(`<div class="usage-extra"><span>Credits Remaining</span><b>${Number(provider.credits).toLocaleString()}</b></div>`);
   return `<section class="usage-provider" aria-label="${name} Usage"><header class="usage-provider-head">${usageLogo(provider.provider)}<h2>${name}</h2>${plan ? `<span class="usage-plan">${esc(plan)}</span>` : ''}</header>`+
-    `<div class="usage-limits">${windows.length ? windows.map(usageWindow).join('') : quotaPending ? `<p class="usage-pending" role="status">${pending} Checking limits</p>` : `<p class="usage-unavailable">${esc(provider.quotaError || 'Subscription Limits Unavailable')}</p>`}${quotaPending && windows.length ? `<p class="usage-pending" role="status">${pending} Updating limits</p>` : ''}</div>${extras.join('')}`+
-    `<table class="usage-totals"><caption>Local Activity</caption><thead><tr><td></td><th scope="col">Today</th><th scope="col">30 Days</th></tr></thead><tbody><tr><th scope="row">Tokens</th><td>${localTokens(today.tokens)}</td><td>${localTokens(month.tokens)}</td></tr><tr><th scope="row">Est. API Cost</th><td>${localCost(today)}</td><td>${localCost(month)}</td></tr></tbody></table><p class="usage-cost-note">API-equivalent estimate. Subscription charges are separate.</p>${provider.localLoading ? `<p class="usage-pending" role="status">${pending} Reading local activity</p>` : ''}`+
+    `<div class="usage-limits">${windows.length ? windows.map(usageWindow).join('') : quotaPending ? `<p class="usage-pending" role="status">${pending} Checking Limits</p>` : `<p class="usage-unavailable">${esc(provider.quotaError || 'Subscription Limits Unavailable')}</p>`}${windows.length && !quotaPending && provider.quotaError ? `<p class="usage-unavailable">${esc(provider.quotaError)}</p>` : ''}${quotaPending && windows.length ? `<p class="usage-pending" role="status">${pending} Updating Limits</p>` : ''}</div>${extras.join('')}`+
+    `<table class="usage-totals"><caption>Local Activity</caption><thead><tr><td></td><th scope="col">Today</th><th scope="col">30 Days</th></tr></thead><tbody><tr><th scope="row">Tokens</th><td>${localTokens(today.tokens)}</td><td>${localTokens(month.tokens)}</td></tr><tr><th scope="row">Est. API Cost</th><td>${localCost(today)}</td><td>${localCost(month)}</td></tr></tbody></table><p class="usage-cost-note">API-equivalent estimate. Subscription charges are separate.</p>${provider.localLoading ? `<p class="usage-pending" role="status">${pending} Reading Local Activity</p>` : ''}`+
     (provider.localError || provider.skipped || month.unpricedTokens ? `<p class="usage-coverage">${esc(provider.localError || (provider.skipped ? 'Some large log entries were skipped.' : ''))}${month.unpricedTokens ? `${provider.localError || provider.skipped ? ' ' : ''}${usageNumber(month.unpricedTokens)} tokens have no published rate. Their cost is excluded.` : ''}</p>` : '')+
     (models.length ? `<details class="usage-models" data-usage-provider="${esc(provider.provider)}"><summary>30-Day Breakdown ${I.down}</summary><table><thead><tr><th scope="col">Model</th><th scope="col">Tokens</th><th scope="col">Cost</th></tr></thead><tbody>${models.map(model=>`<tr><th scope="row">${esc(model.model || 'Model Unrecorded')}</th><td>${tokens(model.tokens)}</td><td>${esc(usageCost(model))}</td></tr>`).join('')}</tbody></table><div class="usage-token-types"><span>Input <b>${usageNumber(month.input)}</b></span><span>Cached <b>${usageNumber(month.cached)}</b></span><span>Cache Writes <b>${usageNumber(month.writes)}</b></span><span>Output <b>${usageNumber(month.output)}</b></span></div></details>` : '')+
     `</section>`;
@@ -94,12 +95,25 @@ async function loadUsage(refresh = false) {
   if(result && !conns.get(sid)?.ok) usageCache.set(sid,result);
   if(sid===usageServer)renderUsage();
 }
+function weeklyQuotaEntry(window) {
+  if (!window || typeof window.used !== 'number' || !Number.isFinite(window.used)) return null;
+  const used = Math.max(0, Math.min(100, window.used));
+  return { window, used, remaining: 100 - used, tone: used > 90 ? 'critical' : used > 75 ? 'caution' : '' };
+}
 function weeklyQuota(report, provider) {
   const account = report?.providers?.find(value => value.provider === provider);
-  const window = account?.windows?.find(value => /^weekly$/i.test(value.label || ''));
-  if (!window || typeof window.used !== 'number' || !Number.isFinite(window.used)) return {account};
-  const used = Math.max(0,Math.min(100,window.used));
-  return {account,window,used,remaining:100-used,tone:used>90?'critical':used>75?'caution':''};
+  const rawWindows = account?.windows || [];
+  if (provider === 'antigravity') {
+    const matches = rawWindows.filter(value => /\bweekly\b/i.test(value.label || '')).map(weeklyQuotaEntry).filter(Boolean);
+    if (!matches.length) return { account };
+    const exact = matches.find(entry => /^weekly$/i.test(entry.window.label || ''));
+    const primary = exact || matches.reduce((best, cur) => (cur.used > best.used ? cur : best), matches[0]);
+    return { account, ...primary, windows: matches };
+  }
+  const window = rawWindows.find(value => /^weekly$/i.test(value.label || ''));
+  const entry = weeklyQuotaEntry(window);
+  if (!entry) return { account };
+  return { account, ...entry, windows: [entry] };
 }
 async function showContextWeekly(sheet, sid, provider) {
   const target=sheet.querySelector('#context-weekly');
@@ -108,10 +122,17 @@ async function showContextWeekly(sheet, sid, provider) {
   const paint=cached=>{
     if(!valid())return;
     const quota=weeklyQuota(cached?.report,provider);
+    const pct=v=>new Intl.NumberFormat(undefined,{maximumFractionDigits:1}).format(v);
+    const resetCopy=entry=>entry.window.resetAt ? usageReset(entry.window.resetAt) : entry.remaining >= 100 ? 'No Active Window' : 'Reset Time Unavailable';
+    const meters = quota.windows?.length > 1
+      ? `<div class="context-weekly-head"><h3>Weekly Usage</h3></div>` + quota.windows.map(entry =>
+          `<div class="context-weekly-item${entry.tone ? ' ' + entry.tone : ''}"><div class="context-weekly-head"><span>${esc(entry.window.label || 'Weekly Usage')}</span><strong>${pct(entry.remaining)}% Left</strong></div><div class="usage-track" role="meter" aria-label="${esc(entry.window.label || 'Weekly Usage')} Used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${entry.used}" aria-valuetext="${entry.remaining}% remaining"><span style="width:${entry.used}%"></span></div><p ${entry.window.resetAt ? `data-reset-at="${entry.window.resetAt}"` : ''}>${esc(resetCopy(entry))}</p></div>`
+        ).join('')
+      : `<div class="context-weekly-head"><h3>Weekly Usage</h3>${quota.window ? `<strong>${pct(quota.remaining)}% Left</strong>` : ''}</div>` +
+        (quota.window ? `<div class="usage-track" role="meter" aria-label="Weekly Usage Used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${quota.used}" aria-valuetext="${quota.remaining}% remaining"><span style="width:${quota.used}%"></span></div><p ${quota.window.resetAt ? `data-reset-at="${quota.window.resetAt}"` : ''}>${esc(resetCopy(quota))}</p>` : `<p>${quota.account?.quotaLoading ? '<span class="voice-spinner"></span> Checking Limits' : esc(cached?.error || quota.account?.quotaError || 'Weekly usage is unavailable for this account.')}</p>`);
     target.className='context-weekly'+(quota.tone?' '+quota.tone:'');
-    target.innerHTML=`<div class="context-weekly-head"><h3>Weekly Usage</h3>${quota.window ? `<strong>${new Intl.NumberFormat(undefined,{maximumFractionDigits:1}).format(quota.remaining)}% Left</strong>` : ''}</div>`+
-      (quota.window ? `<div class="usage-track" role="meter" aria-label="Weekly Usage Used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${quota.used}" aria-valuetext="${quota.remaining}% remaining"><span style="width:${quota.used}%"></span></div><p ${quota.window.resetAt ? `data-reset-at="${quota.window.resetAt}"` : ''}>${quota.window.resetAt ? esc(usageReset(quota.window.resetAt)):'Reset Time Unavailable'}</p>` : `<p>${quota.account?.quotaLoading ? '<span class="voice-spinner"></span> Checking limits' : esc(cached?.error || quota.account?.quotaError || 'Weekly usage is unavailable for this account.')}</p>`)+
-      (quota.account?.quotaLoading && quota.window ? '<p class="usage-pending"><span class="voice-spinner"></span> Updating limits</p>' : '') +
+    target.innerHTML=meters+
+      (quota.account?.quotaLoading && quota.window ? '<p class="usage-pending"><span class="voice-spinner"></span> Updating Limits</p>' : '') +
       (cached?.error && quota.window ? `<p>${conns.get(sid)?.ok ? "Couldn't refresh usage" : 'Offline'}${quota.account?.quotaAt || cached.at ? ` · Updated ${esc(new Date(quota.account?.quotaAt ? quota.account.quotaAt*1000 : cached.at).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}))}` : ''}</p>` : '') +
       `<button class="context-weekly-link">Usage And Limits ${I.chev}</button>`;
     target.querySelector('button').onclick=()=>openUsage(sid);

@@ -35,7 +35,7 @@ window.sessionTreeRows = (selected,universe,options={}) => {
   const emitted=new Set(),draw=(id,depth=0)=>{
     if(emitted.has(id))return '';emitted.add(id);
     const nested=depth<32 ? (children.get(id)||[]).map(child=>draw(child,depth+1)).join('') : '';
-    return `<div class="session-tree-node">${threadRow(byKey.get(id),options)}${nested ? `<div class="${depth<6?'session-tree-children':'session-tree-flat'}" role="group" aria-label="Child chats">${nested}</div>` : ''}</div>`;
+    return `<div class="session-tree-node">${threadRow(byKey.get(id),options)}${nested ? `<div class="${depth<6?'session-tree-children':'session-tree-flat'}" role="group" aria-label="Child Chats">${nested}</div>` : ''}</div>`;
   };
   let html='';
   for(const t of selected) {
@@ -81,7 +81,7 @@ window.renderNativeProject = () => {
   const selected=q ? rows.filter(t=>`${t.displayTitle||t.title} ${t.preview} ${t.lastMsg||''}`.toLocaleLowerCase().includes(q)) : rows;
   $('p-title').textContent=group.name;$('p-sub').textContent=serverName(group.server);
   const list=$('project-list'),top=list.scrollTop;
-  list.innerHTML=`${group.rows===null && !group.error ? `<div class="group-loading">${loadingHTML('Loading chats')}</div>` : ''}${selected.length ? `<div class="sec">Chats<span class="n">${selected.length}</span></div><div class="group">${sessionTreeRows(selected,[...indexed,...source],{project:false})}</div>` : group.rows!==null ? '<div class="empty"><b>No local chats in this group</b></div>' : ''}${group.error ? `<div class="empty"><p>${esc(group.error)}</p><button class="btn" data-group-retry>Try again</button></div>` : ''}`;
+  list.innerHTML=`${group.rows===null && !group.error ? `<div class="group-loading">${loadingHTML('Loading Chats')}</div>` : ''}${selected.length ? `<div class="sec">Chats<span class="n">${selected.length}</span></div><div class="group">${sessionTreeRows(selected,[...indexed,...source],{project:false})}</div>` : group.rows!==null ? '<div class="empty"><b>No Local Chats In This Group</b></div>' : ''}${group.error ? `<div class="empty"><p>${esc(group.error)}</p><button class="btn" data-group-retry>Try Again</button></div>` : ''}`;
   list.querySelector('[data-group-retry]')?.addEventListener('click',()=>openNativeGroup(group.server,group.id,false));
   list.scrollTop=top;
 };

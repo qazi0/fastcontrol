@@ -15,7 +15,7 @@
 <div id="app">
   <section id="providers" class="view hidden">
     <header class="bar"><h1 class="brand">fastcontrol</h1><span class="grow"></span><button id="provider-macs" class="icon-btn" aria-label="Macs And Notifications"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></button></header>
-    <main class="scroll provider-choice"><button class="provider-option" data-provider="codex"><span>Codex</span><svg class="ico" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button><button class="provider-option" data-provider="claude"><span>Claude Code</span><svg class="ico" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button></main>
+    <main class="scroll provider-choice"><button class="provider-option" data-provider="codex"><span>Codex</span><svg class="ico" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button><button class="provider-option" data-provider="claude"><span>Claude Code</span><svg class="ico" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button><button class="provider-option" data-provider="antigravity"><span>Antigravity</span><svg class="ico" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button></main>
   </section>
 
   <!-- Home: Macs, projects, pinned and recent threads -->
@@ -29,7 +29,7 @@
     </header>
     <div id="search-row" class="search-row hidden"><input id="search" type="search" placeholder="Search All Threads" autocomplete="off" enterkeyhint="search"></div>
     <nav id="machines" class="chips"></nav>
-    <div class="usage-launch"><button id="usage-open" class="usage-open"><span>Usage and Limits</span><svg class="ico" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button></div>
+    <div class="usage-launch"><button id="usage-open" class="usage-open"><span>Usage And Limits</span><svg class="ico" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button></div>
     <main id="home-list" class="scroll list"></main>
     <div class="dock">
       <button id="ask" class="ask"><svg class="ico" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>Ask Codex</span></button>
@@ -71,6 +71,7 @@
     <div id="dockcards" class="dockcards"></div>
     <div id="activity" class="activity hidden" role="status" aria-live="polite"><span class="thinking">Thinking</span></div>
     <form id="composer" class="composer">
+      <div id="slash-menu" class="slash-menu hidden" role="listbox" aria-label="Slash Commands"></div>
       <div id="voice-panel" class="voice-panel hidden">
         <div class="voice-top"><span class="voice-status"><span id="voice-label" aria-live="polite">Listening</span><span id="voice-spinner" class="voice-spinner hidden" aria-hidden="true"></span></span><span id="voice-time" class="mono voice-time">0:00</span></div>
         <div id="voice-wave" class="voice-wave" aria-hidden="true"></div>

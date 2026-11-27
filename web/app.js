@@ -47,12 +47,40 @@ const I = {
 };
 
 // Agent logo paths from Simple Icons (CC0); trademarks remain with their owners.
-const AGENT_LOGOS = {"openai": "M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z", "claude": "m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"};
+const AGENT_LOGOS = {"openai": "M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z", "claude": "m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z", "antigravity": "M12 2.5C9.4 7.4 6.2 13.8 3.6 20.2c-.3.8.5 1.5 1.3 1.1 2.7-1.4 4.8-2.2 7.1-2.2s4.4.8 7.1 2.2c.8.4 1.6-.3 1.3-1.1C17.8 13.8 14.6 7.4 12 2.5zm0 5.1l2.7 7.2Q12 13.7 9.3 14.8L12 7.6z"};
+const PROVIDERS = ["codex", "claude", "antigravity"];
+function providerName(provider = S.provider) {
+  return provider === "claude" ? "Claude Code" : provider === "antigravity" ? "Antigravity" : "Codex";
+}
+function providerShortName(provider = S.provider) {
+  return provider === "claude" ? "Claude" : provider === "antigravity" ? "Antigravity" : "Codex";
+}
+function providerLogoKey(provider = S.provider) {
+  return provider === "claude" ? "claude" : provider === "antigravity" ? "antigravity" : "openai";
+}
+function providerLogoSVG(provider = S.provider, cls = "agent-ico") {
+  return `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${AGENT_LOGOS[providerLogoKey(provider)]}"/></svg>`;
+}
+function providerSupported(provider) {
+  const connected = [...conns.values()].filter((c) => c.ok && c.helloReceived);
+  if (!connected.length) return true;
+  return connected.some((c) => (provider === "codex" ? c.capabilities?.codex !== false : !!c.capabilities?.[provider]));
+}
+function availableProviders() {
+  return PROVIDERS.filter((provider) => provider === S.provider || providerSupported(provider));
+}
+function syncProviderButtons() {
+  for (const button of document.querySelectorAll("#providers [data-provider]")) {
+    const provider = button.dataset.provider;
+    button.classList.toggle("hidden", provider !== S.provider && !providerSupported(provider));
+  }
+}
 
 // ------------------------------------------------------------------ state --
 
+const savedProvider = store.get("provider", "codex");
 const S = {
-  provider: store.get("provider", "codex"),
+  provider: PROVIDERS.includes(savedProvider) ? savedProvider : "codex",
   servers: store.get("servers", []),
   machine: store.get("machine", "all"), // "all" or a server id
   query: "",
@@ -262,7 +290,7 @@ class Conn {
     this.dead = false;
     this.candidates = []; this.lastSeen = server.lastSeen || 0; this.heartbeatSupported = false;this.recoveryPeers=[];
     this.byProvider = {};
-    this.capabilities = {};
+    this.capabilities = { codex: true, claude: false, antigravity: false };
     this.threads = store.get("threads:" + server.id + ":" + S.provider, []);
     this.connect(true);
   }
@@ -400,7 +428,10 @@ class Conn {
         let dirty=false;
         if(m.platform && this.s.platform!==m.platform){this.s.platform=m.platform;dirty=true;}
         this.desktop = m.desktop;
-        this.capabilities = m.providers || { codex:true, claude:false };
+        const caps = m.providers && typeof m.providers === "object" ? m.providers : { codex: true, claude: false, antigravity: false };
+        this.capabilities = { codex: caps.codex !== false, claude: !!caps.claude, antigravity: !!caps.antigravity };
+        if (typeof syncProviderButtons === "function") syncProviderButtons();
+        if (S.sheet === "providers") S.redraw?.();
         if (Array.isArray(m.addrs)) {
           const merged = mergeRelayAddresses(this.s, m.addrs);
           if (JSON.stringify(merged) !== JSON.stringify(this.s.alts || [])) { this.s.alts = merged; dirty=true; }
@@ -452,7 +483,7 @@ class Conn {
         break;
       }
       case "event": onEvent(this, m); break;
-      case "models": this.models = m; if (S.redraw) S.redraw(); break;
+      case "models": this.models = m; if (S.redraw) S.redraw(); if (S.view === "thread" && S.sid === this.s.id && typeof renderComposer === "function") renderComposer(); break;
       case "projects": this.projects = m.projects; this.home = m.home; if (S.redraw) S.redraw(); scheduleRender(); break;
       case "project": if(provider===S.provider){this.byCwd[m.cwd] = m.threads || []; if (S.view === "project" && S.cwd === m.cwd) renderProject();} break;
       case "diff": if (here || (S.diffSource?.server === this.s.id && S.diffSource?.id === m.id)) showDiff(m); break;
@@ -628,19 +659,20 @@ window.addEventListener("popstate", (e) => {
   else if (!st.sheet) { leaveThread(); show("home"); renderHome(); }
 });
 function selectProvider(provider, push = true) {
-  if (!['codex','claude'].includes(provider)) return;
+  if (!PROVIDERS.includes(provider)) return;
   leaveThread();
-  S.newDraft=null;S.newAttach=[];
-  S.provider=provider;store.set('provider',provider);
-  $('provider-switch').innerHTML=`<span>${provider==='claude'?'Claude Code':'Codex'}</span>${I.down}`;
- $('ask').querySelector('span').textContent=provider==='claude'?'Ask Claude':'Ask Codex';
+  S.newDraft = null; S.newAttach = [];
+  S.provider = provider; store.set("provider", provider);
+  $("provider-switch").innerHTML = `<span>${esc(providerName(provider))}</span>${I.down}`;
+  $("ask").querySelector("span").textContent = "Ask " + providerShortName(provider);
+  syncProviderButtons();
   for (const c of conns.values()) {
-    const cache=c.byProvider[provider] || {};
-    c.threads=cache.threads || store.get('threads:'+c.s.id+':'+provider,[]);c.groups=cache.groups || store.get('groups:'+c.s.id+':'+provider,[]);c.projects=cache.projects || null;c.models=cache.models || null;c.home=cache.home || '';c.byCwd={};
-    c.send({op:'threads'});c.refreshProjects(true);c.send({op:'models'});
+    const cache = c.byProvider[provider] || {};
+    c.threads = cache.threads || store.get("threads:" + c.s.id + ":" + provider, []); c.groups = cache.groups || store.get("groups:" + c.s.id + ":" + provider, []); c.projects = cache.projects || null; c.models = cache.models || null; c.home = cache.home || ""; c.byCwd = {};
+    c.send({ op: "threads" }); c.refreshProjects(true); c.send({ op: "models" });
   }
-  if(push)history.pushState({view:'home',provider},'');
-  show('home');renderHome();
+  if (push) history.pushState({ view: "home", provider }, "");
+  show("home"); renderHome();
 }
 $('provider-switch').onclick=()=>openSheet('providers');
 $('provider-macs').onclick=()=>openSheet('macs');
@@ -785,7 +817,8 @@ function renderHome() {
   }
   if (!threads.length) {
     const c = [...conns.values()].find((c) => S.machine === "all" || c.s.id === S.machine);
-    h = `<div class="empty"><b>${c && c.state === "rejected" ? "Pairing Rejected" : "Waiting For Your Computer"}</b>${c && c.state === "rejected" ? "The token was refused. Pair again with the link the relay prints." : "Make sure fastcontrol is running and this phone can reach it."}</div>`;
+    const unavailable = c?.ok && c.helloReceived && !providerSupported(S.provider);
+    h = `<div class="empty"><b>${c && c.state === "rejected" ? "Pairing Rejected" : unavailable ? `${esc(providerName(S.provider))} Is Unavailable` : "Waiting For Your Computer"}</b>${c && c.state === "rejected" ? "The token was refused. Pair again with the link the relay prints." : unavailable ? `Install or sign in to ${esc(providerName(S.provider))} on this computer and restart fastcontrol.` : "Make sure fastcontrol is running and this phone can reach it."}</div>`;
   }
   list.innerHTML = h;
 }
@@ -884,6 +917,7 @@ function openThread(sidv, id, push) {
   if (Native) try { Native.setActiveThread(sidv, id, S.provider); } catch {}
 }
 function leaveThread() {
+  if (typeof closeSlashMenu === "function") closeSlashMenu();
   window.rememberChatTranscript?.();
   if(S.id){const key=voiceDraftKey(),previous=store.get(key,null);store.set(key,{id:previous?.id || '',text:input.value});}
   if(voiceState.phase==='retry') {voiceState.phase='idle';voiceState.id='';voiceState.target='';renderVoice();}
@@ -1281,6 +1315,7 @@ function transcriptClick(e) {
 feed.addEventListener("click", transcriptClick);
 
 const firstLine = (s) => String(s || "").split("\n")[0];
+const stepFilePath = (f) => (/^[A-Z?]\s+/.test(String(f || "")) ? String(f).slice(2) : String(f || ""));
 
 // Step rows: one per command, edit, search, tool call or thought. Tap to expand.
 function stepHTML(s, t, key, active = false) {
@@ -1301,9 +1336,9 @@ function stepHTML(s, t, key, active = false) {
       const files = (s.title || "").split("\n").filter(Boolean);
       const lines = (s.body || "").split("\n");
       const add = lines.filter((l) => l.startsWith("+") && !l.startsWith("+++")).length, del = lines.filter((l) => l.startsWith("-") && !l.startsWith("---")).length;
-      icon = I.edit; label = `Edited <code>${esc(files.map((f) => base(f.slice(2))).join(", "))}</code>`;
+      icon = I.edit; label = `Edited <code>${esc(files.map((f) => base(stepFilePath(f))).join(", "))}</code>`;
       x = `<span class="x ok">+${add}</span><span class="x bad">-${del}</span>`;
-      body = `<pre>${diffLines(s.body || "")}</pre><button class="link-btn" data-diff="${esc(t.originalKey || t.key)}">Open Full Diff</button>`;
+      body = `<pre>${diffLines(s.body || "")}</pre><button class="link-btn" data-diff="${esc(s.diffKey || t.originalKey || t.key)}">Open Full Diff</button>`;
       break;
     }
     case "reasoning": {
@@ -1315,7 +1350,7 @@ function stepHTML(s, t, key, active = false) {
       body = rest ? `<div class="think md">${md(rest)}</div>` : "";
       break;
     }
-    case "tool": icon = I.plug; label = `<code>${esc(s.title)}</code>`; body = s.body ? `<pre>${outputLines(s.body)}</pre>` : ""; if (running) x = '<span class="x run">Running</span>'; break;
+    case "tool": icon = I.plug; label = `<code>${esc(s.title)}</code>`; body = s.body ? `<pre>${outputLines(s.body)}</pre>` : ""; if (running) x = '<span class="x run">Running</span>'; else if (s.status === "failed" || s.status === "declined") x = `<span class="x bad">${s.status === "declined" ? "Declined" : "Failed"}</span>`; break;
     case "image": return `<div class="image-item"><div class="step-h"><span class="lbl">${esc(s.title || "Image")}</span></div>${imagesHTML(s.images)}</div>`;
     case "search": icon = I.globe; label = "Searched " + esc(s.title); break;
     case "agent": if (window.agentStepHTML) return window.agentStepHTML(s,t,key); icon = I.agent; label = "Subagent " + esc(s.title); break;
@@ -1397,7 +1432,7 @@ function imageSrc(path, server = S.sid) {
   return c.base + "/image?path=" + encodeURIComponent(path);
 }
 function imageHTML(path, alt = "Image", server = S.sid) {
-  path = path.replace(/^<|>$/g, "");
+  path = audioPath(path);
   const src = imageSrc(path, server);
   if (!src) return esc(alt);
   if (path.startsWith("/")) return `<button type="button" class="image-preview" disabled aria-label="Open Image"><img data-relay-image="${esc(path)}" data-server="${esc(server)}" alt="${esc(alt)}" decoding="async"></button>`;
@@ -1649,39 +1684,52 @@ function renderActivity() {
   const running = pending || (typeof S.meta?.running === "boolean" ? S.meta.running : S.turns.at(-1)?.status === "inProgress");
   $("activity").classList.toggle("hidden", !running || !!S.meta?.requests?.length);
 }
+function contextMetrics(m) {
+  const used = m?.ctxUsed ?? m?.contextUsed;
+  const max = m?.ctxMax ?? m?.contextWindow;
+  return { used, max, known: max > 0 && used != null };
+}
+function wakeActionLabel(m, provider = S.provider) {
+  if (provider === "claude") return m?.mode === "external" ? "Take Over" : "Resume";
+  if (provider === "antigravity") return m?.mode === "external" ? "Take Over" : "Resume In Antigravity";
+  return "Open On Computer";
+}
 let renderedMeta = "";
 function renderMeta() {
   const m = S.meta;
   if (!m) return;
   window.refreshThreadAgents?.();
   renderStatus();renderCards();
+  if (typeof renderSlashMenu === "function" && slashState?.open) renderSlashMenu();
   const key=JSON.stringify([S.sid,S.id,S.provider,m,conn()?.state,serverName(S.sid)]);
   if(key===renderedMeta && $('t-ring').childNodes.length)return;
   renderedMeta=key;
   renderThreadHeader();
   const ring = $("t-ring");
-  const known = m.ctxMax > 0 && m.ctxUsed != null;
-  const f = known ? Math.max(0, Math.min(1, m.ctxUsed / m.ctxMax)) : 0, c = 2 * Math.PI * 17;
+  const { used, max, known } = contextMetrics(m);
+  const f = known ? Math.max(0, Math.min(1, used / max)) : 0, c = 2 * Math.PI * 17;
   ring.classList.toggle("hot", f > 0.8);
   ring.title = known ? `Context ${Math.round(f * 100)}% Used` : "Context Usage Unavailable";
-  ring.setAttribute("aria-label", (S.provider==='claude'?'Claude Code':'Codex (OpenAI)') + ", " + ring.title + ", Show Details");
-  ring.innerHTML = `<svg viewBox="0 0 40 40"><g transform="rotate(-90 20 20)"><circle class="bg" cx="20" cy="20" r="17"/>${known ? `<circle class="fg" cx="20" cy="20" r="17" stroke-dasharray="${(f * c).toFixed(1)} ${c.toFixed(1)}"/>` : ""}</g><g class="agent-logo" transform="translate(10 10) scale(.833333)"><path d="${AGENT_LOGOS[S.provider==='claude'?'claude':'openai']}"/></g></svg>`;
+  const ringProvider = S.provider === "claude" ? "Claude Code" : S.provider === "antigravity" ? "Antigravity" : "Codex (OpenAI)";
+  ring.setAttribute("aria-label", ringProvider + ", " + ring.title + ", Show Details");
+  ring.innerHTML = `<svg viewBox="0 0 40 40"><g transform="rotate(-90 20 20)"><circle class="bg" cx="20" cy="20" r="17"/>${known ? `<circle class="fg" cx="20" cy="20" r="17" stroke-dasharray="${(f * c).toFixed(1)} ${c.toFixed(1)}"/>` : ""}</g><g class="agent-logo" transform="translate(10 10) scale(.833333)"><path d="${AGENT_LOGOS[providerLogoKey(S.provider)]}"/></g></svg>`;
   const b = $("banner");
   if (m.exec) {
     b.innerHTML = "<span>Starting Headless, Replies Queue</span>";
     b.classList.remove("hidden");
   } else if(m.connecting && !m.readOnly) {
-    b.innerHTML=loadingHTML('Connecting to chat');b.classList.remove('hidden');
+    b.innerHTML=loadingHTML('Connecting To Chat');b.classList.remove('hidden');
   } else if(m.readOnly) {
-    b.innerHTML='<span>Read-only subagent</span>';b.classList.remove('hidden');
+    b.innerHTML='<span>Read Only Subagent</span>';b.classList.remove('hidden');
   } else if (m.mode !== "live" && !(S.provider === "codex" && m.running && !m.readOnly)) {
-    b.innerHTML = `<span>${m.mode==='external'?'Managed On Computer':'Saved chat'}</span><button class="btn" id="wake">${S.provider==='claude'?(m.mode==='external'?'Take Over':'Resume'):'Open On Computer'}</button>`;
+    const wakeText = wakeActionLabel(m, S.provider);
+    b.innerHTML = `<span>${m.mode==='external'?'Managed On Computer':'Saved Chat'}</span><button class="btn" id="wake">${esc(wakeText)}</button>`;
     b.classList.remove("hidden");
     $("wake").onclick = async (e) => {
-      e.target.disabled = true; e.target.textContent = "Opening";
+      e.target.disabled = true; e.target.textContent = S.provider === "antigravity" || S.provider === "claude" ? "Resuming" : "Opening";
       const a = await conn().call({ op: "wake", id: S.id }, 20000);
       if (!a.ok) toast(nice(a.msg));
-      e.target.disabled = false; e.target.textContent = "Open On Computer";
+      e.target.disabled = false; e.target.textContent = wakeText;
     };
   } else b.classList.add("hidden");
   const earlier = $("earlier");
@@ -1717,10 +1765,39 @@ function cardHTML(key, title, sub, body) {
   const min = S.minCards.has(key);
   return `<div class="card${min ? " min" : ""}" data-card="${esc(key)}"><button class="card-h" data-min="${esc(key)}" aria-expanded="${!min}"><span class="dot"></span><span class="ttl">${esc(min && sub ? sub : title)}</span>${I.down}</button><div class="card-b">${body}</div></div>`;
 }
-function optionHTML(label, description, action) {
+function titleCaseLabel(value) {
+  return String(value || "").replace(/[_-]+/g, " ").trim().replace(/\b[a-z]/g, (c) => c.toUpperCase());
+}
+function optionDecision(opt) {
+  const kind = String(opt?.kind || "").toLowerCase();
+  if (kind.includes("reject") || kind.includes("deny") || kind === "decline" || kind === "cancel") return "decline";
+  if (kind.includes("always") || kind.includes("session")) return "acceptForSession";
+  return "accept";
+}
+function permissionButtonsHTML(q) {
+  if (Array.isArray(q.options) && q.options.length) {
+    const allow = [], deny = [];
+    for (const opt of q.options) {
+      if (!opt || opt.id == null) continue;
+      const decision = optionDecision(opt);
+      const label = titleCaseLabel(opt.label || opt.name || opt.kind || opt.id);
+      const item = { id: String(opt.id), label, decision };
+      if (decision === "decline") deny.push(item);
+      else allow.push(item);
+    }
+    const parts = allow.map((item, i) => `<button class="btn${i === 0 ? " primary" : ""}" data-req="${esc(q.id)}" data-d="${esc(item.decision)}" data-opt="${esc(item.id)}">${esc(item.label)}</button>`);
+    if (allow.length && deny.length) parts.push('<span class="grow"></span>');
+    parts.push(...deny.map((item) => `<button class="btn danger" data-req="${esc(q.id)}" data-d="${esc(item.decision)}" data-opt="${esc(item.id)}">${esc(item.label)}</button>`));
+    if (parts.length) return `<div class="btns">${parts.join("")}</div>`;
+  }
+  return `<div class="btns"><button class="btn primary" data-req="${esc(q.id)}" data-d="accept">Approve</button><button class="btn" data-req="${esc(q.id)}" data-d="acceptForSession">Always</button><span class="grow"></span><button class="btn danger" data-req="${esc(q.id)}" data-d="decline">Decline</button></div>`;
+}
+function optionHTML(label, description, action, multi = false) {
   const recommended = /\s*\(Recommended\)\s*$/i.test(label);
-  const title = label.replace(/\s*\(Recommended\)\s*$/i, '');
-  return `<button class="opt" ${action}="${esc(label)}"${action === 'data-pick' ? ' aria-pressed="false"' : ''}><span class="choice-mark" aria-hidden="true"></span><span class="choice-text"><span class="choice-title">${esc(title)}</span>${description ? `<span class="choice-desc">${esc(description)}</span>` : ''}</span>${recommended ? '<span class="recommended">Recommended</span>' : ''}</button>`;
+  const title = label.replace(/\s*\(Recommended\)\s*$/i, "");
+  const roleAttr = action === "data-pick" ? (multi ? ' role="checkbox" aria-checked="false" aria-pressed="false"' : ' aria-pressed="false"') : "";
+  const mark = multi ? `<span class="choice-mark" aria-hidden="true">${I.check}</span>` : '<span class="choice-mark" aria-hidden="true"></span>';
+  return `<button type="button" class="opt${multi ? " multi" : ""}" ${action}="${esc(label)}"${roleAttr}>${mark}<span class="choice-text"><span class="choice-title">${esc(title)}</span>${description ? `<span class="choice-desc">${esc(description)}</span>` : ""}</span>${recommended ? '<span class="recommended">Recommended</span>' : ""}</button>`;
 }
 function answerFieldHTML(key, secret = false) {
   return `<div class="answer-field"><label for="answer-${esc(key)}">Your Answer</label><div class="answer-entry"><input id="answer-${esc(key)}" data-other data-answer-key="${esc(key)}" placeholder="Write Your Answer" type="${secret ? 'password' : 'text'}" enterkeyhint="done">${Native?.startVoice && !secret ? `<button type="button" class="icon-btn answer-mic" data-answer-voice="${esc(key)}" aria-label="Record Answer">${$('voice').innerHTML}</button>` : ''}</div></div>`;
@@ -1729,7 +1806,15 @@ function answerKey(card, question) { return JSON.stringify([S.provider,S.sid,S.i
 function answerInput(key) { return [...$('dockcards').querySelectorAll('[data-answer-key]')].find(el => el.dataset.answerKey === key); }
 const answerDrafts = new Map();
 function rememberAnswers() {
-  for (const el of $('dockcards').querySelectorAll('[data-answer-key]')) answerDrafts.set(el.dataset.answerKey,{text:el.value,value:el.closest('.qq').dataset.value});
+  for (const qq of $("dockcards").querySelectorAll(".qq[data-question-key]")) {
+    const key = qq.dataset.questionKey;
+    const inputEl = qq.querySelector("[data-other]");
+    let values;
+    if (qq.dataset.multi === "1") {
+      try { values = JSON.parse(qq.dataset.values || "[]"); } catch { values = []; }
+    }
+    answerDrafts.set(key, { text: inputEl ? inputEl.value : "", value: qq.dataset.value || "", values });
+  }
   while (answerDrafts.size > 100) answerDrafts.delete(answerDrafts.keys().next().value);
 }
 let lastCards = "";
@@ -1738,47 +1823,83 @@ function renderCards() {
   let h = "";
   for (const q of m.requests || []) {
     const key = "r:" + q.id;
-    if (q.kind === "command" || q.kind === "file") {
+    const hasOptions = Array.isArray(q.options) && q.options.length > 0;
+    if (q.kind === "command" || q.kind === "file" || (q.kind !== "question" && hasOptions)) {
       const [cmd, ...why] = (q.body || "").split("\n\n");
       // A file request refers to the newest edit in the turn; show its diff.
       const edit = q.kind === "file" ? [...((S.turns[S.turns.length - 1] || {}).items || [])].reverse().find((i) => i && i.k === "file") : null;
-      const files = edit ? (edit.title || "").split("\n").filter(Boolean).map((f) => base(f.slice(2))).join(", ") : "";
-      const body = (q.kind === "command" ? `<pre>${esc(cmd)}</pre>${why.length ? `<div class="why">${esc(why.join("\n\n"))}</div>` : ""}`
-        : `${q.body ? `<div class="why">${esc(q.body)}</div>` : ""}${edit ? `<pre>${diffLines(edit.body || "")}</pre>` : ""}`) +
-        `<div class="btns"><button class="btn primary" data-req="${esc(q.id)}" data-d="accept">Approve</button><button class="btn" data-req="${esc(q.id)}" data-d="acceptForSession">Always</button><span class="grow"></span><button class="btn danger" data-req="${esc(q.id)}" data-d="decline">Decline</button></div>`;
-      h += cardHTML(key, q.kind === "command" ? "Run Command" : "Apply Changes" + (files ? " To " + files : ""), q.kind === "command" ? firstLine(cmd) : files, body);
+      const files = edit ? (edit.title || "").split("\n").filter(Boolean).map((f) => base(stepFilePath(f))).join(", ") : "";
+      const detail = q.kind === "command"
+        ? `${cmd ? `<pre>${esc(cmd)}</pre>` : ""}${why.length ? `<div class="why">${esc(why.join("\n\n"))}</div>` : ""}`
+        : q.kind === "file"
+          ? `${q.body ? `<div class="why">${esc(q.body)}</div>` : ""}${edit ? `<pre>${diffLines(edit.body || "")}</pre>` : ""}`
+          : (q.body ? `<pre>${esc(q.body)}</pre>` : "");
+      const body = detail + permissionButtonsHTML(q);
+      const defaultTitle = q.kind === "command" ? "Run Command" : q.kind === "file" ? "Apply Changes" + (files ? " To " + files : "") : "Permission Required";
+      const title = q.kind === "command" || q.kind === "file" ? (hasOptions && q.title ? q.title : defaultTitle) : (q.title || defaultTitle);
+      const sub = q.kind === "command" ? firstLine(cmd) : q.kind === "file" ? files : firstLine(q.body || title);
+      h += cardHTML(key, title, sub, body);
     } else if (q.kind === "question") {
-      const body = (q.questions || []).map((x, index) => `<section class="qq" data-q="${esc(x.id)}" aria-label="${esc(x.header || 'Question ' + (index + 1))}">${x.header ? `<div class="q-h">${esc(x.header)}</div>` : ""}<div class="q md">${md(x.question)}</div>` +
-        `<div class="opts">${(x.options || []).map((o, i) => optionHTML(o, x.descriptions?.[i], 'data-pick')).join("")}</div>` +
-        (x.other || !(x.options || []).length ? answerFieldHTML(answerKey(key,x.id),x.secret) : "") + "</section>").join("") +
+      const body = (q.questions || []).map((x, index) => {
+        const qKey = answerKey(key, x.id);
+        const options = Array.isArray(x.options) ? x.options : [];
+        const multi = !!x.multiSelect && options.length > 0;
+        const showInput = !!(x.freeText || x.other || !options.length);
+        return `<section class="qq" data-q="${esc(x.id)}" data-question-key="${esc(qKey)}"${multi ? ' data-multi="1"' : ""} aria-label="${esc(x.header || "Question " + (index + 1))}">${x.header ? `<div class="q-h">${esc(x.header)}</div>` : ""}<div class="q md">${md(x.question || "")}</div>` +
+          (options.length ? `<div class="opts">${options.map((o, i) => optionHTML(o, x.descriptions?.[i], "data-pick", multi)).join("")}</div>` : "") +
+          (showInput ? answerFieldHTML(qKey, x.secret) : "") + "</section>";
+      }).join("") +
         `<div class="btns"><button class="btn primary" data-answer="${esc(q.id)}">Send Answer</button></div>`;
-      h += cardHTML(key, "Your Input", (q.questions || [])[0]?.question || "Your Input", body);
+      h += cardHTML(key, q.title || "Your Input", (q.questions || [])[0]?.question || q.title || "Your Input", body);
     } else {
       h += cardHTML(key, q.title || "Request", "", `<div class="why">Answer This One On The Computer</div><pre>${esc(q.body || "")}</pre>`);
     }
   }
   const ask = pendingAsk();
   if (ask) {
-    const body = ask.item.asks.map((a,index) => `<section class="qq" data-async="${index}" data-title="${esc(a.title)}"><div class="q md">${md(a.title)}</div><div class="opts">${(a.options || []).map((o,i)=>optionHTML(o,a.descriptions?.[i],'data-pick')).join('')}</div>${answerFieldHTML(answerKey("a:" + ask.key,index))}</section>`).join('') + '<div class="btns"><button class="btn primary" data-async-answer="1">Send Answer</button></div>';
+    const body = ask.item.asks.map((a, index) => {
+      const qKey = answerKey("a:" + ask.key, index);
+      return `<section class="qq" data-async="${index}" data-question-key="${esc(qKey)}" data-title="${esc(a.title)}"><div class="q md">${md(a.title)}</div><div class="opts">${(a.options || []).map((o, i) => optionHTML(o, a.descriptions?.[i], "data-pick")).join("")}</div>${answerFieldHTML(qKey)}</section>`;
+    }).join("") + '<div class="btns"><button class="btn primary" data-async-answer="1">Send Answer</button></div>';
     h += cardHTML("a:" + ask.key, "Your Input", ask.item.asks[0].title, body);
   }
   // Re-rendering would wipe a half-typed answer, so skip identical markup.
   if (h === lastCards) return;
+  const place = !S.stick && feed?.getBoundingClientRect ? captureReadingPlace(feed) : null;
   rememberAnswers();
   // The recording strip has one owner even when a question card is replaced.
-  $('composer').prepend($('voice-panel'));
+  $("composer")?.prepend?.($("voice-panel"));
   lastCards = h;
   $("dockcards").innerHTML = h;
-  for (const el of $('dockcards').querySelectorAll('[data-answer-key]')) {
-    const draft = answerDrafts.get(el.dataset.answerKey);
-    const voice = store.get(voiceDraftKey(S.sid,S.id,S.provider,el.dataset.answerKey),null);
-    el.value = draft?.text ?? voice?.text ?? '';
-    if (draft?.value) {
-      const qq=el.closest('.qq'); qq.dataset.value=draft.value;
-      for (const button of qq.querySelectorAll('[data-pick]')) {const on=button.dataset.pick===draft.value;button.classList.toggle('on',on);button.setAttribute('aria-pressed',String(on));}
+  for (const qq of $("dockcards").querySelectorAll(".qq[data-question-key]")) {
+    const key = qq.dataset.questionKey;
+    const draft = answerDrafts.get(key);
+    const inputEl = qq.querySelector("[data-other]");
+    if (inputEl) {
+      const voice = store.get(voiceDraftKey(S.sid, S.id, S.provider, key), null);
+      inputEl.value = draft?.text ?? voice?.text ?? "";
+    }
+    if (qq.dataset.multi === "1" && Array.isArray(draft?.values) && draft.values.length) {
+      const chosen = new Set(draft.values);
+      qq.dataset.values = JSON.stringify(draft.values);
+      for (const button of qq.querySelectorAll("[data-pick]")) {
+        const on = chosen.has(button.dataset.pick);
+        button.classList.toggle("on", on);
+        button.setAttribute("aria-pressed", String(on));
+        button.setAttribute("aria-checked", String(on));
+      }
+    } else if (draft?.value) {
+      qq.dataset.value = draft.value;
+      for (const button of qq.querySelectorAll("[data-pick]")) {
+        const on = button.dataset.pick === draft.value;
+        button.classList.toggle("on", on);
+        button.setAttribute("aria-pressed", String(on));
+      }
     }
   }
   renderVoice();
+  if (place) restoreReadingPlace(feed, place);
+  else if (S.stick && feed) feed.scrollTop = feed.scrollHeight;
 }
 $("dockcards").addEventListener("click", async (e) => {
   const t = e.target;
@@ -1797,8 +1918,18 @@ $("dockcards").addEventListener("click", async (e) => {
   const pick = t.closest("[data-pick]");
   if (pick) {
     const qq = pick.closest(".qq");
-    for (const b of qq.querySelectorAll(".opt")) { b.classList.toggle("on", b === pick); b.setAttribute("aria-pressed", String(b === pick)); }
-    qq.dataset.value = pick.dataset.pick;
+    if (qq.dataset.multi === "1") {
+      const on = !pick.classList.contains("on");
+      pick.classList.toggle("on", on);
+      pick.setAttribute("aria-pressed", String(on));
+      pick.setAttribute("aria-checked", String(on));
+      const values = [...qq.querySelectorAll(".opt.on")].map((b) => b.dataset.pick);
+      qq.dataset.values = JSON.stringify(values);
+    } else {
+      for (const b of qq.querySelectorAll(".opt")) { b.classList.toggle("on", b === pick); b.setAttribute("aria-pressed", String(b === pick)); }
+      qq.dataset.value = pick.dataset.pick;
+    }
+    rememberAnswers();
     return;
   }
   if(t.closest('[data-async-answer]')) {
@@ -1821,7 +1952,9 @@ $("dockcards").addEventListener("click", async (e) => {
   if (dec) {
     buzz();
     card.style.opacity = 0.5;
-    const a = await conn().call({ op: "approve", id: S.id, reqId: q.id, method: q.method, decision: dec.dataset.d });
+    const payload = { op: "approve", provider: S.provider, id: S.id, reqId: q.id, method: q.method, decision: dec.dataset.d };
+    if (dec.dataset.opt) payload.optionId = dec.dataset.opt;
+    const a = await conn().call(payload);
     if (!a.ok) { card.style.opacity = 1; toast(nice(a.msg)); } else toast(dec.dataset.d === "decline" ? "Declined" : "Approved");
     return;
   }
@@ -1830,12 +1963,21 @@ $("dockcards").addEventListener("click", async (e) => {
     const answers = {};
     for (const el of card.querySelectorAll(".qq")) {
       const other = el.querySelector("[data-other]");
-      const v = (other && other.value.trim()) || el.dataset.value;
-      answers[el.dataset.q] = v ? [v] : [];
+      const typed = other ? other.value.trim() : "";
+      if (el.dataset.multi === "1") {
+        let picked = [];
+        try { picked = JSON.parse(el.dataset.values || "[]"); } catch {}
+        if (!Array.isArray(picked)) picked = [];
+        if (typed && !picked.includes(typed)) picked = [...picked, typed];
+        answers[el.dataset.q] = picked;
+      } else {
+        const v = typed || el.dataset.value;
+        answers[el.dataset.q] = v ? [v] : [];
+      }
     }
     buzz();
     card.style.opacity = 0.5;
-    const a = await conn().call({ op: "answer", id: S.id, reqId: q.id, answers });
+    const a = await conn().call({ op: "answer", provider: S.provider, id: S.id, reqId: q.id, answers });
     if (!a.ok) { card.style.opacity = 1; toast(nice(a.msg)); } else toast("Answer Sent");
   }
 });
@@ -1857,10 +1999,31 @@ const CLAUDE_PERMS = [
  {id:'acceptEdits',icon:I.edit,name:'Accept Edits',set:{permissionMode:'acceptEdits'}},
  {id:'plan',icon:I.lock,name:'Plan Mode',set:{permissionMode:'plan'}},
  {id:'auto',icon:I.shieldok,name:'Auto Review',set:{permissionMode:'auto'}},
- {id:'bypassPermissions',icon:I.rocket,name:'Full Access',set:{permissionMode:'bypassPermissions'}}
+ {id:'bypassPermissions',icon:I.rocket,name:'Full Access',set:{permissionMode:'bypassPermissions'},warn:true}
 ];
+const ANTIGRAVITY_PERMS = [
+  { id: "default", icon: I.shield, name: "Default", short: "Default", d: "Asks Before Edits And Commands", set: { permissionMode: "default" } },
+  { id: "accept-edits", icon: I.edit, name: "Accept Edits", short: "Accept Edits", d: "Approves File Edits Automatically", set: { permissionMode: "accept-edits" } },
+  { id: "auto", icon: I.shieldok, name: "Auto", short: "Auto", d: "Runs Approved Actions Automatically", set: { permissionMode: "auto" }, warn: true },
+  { id: "plan", icon: I.lock, name: "Plan", short: "Plan", d: "Plans Without Making Edits", set: { permissionMode: "plan" } },
+  { id: "full-access", icon: I.rocket, name: "Full Access", short: "Full Access", d: "Skips All Permission Prompts", set: { permissionMode: "full-access" }, warn: true, optIn: true },
+];
+function antigravityPermsFor(meta = S.meta, modelsResp = conn()?.models) {
+  const modes = Array.isArray(meta?.modes) ? meta.modes : Array.isArray(modelsResp?.modes) ? modelsResp.modes : null;
+  const modeIds = modes ? new Set(modes.map((x) => (typeof x === "string" ? x : x?.id)).filter(Boolean)) : null;
+  const allowFull = Boolean(meta?.allowFullAccess || modelsResp?.allowFullAccess || modeIds?.has("full-access") || meta?.permissionMode === "full-access");
+  return ANTIGRAVITY_PERMS.filter((p) => !p.optIn || allowFull).map((p) => {
+    const live = modes?.find((x) => x && typeof x === "object" && x.id === p.id);
+    return live?.description ? { ...p, d: live.description } : p;
+  });
+}
 function permOf(m) {
- if(S.provider==='claude')return CLAUDE_PERMS.find(p=>p.id===(m?.permissionMode||'default'))||CLAUDE_PERMS[0];
+  if (S.provider === "claude") return CLAUDE_PERMS.find((p) => p.id === (m?.permissionMode || "default")) || CLAUDE_PERMS[0];
+  if (S.provider === "antigravity") {
+    const list = antigravityPermsFor(m);
+    const mode = m?.permissionMode || "default";
+    return list.find((p) => p.id === mode) || ANTIGRAVITY_PERMS.find((p) => p.id === mode) || list[0];
+  }
   if (!m || !m.approval) return null;
   if (m.approval === "never" && m.sandbox === "dangerFullAccess") return PERMS[3];
   if (m.reviewer === "auto_review") return PERMS[1];
@@ -1868,12 +2031,113 @@ function permOf(m) {
   if (m.sandbox === "workspaceWrite") return PERMS[0];
   return { id: "custom", icon: I.gear, name: "Custom", short: "Custom", d: `${m.approval}, ${m.sandbox || "default sandbox"}` };
 }
-function shortModel(slug) { return String(slug || "").replace(/^(gpt-|claude-)/i, "").replace(/(\d+)-(\d+)(?:-\d{8})?$/, "$1.$2").replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()); }
+function shortModel(slug) {
+  const raw = String(slug || "");
+  if (/^gpt-oss\b/i.test(raw)) {
+    return raw.replace(/-/g, " ").replace(/\b(gpt|oss)\b/gi, (s) => s.toUpperCase()).replace(/\b(\d+)b\b/gi, "$1B").replace(/\b[a-z]/g, (c) => c.toUpperCase());
+  }
+  return raw.replace(/^(gpt-|claude-)/i, "").replace(/(\d+)-(\d+)(?:-\d{8})?$/, "$1.$2").replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+function modelDisplayName(slug, models = conn()?.models?.models) {
+  if (!slug) return "Model";
+  const mm = (models || []).find((x) => x.slug === slug || x.resolved === slug);
+  if (mm) return typeof sessionModelLabel === "function" ? sessionModelLabel(mm) : (mm.name || shortModel(slug));
+  return shortModel(slug);
+}
 const EFFORT_D = { minimal: "Quickest Replies", low: "Fast Replies", medium: "Balanced", high: "More Thorough", xhigh: "Deep Reasoning", max: "Maximum Reasoning", ultra: "Several Agents In Parallel" };
-function effortName(e) { return { xhigh: "Extra High", low: "Low", medium: "Medium", high: "High", max: "Max", ultra: "Ultra", minimal: "Minimal" }[e] || cap(e || ""); }
+function effortName(e) {
+  if (!e) return "Default";
+  return { xhigh: "Extra High", low: "Low", medium: "Medium", high: "High", max: "Max", ultra: "Ultra", minimal: "Minimal" }[e] || cap(e || "");
+}
 function cap(s) { return String(s).replace(/(^|[\s-])\w/g, (c) => c.toUpperCase()); }
+function providerEfforts(mm, provider = S.provider) {
+  if (provider === "antigravity") {
+    const baseEfforts = mm ? (mm.efforts || []) : ["low", "medium", "high", "xhigh"];
+    return baseEfforts.length ? ["", ...baseEfforts.filter(Boolean)] : [];
+  }
+  return mm ? (mm.efforts || []) : ["low", "medium", "high", "xhigh", "max", "ultra"];
+}
 
 const input = $("input");
+const slashState = { open: false, items: [], index: 0 };
+function slashQuery(value, caret) {
+  const text = String(value || "");
+  const pos = typeof caret === "number" ? Math.max(0, Math.min(text.length, caret)) : text.length;
+  if (!text.startsWith("/")) return null;
+  const prefix = text.slice(0, pos);
+  if (/\s/.test(prefix)) return null;
+  return prefix.slice(1).toLowerCase();
+}
+function filterSlashCommands(commands, query) {
+  if (!Array.isArray(commands) || !commands.length || query == null) return [];
+  const q = String(query).toLowerCase();
+  const starts = [], contains = [];
+  for (const cmd of commands) {
+    if (!cmd || !cmd.name) continue;
+    const name = String(cmd.name).replace(/^\/+/, "");
+    const low = name.toLowerCase(), desc = String(cmd.description || "").toLowerCase();
+    if (!q || low.startsWith(q)) starts.push({ ...cmd, name });
+    else if (low.includes(q) || desc.includes(q)) contains.push({ ...cmd, name });
+  }
+  return [...starts, ...contains].slice(0, 20);
+}
+function applySlashCommand(value, caret, name) {
+  const text = String(value || "");
+  const pos = typeof caret === "number" ? Math.max(0, Math.min(text.length, caret)) : text.length;
+  const tokenEnd = (() => {
+    const rest = text.slice(pos).match(/^\S*/);
+    return pos + (rest ? rest[0].length : 0);
+  })();
+  const clean = String(name || "").replace(/^\/+/, "");
+  const after = text.slice(tokenEnd);
+  const inserted = "/" + clean + (after.startsWith(" ") ? "" : " ");
+  return { value: inserted + after, caret: ("/" + clean + " ").length };
+}
+function closeSlashMenu() {
+  slashState.open = false; slashState.items = []; slashState.index = 0;
+  const menu = $("slash-menu");
+  if (menu) { menu.classList.add("hidden"); menu.innerHTML = ""; }
+  input?.setAttribute?.("aria-expanded", "false");
+  input?.removeAttribute?.("aria-activedescendant");
+}
+function paintSlashActive() {
+  const menu = $("slash-menu");
+  if (!menu) return;
+  const buttons = [...menu.querySelectorAll("[data-slash-cmd]")];
+  buttons.forEach((b, i) => {
+    const on = i === slashState.index;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", String(on));
+  });
+  const active = buttons[slashState.index];
+  if (active) {
+    input?.setAttribute?.("aria-activedescendant", active.id);
+    active.scrollIntoView?.({ block: "nearest" });
+  }
+}
+function renderSlashMenu() {
+  const menu = $("slash-menu");
+  if (!menu || S.sheet || voiceState?.phase !== "idle") { closeSlashMenu(); return; }
+  const q = slashQuery(input.value, input.selectionStart);
+  const items = filterSlashCommands(S.meta?.commands, q);
+  if (!items.length) { closeSlashMenu(); return; }
+  slashState.open = true;
+  slashState.items = items;
+  if (slashState.index >= items.length) slashState.index = 0;
+  menu.innerHTML = items.map((cmd, i) => `<button type="button" role="option" id="slash-opt-${i}" class="slash-item${i === slashState.index ? " active" : ""}" aria-selected="${i === slashState.index}" data-slash-cmd="${esc(cmd.name)}"><span class="slash-item-head"><span class="slash-name">/${esc(cmd.name)}</span>${cmd.inputHint ? `<span class="slash-hint">${esc(cmd.inputHint)}</span>` : ""}</span>${cmd.description ? `<span class="slash-desc">${esc(cmd.description)}</span>` : ""}</button>`).join("");
+  menu.classList.remove("hidden");
+  input?.setAttribute?.("aria-controls", "slash-menu");
+  input?.setAttribute?.("aria-expanded", "true");
+  paintSlashActive();
+}
+function pickSlashCommand(name) {
+  const next = applySlashCommand(input.value, input.selectionStart, name);
+  input.value = next.value;
+  input.focus?.({ preventScroll: true });
+  input.setSelectionRange?.(next.caret, next.caret);
+  autosize();
+  closeSlashMenu();
+}
 function renderComposer() {
   const m = S.meta || {};
   const running = !!m.running;
@@ -1881,27 +2145,44 @@ function renderComposer() {
   $("stop").classList.toggle("hidden", !running);
   const sendBtn = $("send");
   sendBtn.classList.toggle("steer", running && !m.exec);
-  sendBtn.setAttribute("aria-label", running ? (m.exec || S.provider==='claude' ? "Queue" : "Steer") : "Send");
-  input.placeholder = running ? (m.exec || S.provider==='claude' ? 'Queue a Follow-Up' : 'Steer') : (S.provider==='claude' ? "Message Claude" : "Message Codex");
+  sendBtn.setAttribute("aria-label", running ? (m.exec || S.provider === "claude" ? "Queue" : "Steer") : "Send");
+  input.placeholder = running ? (m.exec || S.provider === "claude" ? "Queue A Follow-Up" : "Steer") : "Message " + providerShortName(S.provider);
   const p = permOf(m);
   const pc = $("perm-chip");
   pc.innerHTML = p ? p.icon : I.shield;
-  pc.className = "tool-chip icon" + (p && (p.id === "full" || p.id === "bypassPermissions") ? " warn" : "");
-  pc.setAttribute("aria-label", "Permissions: " + (p ? p.name : "Unknown"));
-  $("model-chip").innerHTML = `<b>${m.model ? esc(shortModel(m.model)) : "Model"}</b>${I.down}`;
-  const mm = ((conn() && conn().models && conn().models.models) || []).find((x) => x.slug === m.model || x.resolved === m.model);
-  const efforts = mm ? mm.efforts || [] : ["low", "medium", "high", "xhigh", "max", "ultra"];
-  const lvl = Math.max(0, efforts.indexOf(m.effort));
+  pc.className = "tool-chip icon" + (p && (p.warn || p.id === "full" || p.id === "bypassPermissions") ? " warn" : "");
+  pc.setAttribute("aria-label", (S.provider === "antigravity" ? "Execution Mode: " : "Permissions: ") + (p ? p.name : "Unknown"));
+  const models = conn()?.models?.models || [];
+  const mm = models.find((x) => x.slug === m.model || x.resolved === m.model);
+  const modelText = m.model ? modelDisplayName(m.model, models) : "Model";
+  const mc = $("model-chip");
+  mc.innerHTML = `<b>${esc(modelText)}</b>${I.down}`;
+  mc.title = modelText;
+  const efforts = providerEfforts(mm, S.provider);
+  const effortVal = S.provider === "antigravity" ? (m.effort || "") : m.effort;
+  const lvl = Math.max(0, efforts.indexOf(effortVal));
   $("effort-btn").innerHTML = gauge(efforts.length > 1 ? lvl / (efforts.length - 1) : 1);
-  $("effort-btn").setAttribute("aria-label", "Intelligence: " + (m.effort ? effortName(m.effort) : "Unknown"));
+  $("effort-btn").setAttribute("aria-label", "Intelligence: " + (m.effort ? effortName(m.effort) : S.provider === "antigravity" ? "Default" : "Unknown"));
   if (!mm && conn() && !conn().models) conn().send({ op: "models" });
 }
 function autosize() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, innerHeight * 0.38) + "px"; }
-input.addEventListener("input", autosize);
+input.addEventListener("input", () => { autosize(); renderSlashMenu(); });
+input.addEventListener("blur", () => closeSlashMenu());
 input.addEventListener("keydown", (e) => {
+  if (slashState.open && slashState.items.length) {
+    if (e.key === "ArrowDown") { e.preventDefault(); slashState.index = (slashState.index + 1) % slashState.items.length; paintSlashActive(); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); slashState.index = (slashState.index - 1 + slashState.items.length) % slashState.items.length; paintSlashActive(); return; }
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeSlashMenu(); return; }
+    if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") { e.preventDefault(); pickSlashCommand(slashState.items[slashState.index].name); return; }
+  }
   if (e.key === "Enter" && !e.shiftKey && matchMedia("(pointer: fine)").matches) { e.preventDefault(); $("composer").requestSubmit(); }
 });
-$("composer").addEventListener("submit", (e) => { e.preventDefault(); if (voiceState.phase === "idle") sendText(input.value.trim()); });
+$("slash-menu")?.addEventListener("mousedown", (e) => { if (e.target.closest("[data-slash-cmd]")) e.preventDefault(); });
+$("slash-menu")?.addEventListener("click", (e) => {
+  const item = e.target.closest("[data-slash-cmd]");
+  if (item) pickSlashCommand(item.dataset.slashCmd);
+});
+$("composer").addEventListener("submit", (e) => { e.preventDefault(); closeSlashMenu(); if (voiceState.phase === "idle") sendText(input.value.trim()); });
 $("perm-chip").onclick = () => openSheet("perms");
 $("model-chip").onclick = () => openSheet("model");
 $("effort-btn").onclick = () => openSheet("effort");
@@ -2188,7 +2469,7 @@ $("stop").onclick = async () => {
 // applySettings changes thread settings right away, like the desktop menus.
 async function applySettings(ch, label) {
   const m = S.meta || {};
-  if (m.mode !== "live") toast("Opening On Computer");
+  if (m.mode !== "live") toast(S.provider === "codex" ? "Opening On Computer" : "Updating Session");
   const a = await conn().call({ op: "settings", id: S.id, ...ch }, 30000);
   toast(a.ok ? label : nice(a.msg));
 }
@@ -2393,7 +2674,7 @@ function requestDiff(key, source = null) {
 }
 function showDiff(m) {
   if (S.sheet !== "diff") return;
-  const text = m.diff || "";
+  const text = m.diff || m.text || "";
   const cwd = S.diffSource?.cwd || (S.meta && S.meta.cwd) || "";
   const files = [];
   let h = "";
@@ -2423,6 +2704,7 @@ function showDiff(m) {
 
 let sheetGeneration = 0;
 function openSheet(name, opts = {}) {
+  if (typeof closeSlashMenu === "function") closeSlashMenu();
   if(!S.sheet && S.view==='thread' && S.id) {
     S.sheetReading={server:S.sid,id:S.id,provider:S.provider,follow:S.stick};
     S.stick=false;
@@ -2539,8 +2821,20 @@ const SHEETS = {
   };
  },
  providers(sh) {
- sh.innerHTML='<div class="grip"></div><h2>Choose Agent</h2>'+['codex','claude'].map(provider=>mi(provider,'',provider==='claude'?'Claude Code':'Codex','',S.provider===provider?I.check:'')).join('');
- sh.onclick=(event)=>{const button=event.target.closest('[data-act]');if(!button)return;closeSheet(true);selectProvider(button.dataset.act,false);history.replaceState({view:'home',provider:S.provider},'');};
+  const draw = () => {
+    const list = availableProviders();
+    sh.innerHTML = '<div class="grip"></div><h2>Choose Agent</h2>' +
+      list.map((provider) => mi(provider, providerLogoSVG(provider), providerName(provider), providerSupported(provider) ? "" : "Unavailable On Connected Computers", S.provider === provider ? I.check : "")).join("");
+  };
+  S.redraw = draw;
+  draw();
+  sh.onclick = (event) => {
+    const button = event.target.closest("[data-act]");
+    if (!button) return;
+    closeSheet(true);
+    selectProvider(button.dataset.act, false);
+    history.replaceState({ view: "home", provider: S.provider }, "");
+  };
  },
   image(sh, { src, path, server }) {
     sh.innerHTML = `<header class="diff-head"><button class="icon-btn" data-x="close" aria-label="Back">${I.chev}</button><h2>Image</h2><button class="icon-btn" data-x="download" aria-label="Download Image">${I.download}</button></header><div class="image-stage"><img src="${esc(src)}" alt="Image" draggable="false" referrerpolicy="no-referrer"></div><div class="image-zoom"><button class="icon-btn" data-x="minus" aria-label="Zoom Out">${I.minus}</button><button class="chip" data-x="fit">Fit</button><button class="icon-btn" data-x="plus" aria-label="Zoom In">${I.plus}</button></div>`;
@@ -2586,21 +2880,21 @@ const SHEETS = {
     };
   },
   context(sh) {
-    const m = S.meta || {}, known = m.ctxMax > 0 && m.ctxUsed != null;
+    const m = S.meta || {}, { used, max, known } = contextMetrics(m);
     const last = S.turns[S.turns.length - 1];
     sh.innerHTML = '<div class="grip"></div><h2>Context And Activity</h2>' +
-      `<div class="mi"><span class="txt">Context Used<span class="d">${known ? `${Math.round(m.ctxUsed / m.ctxMax * 100)}% (${m.ctxUsed.toLocaleString()} of ${m.ctxMax.toLocaleString()} Tokens)` : "Unavailable"}</span></span></div>` +
+      `<div class="mi"><span class="txt">Context Used<span class="d">${known ? `${Math.round(used / max * 100)}% (${used.toLocaleString()} of ${max.toLocaleString()} Tokens)` : "Unavailable"}</span></span></div>` +
       `<div class="mi"><span class="txt">${m.running ? "Running" : "Last Turn"}<span class="d">${m.running && m.turnAt ? `<span data-since="${m.turnAt}">${dur(Date.now() - m.turnAt)}</span>` : last?.durationMs ? dur(last.durationMs) : "No Duration Available"}</span></span></div>` + '<section id="context-weekly" class="context-weekly" aria-label="Weekly Usage"></section>';
     showContextWeekly(sh, S.sid, S.provider);
   },
   menu(sh) {
-    const m = S.meta || {};
+    const m = S.meta || {}, { used, max, known } = contextMetrics(m);
     const t = findThread(S.sid, S.id);
     sh.innerHTML = `<div class="grip"></div>` +
-      (!m.readOnly ? mi('rename',I.edit,'Rename chat')+mi('fork',I.copy,'Fork chat') : '')+
+      (!m.readOnly ? mi("rename", I.edit, "Rename Chat") + mi("fork", I.copy, "Fork Chat") : "") +
       mi("diff", I.diff, "View Latest Changes") +
-      mi("compact", I.squash, "Compact Context", m.ctxMax ? `${Math.round((m.ctxUsed || 0) / m.ctxMax * 100)}% Used` : "") +
-      (m.mode !== "live" ? mi("wake", I.mac, S.provider==='claude' ? (m.mode==='external'?'Take Over':'Resume') : "Open On Computer") : "") +
+      mi("compact", I.squash, "Compact Context", known ? `${Math.round((used || 0) / max * 100)}% Used` : "") +
+      (m.mode !== "live" ? mi("wake", I.mac, wakeActionLabel(m, S.provider)) : "") +
       mi("copy", I.copy, "Copy Thread ID") +
       (Native ? mi("share", I.share, "Share Last Reply") : "") +
       mi("archive", I.box, t ? "Archive Thread" : "Unarchive Thread", "", "", "danger");
@@ -2610,20 +2904,20 @@ const SHEETS = {
       const act = b.dataset.act, c = conn();
       if(act==='rename'){openSheet('rename');return;}
       if(act==='fork'){
-        if(voiceState.phase!=='idle'){toast('Finish recording before opening a fork');return;}
+        if(voiceState.phase!=='idle'){toast('Finish Recording Before Opening A Fork');return;}
         const source={server:S.sid,id:S.id,provider:S.provider};
-        b.disabled=true;b.innerHTML=loadingHTML('Creating fork');
+        b.disabled=true;b.innerHTML=loadingHTML('Creating Fork');
         const result=await c.call({op:'fork',id:source.id,provider:source.provider},90000);
-        if(!result.ok){if(b.isConnected){b.disabled=false;b.innerHTML=`${I.copy}<span class="txt">Fork chat</span>`;}toast(nice(result.msg));return;}
+        if(!result.ok){if(b.isConnected){b.disabled=false;b.innerHTML=`${I.copy}<span class="txt">Fork Chat</span>`;}toast(nice(result.msg));return;}
         c.send({op:'threads',provider:source.provider});
         const open=()=>{
-          if(voiceState.phase!=='idle'){toast('Finish recording before opening this chat');return;}
+          if(voiceState.phase!=='idle'){toast('Finish Recording Before Opening This Chat');return;}
           const reuse=!!S.sheet;if(reuse)closeSheet(true);
           if(S.provider!==source.provider)selectProvider(source.provider,false);
           if(reuse)history.replaceState({view:'thread',sid:source.server,id:result.thread,provider:source.provider},'');
           openThread(source.server,result.thread,!reuse);
         };
-        if(S.sheet==='menu' && S.id===source.id && S.sid===source.server && S.provider===source.provider)open();else toast('Fork created',open);
+        if(S.sheet==='menu' && S.id===source.id && S.sid===source.server && S.provider===source.provider)open();else toast('Fork Created',open);
         return;
       }
       if (act === "diff") { openSheet("diff", {}); c.send({ op: "diff", id: S.id, key: "" }); return; }
@@ -2633,7 +2927,7 @@ const SHEETS = {
         const last = [...S.turns].reverse().flatMap((t) => [...(t.items || [])].reverse()).find((i) => i && i.k === "assistant" && i.text);
         if (last) try { Native.share(last.text); } catch {}
       }
-      if (act === "wake") { toast("Opening On Computer"); const a = await c.call({ op: "wake", id: S.id }, 20000); if (!a.ok) toast(nice(a.msg)); }
+      if (act === "wake") { toast(S.provider === "antigravity" ? "Resuming In Antigravity" : S.provider === "claude" ? "Resuming Chat" : "Opening On Computer"); const a = await c.call({ op: "wake", id: S.id }, 20000); if (!a.ok) toast(nice(a.msg)); }
       if (act === "compact") { const a = await c.call({ op: "compact", id: S.id }, 60000); toast(a.ok ? "Compacting" : nice(a.msg)); }
       if (act === "archive") {
         const op = t ? "archive" : "unarchive", id = S.id;
@@ -2649,12 +2943,12 @@ const SHEETS = {
     const source={server:S.sid,id:S.id,provider:S.provider};
     const t=findThread(source.server,source.id) || {};
     const title=t.displayTitle || S.meta?.title || t.title || '';
-    sh.innerHTML=`<div class="grip"></div><h2>Rename chat</h2><div class="field"><label for="chat-title">Title</label><input id="chat-title" value="${esc(title)}" autocomplete="off"></div><p class="rename-error" role="status"></p><div class="sheet-actions"><button class="btn" data-rename-cancel>Cancel</button><span class="grow"></span><button class="btn primary" data-rename-save>Save</button></div>`;
+    sh.innerHTML=`<div class="grip"></div><h2>Rename Chat</h2><div class="field"><label for="chat-title">Title</label><input id="chat-title" value="${esc(title)}" autocomplete="off"></div><p class="rename-error" role="status"></p><div class="sheet-actions"><button class="btn" data-rename-cancel>Cancel</button><span class="grow"></span><button class="btn primary" data-rename-save>Save</button></div>`;
     const field=sh.querySelector('input'),save=sh.querySelector('[data-rename-save]');
     const submit=async()=>{
       const name=field.value.trim();if(!name){field.focus();return;}
       save.disabled=true;save.innerHTML=loadingHTML('Saving');
-      const c=conns.get(source.server),result=c ? await c.call({op:'rename',id:source.id,provider:source.provider,text:name},70000) : {ok:false,msg:'This computer is no longer paired'};
+      const c=conns.get(source.server),result=c ? await c.call({op:'rename',id:source.id,provider:source.provider,text:name},70000) : {ok:false,msg:'This Computer Is No Longer Paired'};
       if(S.sheet!=='rename' || S.sid!==source.server || S.id!==source.id || S.provider!==source.provider)return;
       save.disabled=false;save.textContent='Save';
       if(!result.ok){sh.querySelector('.rename-error').textContent=nice(result.msg);return;}
@@ -2667,15 +2961,17 @@ const SHEETS = {
 
   perms(sh) {
     const cur = permOf(S.meta);
-    sh.innerHTML = `<div class="grip"></div><h2>Permissions</h2>` +
-      (S.provider==='claude'?CLAUDE_PERMS:PERMS).map((p) => mi(p.id, p.icon, p.name, p.d, cur && cur.id === p.id ? I.check : "", p.id === "full" ? "warn" : "")).join("") +
+    const list = S.provider === "claude" ? CLAUDE_PERMS : S.provider === "antigravity" ? antigravityPermsFor(S.meta) : PERMS;
+    const title = S.provider === "antigravity" ? "Execution Mode" : "Permissions";
+    sh.innerHTML = `<div class="grip"></div><h2>${title}</h2>` +
+      list.map((p) => mi(p.id, p.icon, p.name, p.d, cur && cur.id === p.id ? I.check : "", p.warn || p.id === "full" || p.id === "bypassPermissions" ? "warn" : "")).join("") +
       (cur && cur.id === "custom" ? mi("custom", I.gear, "Custom", esc(cur.d), I.check) : "");
     sh.onclick = (e) => {
       const b = e.target.closest("[data-act]");
       if (!b) return;
-      const p = (S.provider==='claude'?CLAUDE_PERMS:PERMS).find((x) => x.id === b.dataset.act);
+      const p = list.find((x) => x.id === b.dataset.act);
       closeSheet();
-      if (p && (!cur || cur.id !== p.id)) applySettings(p.set, "Permissions: " + p.name);
+      if (p && (!cur || cur.id !== p.id)) applySettings(p.set, `${title}: ${p.name}`);
     };
   },
 
@@ -2685,7 +2981,7 @@ const SHEETS = {
       const models = (conn().models && conn().models.models) || [];
       const selected=models.find(x=>x.slug===m.model) || models.find(x=>x.slug!=='default'&&x.resolved===m.model) || models.find(x=>x.resolved===m.model);
       sh.innerHTML = `<div class="grip"></div><h2>Model</h2>` +
-        (models.length ? models.map((x) => mi("m:" + x.slug, "", esc(sessionModelLabel(x)), esc(x.description || ""), x===selected ? I.check : "")).join("") : conn().models?.error ? `<p class="hint">Could not load models.</p><button class="btn" data-model-retry>Try again</button>` : `<p class="hint">${loadingHTML("Loading Models")}</p>`);
+        (models.length ? models.map((x) => mi("m:" + x.slug, "", esc(typeof sessionModelLabel === "function" ? sessionModelLabel(x) : (x.name || shortModel(x.slug))), esc(x.description || ""), x===selected ? I.check : "")).join("") : conn().models?.error ? `<p class="hint">Could not load models.</p><button class="btn" data-model-retry>Try Again</button>` : `<p class="hint">${loadingHTML("Loading Models")}</p>`);
     };
     S.redraw = draw;
     conn().send({ op: "models" });
@@ -2702,7 +2998,7 @@ const SHEETS = {
       const ch = { model: slug };
       // Keep the intelligence level when the new model supports it.
       if (mm && m.effort && !(mm.efforts || []).includes(m.effort)) ch.effort = mm.defaultEffort;
-      applySettings(ch, "Model: " + (mm ? mm.name : shortModel(slug)));
+      applySettings(ch, "Model: " + (mm ? (typeof sessionModelLabel === "function" ? sessionModelLabel(mm) : mm.name) : shortModel(slug)));
     };
   },
 
@@ -2711,9 +3007,10 @@ const SHEETS = {
   effort(sh) {
     const m = S.meta || {};
     const mm = ((conn().models && conn().models.models) || []).find((x) => x.slug === m.model || x.resolved === m.model);
-    const efforts = mm ? mm.efforts : ["low", "medium", "high", "xhigh"];
+    const efforts = S.provider === "antigravity" ? providerEfforts(mm, "antigravity") : (mm ? mm.efforts : ["low", "medium", "high", "xhigh"]);
     if(!efforts?.length){sh.innerHTML='<div class="grip"></div><h2>Intelligence</h2><p class="hint">Set automatically for this model.</p>';return;}
-    let idx = Math.max(0, efforts.indexOf(m.effort));
+    const currentEffort = S.provider === "antigravity" ? (m.effort || "") : m.effort;
+    let idx = Math.max(0, efforts.indexOf(currentEffort));
     const start = idx;
     sh.innerHTML = `<div class="eo-label"><b id="eo-level"></b> Intelligence</div>` +
       `<div class="eo-track" id="eo-track" role="slider" aria-label="Intelligence" aria-valuemin="0" aria-valuemax="${efforts.length - 1}" tabindex="0">` +
@@ -2898,7 +3195,7 @@ window.onAndroidIntent = function () {
     // Reuse an open sheet's history entry; going back first would race the push.
     const reuse = !!S.sheet;
     if (reuse) closeSheet(true);
-    if (reuse) { history.replaceState({ view: "thread", sid: it.server, id: it.thread }, ""); openThread(it.server, it.thread, false); }
+    if (reuse) { history.replaceState({ view: "thread", sid: it.server, id: it.thread, provider: it.provider || "codex" }, ""); openThread(it.server, it.thread, false); }
     else openThread(it.server, it.thread, true);
   }
 };
