@@ -76,7 +76,7 @@ test("HTML, CSS, service worker, and guardrails support 3-provider Antigravity l
   assert.match(htmlSource, /data-provider="antigravity"/);
   assert.match(htmlSource, /id="slash-menu"/);
   assert.match(htmlSource, /Usage And Limits/);
-  assert.match(swSource, /const CACHE = "fastcontrol-v22";/);
+  assert.match(swSource, /const CACHE = "fastcontrol-v23";/);
   assert.match(cssSource, /\.slash-menu\s*\{\s*position:\s*absolute;/);
   assert.match(cssSource, /\.usage-providers\s*\{\s*display:\s*grid;\s*grid-template-columns:\s*minmax\(0,\s*1fr\);/);
   assert.match(cssSource, /grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/);

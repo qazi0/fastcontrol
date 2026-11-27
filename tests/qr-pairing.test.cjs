@@ -237,3 +237,35 @@ test("onQrScanResult handles cancel silently and toasts permission errors", () =
   assert.equal(h.toasts.length, 1);
   assert.match(h.toasts[0], /Allow Camera Access/);
 });
+
+test("onQrScanResult updates existing computer in place instead of adding duplicates", () => {
+  const h = loadAppHarness({ withScanner: true });
+  const pin = "b".repeat(64);
+  // First add manually via Tailscale HTTP URL with a custom name.
+  h.context.addServer({
+    url: "http://100.64.0.9:8787",
+    token: "0123456789abcdef0123456789abcdef",
+    name: "Work Laptop",
+    custom: true,
+    alts: [],
+  });
+  assert.equal(h.getSavedServers().length, 1);
+
+  // Now scan the LAN-first TLS QR whose alts include the same Tailscale IP.
+  h.context.onQrScanResult({
+    ok: true,
+    url: "https://192.168.1.50:8787",
+    token: "0123456789abcdef0123456789abcdef",
+    name: "DESKTOP-XYZ",
+    pin,
+    alts: ["https://100.64.0.9:8787"],
+  });
+
+  const servers = h.getSavedServers();
+  assert.equal(servers.length, 1);
+  assert.equal(servers[0].url, "https://192.168.1.50:8787");
+  assert.equal(servers[0].pin, pin);
+  assert.equal(servers[0].name, "Work Laptop");
+  assert.deepEqual(servers[0].alts, ["https://100.64.0.9:8787"]);
+  assert.ok(h.toasts.some((m) => m.includes("Updated Work Laptop")));
+});
