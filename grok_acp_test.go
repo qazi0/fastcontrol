@@ -224,8 +224,8 @@ func TestGrokBinaryCandidates(t *testing.T) {
 	}
 	if !strings.HasSuffix(mac[0], filepath.Join(".local", "bin", "grok")) ||
 		!strings.HasSuffix(mac[1], filepath.Join(".grok", "bin", "grok")) ||
-		mac[2] != "/opt/homebrew/bin/grok" ||
-		mac[3] != "/usr/local/bin/grok" {
+		filepath.ToSlash(mac[2]) != "/opt/homebrew/bin/grok" ||
+		filepath.ToSlash(mac[3]) != "/usr/local/bin/grok" {
 		t.Fatalf("unexpected darwin candidates: %v", mac)
 	}
 
