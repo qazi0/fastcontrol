@@ -101,7 +101,7 @@ func (m *ClaudeManager) workEntries(parent string) ([]claudeWorkEntry, error) {
 	run := m.runs[root]
 	m.mu.Unlock()
 	// Background workers continue while their owning session is idle.
-	parentRunning := active.ID != "" || active.State != ""
+	parentRunning := active.present()
 	if run != nil {
 		run.mu.Lock()
 		parentRunning = run.alive

@@ -72,6 +72,39 @@ func (m *ClaudeManager) discoverModels() error {
 	}
 	return errors.New("Could Not Read Claude Models")
 }
+func (m *ClaudeManager) stopExternal(ctx context.Context, active claudeActive) error {
+	if !active.present() {
+		return errors.New("Claude Is Not Running")
+	}
+	if m.stopExternalFn != nil {
+		return m.stopExternalFn(ctx, active)
+	}
+	if bgID := active.backgroundID(); bgID != "" {
+		if m.bin == "" {
+			return errors.New("Could Not Stop The Existing Claude Process")
+		}
+		return exec.CommandContext(ctx, m.bin, "stop", bgID).Run()
+	}
+	if active.PID > 0 {
+		if !m.isPIDAlive(active.PID) {
+			return nil
+		}
+		if err := signalExternalPID(active.PID); err != nil {
+			return err
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for m.isPIDAlive(active.PID) && time.Now().Before(deadline) {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+		return nil
+	}
+	return errors.New("Could Not Stop The Existing Claude Process")
+}
+
 func (m *ClaudeManager) getRun(id string, takeover bool) (*ClaudeRun, error) {
 	m.refreshActive()
 	m.mu.Lock()
@@ -85,20 +118,20 @@ func (m *ClaudeManager) getRun(id string, takeover bool) (*ClaudeRun, error) {
 	if !ok {
 		return nil, errors.New("Claude Session Not Found")
 	}
-	if active.ID != "" {
+	if active.present() {
 		if !takeover {
 			return nil, errors.New("This Session Is Managed On The Mac. Use Take Over First")
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := exec.CommandContext(ctx, m.bin, "stop", active.ID).Run(); err != nil {
+		if err := m.stopExternal(ctx, active); err != nil {
 			return nil, errors.New("Could Not Stop The Existing Claude Process")
 		}
 		m.refreshActive()
 		m.mu.Lock()
-		_, stillActive := m.active[id]
+		nextActive := m.active[id]
 		m.mu.Unlock()
-		if stillActive {
+		if nextActive.present() {
 			return nil, errors.New("Claude Is Still Stopping. Try Again")
 		}
 	}
@@ -234,10 +267,14 @@ func (m *ClaudeManager) handle(c *Client, raw []byte) {
 				run.mu.Unlock()
 				run.sendMu.Unlock()
 				_, err = run.control(map[string]any{"subtype": "interrupt"}, 10*time.Second)
-			} else if active.ID != "" {
+			} else if active.present() {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
-				err = exec.CommandContext(ctx, m.bin, "stop", active.ID).Run()
+				err = m.stopExternal(ctx, active)
+				if err == nil {
+					m.refreshActive()
+					m.requestRefresh()
+				}
 			} else {
 				err = errors.New("Claude Is Not Running")
 			}
@@ -362,7 +399,7 @@ func (m *ClaudeManager) handle(c *Client, raw []byte) {
 			run := m.runs[id]
 			active := m.active[id]
 			m.mu.Unlock()
-			if active.ID != "" {
+			if run == nil && active.present() {
 				ack(errors.New("Stop This Session Before Archiving"), nil)
 				return
 			}
