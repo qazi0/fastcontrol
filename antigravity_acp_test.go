@@ -1261,3 +1261,240 @@ func TestACPLiveReadOnlyInitializeAndList(t *testing.T) {
 		}
 	}
 }
+
+func TestWindowsPathExpansionBatchQuotingAndAgyDiscovery(t *testing.T) {
+	// 1. %VAR% expansion and deduplication in semicolon-delimited Windows Registry PATH.
+	envMap := map[string]string{
+		"USERPROFILE":  `C:\Users\Alice Smith`,
+		"LOCALAPPDATA": `C:\Users\Alice Smith\AppData\Local`,
+		"APPDATA":      `C:\Users\Alice Smith\AppData\Roaming`,
+	}
+	lookup := func(k string) string { return envMap[k] }
+	rawPath := `%USERPROFILE%\.local\bin; "%LOCALAPPDATA%\Programs\Antigravity\bin" ; %APPDATA%\npm ; c:\users\alice smith\.local\bin ; %UNKNOWN_TOKEN%\bin`
+	dirs := splitWindowsPathList(rawPath, lookup)
+	wantDirs := []string{
+		`C:\Users\Alice Smith\.local\bin`,
+		`C:\Users\Alice Smith\AppData\Local\Programs\Antigravity\bin`,
+		`C:\Users\Alice Smith\AppData\Roaming\npm`,
+		`%UNKNOWN_TOKEN%\bin`,
+	}
+	if len(dirs) != len(wantDirs) {
+		t.Fatalf("unexpected expanded PATH dirs: got %v, want %v", dirs, wantDirs)
+	}
+	for i := range wantDirs {
+		if dirs[i] != wantDirs[i] {
+			t.Fatalf("dir[%d]=%q, want %q", i, dirs[i], wantDirs[i])
+		}
+	}
+
+	// 2. mergeWindowsPathEnv merges missing live Registry PATH dirs case-insensitively.
+	baseEnv := []string{`SystemRoot=C:\Windows`, `Path=C:\Windows\System32;C:\Users\Alice Smith\.local\bin`}
+	mergedEnv := mergeWindowsPathEnv(baseEnv, []string{
+		`c:\users\alice smith\.local\bin`,
+		`C:\Users\Alice Smith\AppData\Local\Programs\Antigravity\bin`,
+	})
+	var gotMergedPath string
+	for _, e := range mergedEnv {
+		if strings.HasPrefix(e, "Path=") {
+			gotMergedPath = strings.TrimPrefix(e, "Path=")
+		}
+	}
+	if !strings.Contains(gotMergedPath, `C:\Users\Alice Smith\AppData\Local\Programs\Antigravity\bin`) ||
+		strings.Count(strings.ToLower(gotMergedPath), strings.ToLower(`C:\Users\Alice Smith\.local\bin`)) != 1 {
+		t.Fatalf("unexpected merged PATH env: %q", gotMergedPath)
+	}
+
+	// 3. Full Windows candidate path enumeration (including WinGet Packages scan and live Registry PATH).
+	tmpLocal := t.TempDir()
+	wingetBinDir := filepath.Join(tmpLocal, "Microsoft", "WinGet", "Packages", "Google.Antigravity_1.5.18", "bin")
+	if err := os.MkdirAll(wingetBinDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	winCands := agyBinaryCandidatesForEnv(cliDiscoveryEnv{
+		goos:            "windows",
+		home:            `C:\Users\Alice`,
+		localAppData:    tmpLocal,
+		appData:         `C:\Users\Alice\AppData\Roaming`,
+		programFiles:    `C:\Program Files`,
+		programFilesX86: `C:\Program Files (x86)`,
+		livePathDirs:    []string{`D:\CustomTools\agy`},
+		envOverrides:    []string{`E:\Override\agy.exe`},
+	})
+	mustContainSuffix := []string{
+		`E:\Override\agy.exe`,
+		filepath.Join(".local", "bin", "agy.exe"),
+		filepath.Join(".antigravity", "bin", "agy.exe"),
+		filepath.Join(".gemini", "antigravity", "bin", "agy.exe"),
+		filepath.Join(".gemini", "antigravity-cli", "bin", "agy.exe"),
+		filepath.Join(`D:\CustomTools\agy`, "agy.cmd"),
+		filepath.Join("Programs", "Antigravity", "bin", "agy.cmd"),
+		filepath.Join("Programs", "Antigravity", "agy.exe"),
+		filepath.Join("Programs", "Antigravity IDE", "bin", "agy.cmd"),
+		filepath.Join("Antigravity", "bin", "agy.exe"),
+		filepath.Join("antigravity-cli", "bin", "agy.exe"),
+		filepath.Join("Microsoft", "WinGet", "Links", "agy.exe"),
+		filepath.Join("Google.Antigravity_1.5.18", "bin", "agy.exe"),
+		filepath.Join("npm", "agy.cmd"),
+		filepath.Join("scoop", "shims", "agy.exe"),
+		filepath.Join("Antigravity", "bin", "agy.cmd"),
+	}
+	joinedWin := strings.Join(winCands, "\n")
+	for _, want := range mustContainSuffix {
+		if !strings.Contains(joinedWin, want) {
+			t.Fatalf("expected Windows candidates to include %q; got:\n%s", want, joinedWin)
+		}
+	}
+
+	// 4. Windows executable check accepts .exe/.cmd/.bat and rejects extensionless POSIX shim.
+	tmpBin := t.TempDir()
+	for _, name := range []string{"agy", "agy.exe", "agy.cmd", "agy.bat"} {
+		if err := os.WriteFile(filepath.Join(tmpBin, name), []byte("stub"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if isCLIExecutableForOS(filepath.Join(tmpBin, "agy"), "windows") {
+		t.Fatalf("extensionless POSIX script must not be treated as Windows executable")
+	}
+	for _, ext := range []string{"agy.exe", "agy.cmd", "agy.bat"} {
+		if !isCLIExecutableForOS(filepath.Join(tmpBin, ext), "windows") {
+			t.Fatalf("expected %s to be accepted on windows", ext)
+		}
+	}
+
+	// 5. Windows .cmd/.bat command-line quoting handles spaces, trailing slashes, %, and rejects injection.
+	cmdLine, err := buildWindowsBatchCmdLine(
+		`C:\Windows\System32\cmd.exe`,
+		`C:\Users\Alice Smith\AppData\Local\Programs\Antigravity\bin\agy.cmd`,
+		[]string{"acp", "--app-data-dir", "antigravity", "--gemini-dir", `C:\Users\Alice Smith\.gemini\`, "100%safe"},
+	)
+	if err != nil {
+		t.Fatalf("buildWindowsBatchCmdLine failed: %v", err)
+	}
+	wantPrefix := `C:\Windows\System32\cmd.exe /d /s /c ""C:\Users\Alice Smith\AppData\Local\Programs\Antigravity\bin\agy.cmd" acp --app-data-dir antigravity --gemini-dir "C:\Users\Alice Smith\.gemini\\" "100"^%"safe""`
+	if cmdLine != wantPrefix {
+		t.Fatalf("unexpected batch cmdLine:\ngot:  %s\nwant: %s", cmdLine, wantPrefix)
+	}
+	for _, bad := range []string{"bad\narg", "bad\rarg", `bad"arg`, "bad\x00arg"} {
+		if _, err := buildWindowsBatchCmdLine("cmd.exe", `C:\agy.cmd`, []string{bad}); err == nil {
+			t.Fatalf("expected injection arg %q to be rejected", bad)
+		}
+	}
+
+	// 6. Explicit AGY_BIN env override takes priority in agyBinary().
+	overrideName := "custom-agy"
+	if runtime.GOOS == "windows" {
+		overrideName = "custom-agy.exe"
+	}
+	overridePath := filepath.Join(t.TempDir(), overrideName)
+	if err := os.WriteFile(overridePath, []byte("#!/bin/sh\necho ok\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGY_BIN", overridePath)
+	t.Setenv("ANTIGRAVITY_CLI", "")
+	if got := agyBinary(); got != filepath.Clean(overridePath) {
+		t.Fatalf("expected AGY_BIN override %q, got %q", overridePath, got)
+	}
+}
+
+func TestAgySupportsACPTransientFailureRetryAndStderrCRLF(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fake-agy-retry")
+	if err := os.WriteFile(bin, []byte("stub-v1"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 11, 28, 2, 0, 0, 0, time.UTC)
+	var nowMu sync.Mutex
+	var calls atomic.Int32
+	var nextRes atomic.Value
+	nextRes.Store(acpProbeResult{status: acpSupportTimeout, detail: "timed out during Defender scan"})
+
+	agyACPCacheMu.Lock()
+	origHelp := agyProbeHelpFunc
+	origDetail := agyProbeDetailFunc
+	origNow := acpCacheNow
+	origTTL := acpNegativeCacheTTL
+	agyProbeHelpFunc = nil
+	agyProbeDetailFunc = func(string) acpProbeResult {
+		calls.Add(1)
+		return nextRes.Load().(acpProbeResult)
+	}
+	acpCacheNow = func() time.Time {
+		nowMu.Lock()
+		defer nowMu.Unlock()
+		return now
+	}
+	acpNegativeCacheTTL = 30 * time.Second
+	delete(agyACPCache, bin)
+	agyACPCacheMu.Unlock()
+
+	t.Cleanup(func() {
+		agyACPCacheMu.Lock()
+		agyProbeHelpFunc = origHelp
+		agyProbeDetailFunc = origDetail
+		acpCacheNow = origNow
+		acpNegativeCacheTTL = origTTL
+		delete(agyACPCache, bin)
+		agyACPCacheMu.Unlock()
+	})
+
+	// 1. Initial transient timeout fails, stays cached briefly for passive checks.
+	res1 := probeAgyACPSupport(bin, false)
+	if res1.status != acpSupportTimeout || calls.Load() != 1 {
+		t.Fatalf("expected initial timeout result, got %+v calls=%d", res1, calls.Load())
+	}
+	if agySupportsACP(bin) || calls.Load() != 1 {
+		t.Fatalf("expected short-lived negative cache hit within TTL, calls=%d", calls.Load())
+	}
+
+	// 2. Explicit forceRetry bypasses negative cache immediately and caches positive permanently!
+	nextRes.Store(acpProbeResult{status: acpSupportOK})
+	res2 := probeAgyACPSupport(bin, true)
+	if res2.status != acpSupportOK || calls.Load() != 2 {
+		t.Fatalf("expected forceRetry to re-probe and succeed, got %+v calls=%d", res2, calls.Load())
+	}
+	if !agySupportsACP(bin) || calls.Load() != 2 {
+		t.Fatalf("expected positive result to stay cached, calls=%d", calls.Load())
+	}
+
+	// 3. Verify negative TTL expiration retries automatically even without forceRetry.
+	bin2 := filepath.Join(dir, "fake-agy-ttl")
+	if err := os.WriteFile(bin2, []byte("stub-v2"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		agyACPCacheMu.Lock()
+		delete(agyACPCache, bin2)
+		agyACPCacheMu.Unlock()
+	})
+	nextRes.Store(acpProbeResult{status: acpSupportExecError, detail: "transient launch error"})
+	if agySupportsACP(bin2) || calls.Load() != 3 {
+		t.Fatalf("expected initial exec error on bin2, calls=%d", calls.Load())
+	}
+	nextRes.Store(acpProbeResult{status: acpSupportOK})
+	nowMu.Lock()
+	now = now.Add(31 * time.Second)
+	nowMu.Unlock()
+	if !agySupportsACP(bin2) || calls.Load() != 4 {
+		t.Fatalf("expected expired negative cache to re-probe and succeed, calls=%d", calls.Load())
+	}
+
+	// 4. Real subprocess probe verifies CRLF + stderr help text acceptance and old-CLI rejection.
+	if runtime.GOOS != "windows" {
+		stderrBin := filepath.Join(dir, "agy-stderr-crlf")
+		if err := os.WriteFile(stderrBin, []byte("#!/bin/sh\nprintf 'Usage: agy acp\\r\\n  --app-data-dir DIR\\r\\n' >&2\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if got := probeAgyACPDetail(stderrBin); got.status != acpSupportOK {
+			t.Fatalf("expected stderr CRLF help output to pass probe, got %+v", got)
+		}
+
+		oldBin := filepath.Join(dir, "agy-old")
+		if err := os.WriteFile(oldBin, []byte("#!/bin/sh\nprintf 'Error: unknown command \"acp\"\\r\\nUsage: agy [flags]\\r\\n' >&2\nexit 2\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if got := probeAgyACPDetail(oldBin); got.status != acpSupportUnsupported {
+			t.Fatalf("expected old CLI unknown command to classify as unsupported, got %+v", got)
+		}
+	}
+}

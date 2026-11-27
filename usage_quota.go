@@ -268,42 +268,32 @@ func applyUsagePlanLabel(home string, p *ProviderUsage, account string) {
 }
 
 func findAntigravityUsageBinary(home string) string {
-	if path, err := exec.LookPath("agy"); err == nil {
-		return path
-	}
-	var candidates []string
-	if home != "" {
-		if runtime.GOOS == "windows" {
-			candidates = append(candidates,
-				filepath.Join(home, ".local", "bin", "agy.exe"),
-				filepath.Join(home, ".local", "bin", "agy.cmd"),
-				filepath.Join(home, ".local", "bin", "agy.bat"),
-				filepath.Join(home, ".local", "bin", "agy"),
-			)
-		} else {
-			candidates = append(candidates, filepath.Join(home, ".local", "bin", "agy"))
-		}
-	}
-	if runtime.GOOS != "windows" {
-		candidates = append(candidates, "/opt/homebrew/bin/agy", "/usr/local/bin/agy")
-	}
-	for _, path := range candidates {
-		if st, err := os.Stat(path); err == nil && !st.IsDir() && (runtime.GOOS == "windows" || st.Mode()&0111 != 0) {
-			return path
-		}
+	if all := findAgyBinariesWithHome(home); len(all) > 0 {
+		return all[0]
 	}
 	return ""
 }
 
 func runAntigravityUsageCommand(ctx context.Context, bin string) (string, string, error) {
-	cmd := exec.CommandContext(ctx, bin, "-p", "/usage")
+	cmd, err := buildCLICommand(ctx, bin, "-p", "/usage")
+	if err != nil {
+		return "", "", err
+	}
+	cmd.Env = cliProcessEnv(codexEnv())
+	prepareProcess(cmd)
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			killProcess(cmd.Process)
+		}
+		return nil
+	}
 	cmd.Stdin = nil
 	cmd.WaitDelay = 500 * time.Millisecond
 	stdout := &limitedBuffer{max: 1 << 20}
 	stderr := &limitedBuffer{max: 1 << 20}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	return stdout.String(), stderr.String(), err
 }
 
@@ -343,9 +333,13 @@ func fetchAntigravityQuotaWith(
 ) error {
 	bin := findBin(home)
 	if bin == "" {
-		return errors.New("Install Antigravity CLI (agy) on This Computer to Read Subscription Limits")
+		return errors.New("Antigravity CLI (agy) Not Found On This Computer To Read Subscription Limits")
 	}
-	qctx, cancel := context.WithTimeout(ctx, antigravityQuotaTimeout)
+	timeout := antigravityQuotaTimeout
+	if runtime.GOOS == "windows" {
+		timeout = 15 * time.Second
+	}
+	qctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	stdout, stderr, err := runCmd(qctx, bin)
 	if err != nil {
@@ -462,60 +456,9 @@ func parseAntigravityQuotaTSV(output string) []UsageWindow {
 	return windows
 }
 
-func isGrokUsageExecutable(path string) bool {
-	if strings.TrimSpace(path) == "" {
-		return false
-	}
-	st, err := os.Stat(path)
-	if err != nil || st.IsDir() {
-		return false
-	}
-	if runtime.GOOS == "windows" {
-		return true
-	}
-	return st.Mode()&0111 != 0
-}
-
 func findGrokUsageBinary(home string) string {
-	names := []string{"grok"}
-	if runtime.GOOS == "windows" {
-		names = []string{"grok.exe", "grok.cmd", "grok.bat", "grok"}
-	}
-	for _, name := range names {
-		if path, err := exec.LookPath(name); err == nil && isGrokUsageExecutable(path) {
-			return path
-		}
-	}
-	var candidates []string
-	addDir := func(dir string) {
-		if strings.TrimSpace(dir) == "" {
-			return
-		}
-		if runtime.GOOS == "windows" {
-			candidates = append(candidates,
-				filepath.Join(dir, "grok.exe"),
-				filepath.Join(dir, "grok.cmd"),
-				filepath.Join(dir, "grok.bat"),
-				filepath.Join(dir, "grok"),
-			)
-		} else {
-			candidates = append(candidates, filepath.Join(dir, "grok"))
-		}
-	}
-	if home != "" {
-		addDir(filepath.Join(home, ".local", "bin"))
-		addDir(filepath.Join(home, ".grok", "bin"))
-	}
-	if envHome := strings.TrimSpace(os.Getenv("GROK_HOME")); envHome != "" {
-		addDir(filepath.Join(envHome, "bin"))
-	}
-	if runtime.GOOS != "windows" {
-		candidates = append(candidates, "/opt/homebrew/bin/grok", "/usr/local/bin/grok")
-	}
-	for _, path := range candidates {
-		if isGrokUsageExecutable(path) {
-			return path
-		}
+	if all := findGrokBinariesWithHome(home); len(all) > 0 {
+		return all[0]
 	}
 	return ""
 }
@@ -639,7 +582,11 @@ func readBoundedRPCLine(reader *bufio.Reader, limit int) ([]byte, error) {
 }
 
 func runGrokBillingRPC(ctx context.Context, bin, grokHome string) (map[string]any, string, error) {
-	cmd := exec.Command(bin, "agent", "--no-leader", "stdio")
+	cmd, err := buildCLICommand(nil, bin, "agent", "--no-leader", "stdio")
+	if err != nil {
+		return nil, "", err
+	}
+	cmd.Env = cliProcessEnv(codexEnv())
 	return runGrokBillingCmd(ctx, cmd, grokHome)
 }
 

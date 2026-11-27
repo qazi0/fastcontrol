@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -165,12 +166,15 @@ func antigravityHasDB(geminiDir string) bool {
 type AntigravityManager struct {
 	hub                      *Hub
 	bin                      string
+	findBin                  func() string
+	findAllBins              func() []string
 	geminiDir                string
 	customGeminiDir          bool
 	state                    *antigravityState
 	allowFullAccess          bool
 	prewarmOnStart           bool
 	supportsACP              func(string) bool
+	probeACP                 func(string, bool) acpProbeResult
 	dialACP                  func(context.Context, acpClientConfig) (*acpClient, *acpInitResult, error)
 	now                      func() time.Time
 	recencyBroadcastInterval time.Duration
@@ -184,8 +188,9 @@ type AntigravityManager struct {
 	pollInterval             time.Duration
 	workPollInterval         time.Duration
 
-	mu               sync.Mutex
-	records          map[string]antigravityRecord
+	mu                sync.Mutex
+	defaultAppDataDir string
+	records           map[string]antigravityRecord
 	recordSlice      []antigravityRecord
 	runs             map[string]*antigravityRun
 	daemons          map[acpDaemonKey]*acpDaemon
@@ -227,10 +232,13 @@ func newAntigravityManager(h *Hub) *AntigravityManager {
 	return &AntigravityManager{
 		hub:                      h,
 		bin:                      agyBinary(),
+		findBin:                  agyBinary,
+		findAllBins:              agyBinaryAll,
 		geminiDir:                antigravityGeminiDir(""),
 		state:                    state,
+		allowFullAccess:          true,
 		prewarmOnStart:           true,
-		supportsACP:              agySupportsACP,
+		probeACP:                 probeAgyACPSupport,
 		dialACP:                  dialACPClient,
 		recencyBroadcastInterval: defaultAntigravityRecencyBroadcastInterval,
 		idleSessionTimeout:       defaultAntigravityIdleSessionTimeout,
@@ -375,18 +383,131 @@ func isACPMethodNotFound(err error) bool {
 	return errors.As(err, &rpcErr) && rpcErr.Code == -32601
 }
 
-func (m *AntigravityManager) checkSupportsACP(bin string) bool {
+func (m *AntigravityManager) currentBin() string {
+	m.mu.Lock()
+	cur := strings.TrimSpace(m.bin)
+	finder := m.findBin
+	m.mu.Unlock()
+	if cur != "" {
+		if finder == nil || isAgyExecutable(cur) {
+			return cur
+		}
+	}
+	if finder != nil {
+		if found := strings.TrimSpace(finder()); found != "" {
+			m.mu.Lock()
+			m.bin = found
+			m.mu.Unlock()
+			return found
+		}
+		if cur != "" {
+			m.mu.Lock()
+			if m.bin == cur {
+				m.bin = ""
+			}
+			m.mu.Unlock()
+		}
+		return ""
+	}
+	return cur
+}
+
+func (m *AntigravityManager) candidateBins() []string {
+	m.mu.Lock()
+	cur := strings.TrimSpace(m.bin)
+	finder := m.findBin
+	findAll := m.findAllBins
+	m.mu.Unlock()
+
+	var out []string
+	seen := map[string]bool{}
+	add := func(p string) {
+		p = strings.TrimSpace(p)
+		if p == "" || seen[p] {
+			return
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	if cur != "" {
+		if finder == nil && findAll == nil {
+			add(cur)
+			return out
+		}
+		if isAgyExecutable(cur) {
+			add(cur)
+		}
+	}
+	if findAll != nil {
+		for _, p := range findAll() {
+			add(p)
+		}
+	} else if finder != nil {
+		if p := finder(); p != "" {
+			add(p)
+		}
+	}
+	if len(out) == 0 && cur != "" && (finder != nil || findAll != nil) {
+		m.mu.Lock()
+		if m.bin == cur {
+			m.bin = ""
+		}
+		m.mu.Unlock()
+	}
+	return out
+}
+
+func (m *AntigravityManager) probeBinSupport(bin string, forceRetry bool) acpProbeResult {
 	if strings.TrimSpace(bin) == "" {
-		return false
+		return acpProbeResult{status: acpSupportUnknown}
+	}
+	if m.probeACP != nil {
+		return m.probeACP(bin, forceRetry)
 	}
 	if m.supportsACP != nil {
-		return m.supportsACP(bin)
+		if m.supportsACP(bin) {
+			return acpProbeResult{status: acpSupportOK}
+		}
+		return acpProbeResult{status: acpSupportUnsupported}
 	}
-	return agySupportsACP(bin)
+	return probeAgyACPSupport(bin, forceRetry)
+}
+
+func (m *AntigravityManager) resolveBinForACP(forceRetry bool) (string, acpProbeResult) {
+	candidates := m.candidateBins()
+	if len(candidates) == 0 {
+		return "", acpProbeResult{status: acpSupportUnknown}
+	}
+	var firstCand string
+	var firstRes acpProbeResult
+	for i, cand := range candidates {
+		res := m.probeBinSupport(cand, forceRetry)
+		if res.status == acpSupportOK {
+			m.mu.Lock()
+			m.bin = cand
+			m.mu.Unlock()
+			return cand, res
+		}
+		if i == 0 {
+			firstCand = cand
+			firstRes = res
+		}
+	}
+	m.mu.Lock()
+	if m.bin == "" && firstCand != "" {
+		m.bin = firstCand
+	}
+	m.mu.Unlock()
+	return firstCand, firstRes
+}
+
+func (m *AntigravityManager) checkSupportsACP(bin string) bool {
+	return m.probeBinSupport(bin, false).status == acpSupportOK
 }
 
 func (m *AntigravityManager) acpAvailable() bool {
-	return m.bin != "" && m.checkSupportsACP(m.bin)
+	bin, res := m.resolveBinForACP(false)
+	return bin != "" && res.status == acpSupportOK
 }
 
 func (m *AntigravityManager) available() bool {
@@ -403,18 +524,59 @@ func (m *AntigravityManager) available() bool {
 }
 
 func (m *AntigravityManager) requireACP() error {
-	if m.bin == "" {
-		return errors.New("Install Antigravity CLI (agy) On This Computer")
+	bin, res := m.resolveBinForACP(true)
+	if bin == "" {
+		log.Printf("antigravity: agy binary not found on PATH or standard install locations")
+		return errors.New("Antigravity CLI (agy) Not Found On This Computer")
 	}
-	if !m.checkSupportsACP(m.bin) {
-		return errors.New("Update Antigravity CLI (agy) To A Version With ACP Support")
+	switch res.status {
+	case acpSupportOK:
+		return nil
+	case acpSupportUnsupported:
+		log.Printf("antigravity: %s lacks ACP (--app-data-dir) support: %s", bin, res.detail)
+		return errors.New("Antigravity CLI Needs Upgrade (Run agy update)")
+	case acpSupportTimeout:
+		log.Printf("antigravity: timed out probing %s: %s", bin, res.detail)
+		return errors.New("Antigravity CLI Timed Out During Startup Check. Retry In A Moment")
+	default:
+		log.Printf("antigravity: failed executing %s: %s", bin, res.detail)
+		if detail := clipPlain(strings.TrimSpace(res.detail), 180); detail != "" {
+			return fmt.Errorf("Antigravity CLI Failed To Start: %s", detail)
+		}
+		return errors.New("Antigravity CLI Failed To Start On This Computer")
 	}
-	return nil
+}
+
+func (m *AntigravityManager) preferredDefaultAppDataDir() string {
+	m.mu.Lock()
+	saved := m.defaultAppDataDir
+	m.mu.Unlock()
+	if antigravityValidAppDataDir(saved) {
+		return saved
+	}
+	geminiRoot := m.geminiRoot()
+	desktopDB := antigravityDBPath(geminiRoot, acpDefaultAppDataDir)
+	cliDB := antigravityDBPath(geminiRoot, acpCLIAppDataDir)
+	_, desktopErr := os.Stat(desktopDB)
+	_, cliErr := os.Stat(cliDB)
+	if desktopErr != nil && cliErr == nil {
+		return acpCLIAppDataDir
+	}
+	return acpDefaultAppDataDir
+}
+
+func (m *AntigravityManager) setPreferredDefaultAppDataDir(appDir string) {
+	if !antigravityValidAppDataDir(appDir) {
+		return
+	}
+	m.mu.Lock()
+	m.defaultAppDataDir = appDir
+	m.mu.Unlock()
 }
 
 func (m *AntigravityManager) dialClient(ctx context.Context, cfg acpClientConfig) (*acpClient, *acpInitResult, error) {
 	if cfg.Binary == "" {
-		cfg.Binary = m.bin
+		cfg.Binary = m.currentBin()
 	}
 	if cfg.AppDataDir == "" {
 		cfg.AppDataDir = acpDefaultAppDataDir
@@ -1286,7 +1448,7 @@ func (m *AntigravityManager) maybePrewarm() {
 		warmCtx, cancel := context.WithTimeout(baseCtx, 25*time.Second)
 		defer cancel()
 		d, err := m.ensureDaemon(warmCtx, acpDaemonKey{
-			appDataDir:      acpDefaultAppDataDir,
+			appDataDir:      m.preferredDefaultAppDataDir(),
 			skipPermissions: false,
 		})
 		if err != nil || d == nil {
@@ -1886,6 +2048,180 @@ func (m *AntigravityManager) updateCatalogFromConfigOptions(opts []acpConfigOpti
 	m.applyCatalogStateLocked(state, nil, now)
 }
 
+func antigravityEffortRank(effort string) (int, bool) {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "minimal":
+		return 0, true
+	case "low":
+		return 1, true
+	case "medium":
+		return 2, true
+	case "high":
+		return 3, true
+	case "xhigh":
+		return 4, true
+	case "max":
+		return 5, true
+	default:
+		return 0, false
+	}
+}
+
+func sortAntigravityEfforts(efforts []string) []string {
+	if len(efforts) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(efforts))
+	type item struct {
+		val   string
+		rank  int
+		known bool
+		order int
+	}
+	items := make([]item, 0, len(efforts))
+	for _, raw := range efforts {
+		v := strings.ToLower(strings.TrimSpace(raw))
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		r, ok := antigravityEffortRank(v)
+		items = append(items, item{val: v, rank: r, known: ok, order: len(items)})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].known != items[j].known {
+			return items[i].known
+		}
+		if items[i].known {
+			return items[i].rank < items[j].rank
+		}
+		return items[i].order < items[j].order
+	})
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = it.val
+	}
+	return out
+}
+
+func splitAntigravityModelEffortSlug(slug string) (string, string) {
+	s := strings.TrimSpace(slug)
+	lower := strings.ToLower(s)
+	for _, suffix := range []string{"-minimal", "-xhigh", "-medium", "-high", "-low", "-max"} {
+		if strings.HasSuffix(lower, suffix) && len(s) > len(suffix) {
+			return s[:len(s)-len(suffix)], strings.TrimPrefix(suffix, "-")
+		}
+	}
+	return s, ""
+}
+
+func stripAntigravityModelEffortLabel(name string) string {
+	trimmed := strings.TrimSpace(name)
+	lower := strings.ToLower(trimmed)
+	for _, suffix := range []string{
+		" (minimal)",
+		" (low)",
+		" (medium)",
+		" (high)",
+		" (xhigh)",
+		" (extra high)",
+		" (max)",
+	} {
+		if strings.HasSuffix(lower, suffix) && len(trimmed) > len(suffix) {
+			return strings.TrimSpace(trimmed[:len(trimmed)-len(suffix)])
+		}
+	}
+	return trimmed
+}
+
+func antigravityStateHasModels(state *acpSessionState) bool {
+	if state == nil {
+		return false
+	}
+	if modelOpt := state.ConfigOption("model"); modelOpt != nil {
+		for _, opt := range modelOpt.Options {
+			if strings.TrimSpace(opt.Value) != "" {
+				return true
+			}
+		}
+	}
+	for _, info := range state.Models.AvailableModels {
+		if strings.TrimSpace(info.ModelID) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func deriveModelsFromAvailableModels(avail []acpModelInfo, defaultEfforts []string, defaultEffort string) ([]Model, map[string]string) {
+	type grouped struct {
+		slug        string
+		name        string
+		description string
+		efforts     []string
+		hasSuffix   bool
+	}
+	var order []string
+	groups := map[string]*grouped{}
+	slugToBase := map[string]string{}
+
+	for _, info := range avail {
+		rawSlug := strings.TrimSpace(info.ModelID)
+		if rawSlug == "" {
+			continue
+		}
+		baseSlug, effort := splitAntigravityModelEffortSlug(rawSlug)
+		cleanName := antigravityFirstNonEmpty(strings.TrimSpace(info.Name), rawSlug)
+		if effort != "" {
+			cleanName = antigravityFirstNonEmpty(stripAntigravityModelEffortLabel(cleanName), baseSlug)
+		}
+		g := groups[baseSlug]
+		if g == nil {
+			g = &grouped{
+				slug:        baseSlug,
+				name:        cleanName,
+				description: strings.TrimSpace(info.Description),
+			}
+			groups[baseSlug] = g
+			order = append(order, baseSlug)
+		} else {
+			if g.description == "" && strings.TrimSpace(info.Description) != "" {
+				g.description = strings.TrimSpace(info.Description)
+			}
+		}
+		slugToBase[rawSlug] = baseSlug
+		if effort != "" {
+			g.hasSuffix = true
+			g.efforts = append(g.efforts, effort)
+		}
+	}
+
+	models := make([]Model, 0, len(order))
+	for _, baseSlug := range order {
+		g := groups[baseSlug]
+		var efforts []string
+		if g.hasSuffix {
+			efforts = sortAntigravityEfforts(g.efforts)
+		} else {
+			efforts = append([]string(nil), defaultEfforts...)
+		}
+		defEff := defaultEffort
+		if defEff != "" && len(efforts) > 0 && !contains(efforts, defEff) {
+			defEff = efforts[len(efforts)-1]
+		} else if defEff == "" && len(efforts) > 0 {
+			defEff = efforts[len(efforts)-1]
+		}
+		models = append(models, Model{
+			Slug:          g.slug,
+			Name:          antigravityFirstNonEmpty(g.name, g.slug),
+			Description:   g.description,
+			DefaultEffort: defEff,
+			Efforts:       efforts,
+		})
+	}
+	return models, slugToBase
+}
+
 func (m *AntigravityManager) applyCatalogStateLocked(state *acpSessionState, initRes *acpInitResult, now time.Time) {
 	cat := m.catalog
 	if initRes != nil && initRes.Tier != nil {
@@ -1909,12 +2245,13 @@ func (m *AntigravityManager) applyCatalogStateLocked(state *acpSessionState, ini
 				efforts = append(efforts, v)
 			}
 		}
-		if v := strings.TrimSpace(thoughtOpt.CurrentValue); v != "" {
+		efforts = sortAntigravityEfforts(efforts)
+		if v := strings.ToLower(strings.TrimSpace(thoughtOpt.CurrentValue)); v != "" {
 			defaultEffort = v
 		}
 	}
 	if len(efforts) == 0 && len(cat.Models) > 0 && len(cat.Models[0].Efforts) > 0 {
-		efforts = append([]string(nil), cat.Models[0].Efforts...)
+		efforts = sortAntigravityEfforts(cat.Models[0].Efforts)
 	}
 	if len(efforts) == 0 {
 		efforts = []string{"low", "medium", "high", "xhigh"}
@@ -1939,26 +2276,36 @@ func (m *AntigravityManager) applyCatalogStateLocked(state *acpSessionState, ini
 			cat.DefaultModel = v
 		}
 	} else if len(state.Models.AvailableModels) > 0 {
-		for _, info := range state.Models.AvailableModels {
-			slug := strings.TrimSpace(info.ModelID)
-			if slug == "" {
-				continue
+		var curEffort string
+		curModel := strings.TrimSpace(state.Models.CurrentModelID)
+		if curModel != "" {
+			var curBase string
+			curBase, curEffort = splitAntigravityModelEffortSlug(curModel)
+			if curBase != "" {
+				curModel = curBase
 			}
-			models = append(models, Model{
-				Slug:          slug,
-				Name:          antigravityFirstNonEmpty(strings.TrimSpace(info.Name), slug),
-				Description:   strings.TrimSpace(info.Description),
-				DefaultEffort: defaultEffort,
-				Efforts:       append([]string(nil), efforts...),
-			})
+			if defaultEffort == "" && curEffort != "" {
+				defaultEffort = curEffort
+			}
 		}
-		if v := strings.TrimSpace(state.Models.CurrentModelID); v != "" {
-			cat.DefaultModel = v
+		var slugToBase map[string]string
+		models, slugToBase = deriveModelsFromAvailableModels(state.Models.AvailableModels, efforts, defaultEffort)
+		if curModel != "" {
+			if mapped, ok := slugToBase[strings.TrimSpace(state.Models.CurrentModelID)]; ok && mapped != "" {
+				cat.DefaultModel = mapped
+			} else {
+				cat.DefaultModel = curModel
+			}
+		} else if len(models) > 0 && cat.DefaultModel == "" {
+			cat.DefaultModel = models[0].Slug
 		}
 	}
 	if len(models) > 0 {
 		cat.Models = models
 		cat.UpdatedAt = now
+		if cat.DefaultModel == "" {
+			cat.DefaultModel = models[0].Slug
+		}
 	} else if len(cat.Models) > 0 && state.ConfigOption("thought_level") != nil {
 		for i := range cat.Models {
 			cat.Models[i].Efforts = append([]string(nil), efforts...)
@@ -1997,12 +2344,27 @@ func (m *AntigravityManager) applyCatalogStateLocked(state *acpSessionState, ini
 	m.catalog = cat
 }
 
+var antigravityTurboMode = acpModeInfo{
+	ID:          "full-access",
+	Name:        "Turbo",
+	Description: "Auto-Approves All Edits And Commands",
+}
+
+func normalizeAntigravityPermissionMode(mode string) string {
+	m := strings.TrimSpace(mode)
+	if strings.EqualFold(m, "turbo") || strings.EqualFold(m, "full-access") {
+		return "full-access"
+	}
+	return m
+}
+
 func defaultAntigravityModes() []acpModeInfo {
 	return []acpModeInfo{
 		{ID: "default", Name: "Default", Description: "Asks Before Edits And Commands"},
 		{ID: "accept-edits", Name: "Accept Edits", Description: "Approves File Edits Automatically"},
 		{ID: "auto", Name: "Auto", Description: "Runs Approved Actions Automatically"},
 		{ID: "plan", Name: "Plan", Description: "Plans Without Making Edits"},
+		antigravityTurboMode,
 	}
 }
 
@@ -2014,10 +2376,25 @@ func (m *AntigravityManager) catalogSnapshot() antigravityModelCatalog {
 	for i := range cat.Models {
 		cat.Models[i].Efforts = append([]string(nil), cat.Models[i].Efforts...)
 	}
+	var srcModes []acpModeInfo
 	if len(m.catalog.Modes) > 0 {
-		cat.Modes = append([]acpModeInfo(nil), m.catalog.Modes...)
+		srcModes = m.catalog.Modes
 	} else {
-		cat.Modes = defaultAntigravityModes()
+		srcModes = defaultAntigravityModes()
+	}
+	hasFullAccess := false
+	cat.Modes = make([]acpModeInfo, 0, len(srcModes)+1)
+	for _, md := range srcModes {
+		if md.ID == "full-access" {
+			if !m.allowFullAccess {
+				continue
+			}
+			hasFullAccess = true
+		}
+		cat.Modes = append(cat.Modes, md)
+	}
+	if m.allowFullAccess && !hasFullAccess {
+		cat.Modes = append(cat.Modes, antigravityTurboMode)
 	}
 	if m.catalog.Tier != nil {
 		t := *m.catalog.Tier
@@ -2045,6 +2422,7 @@ func (m *AntigravityManager) validEffort(effort string) bool {
 }
 
 func (m *AntigravityManager) validPermissionMode(mode string) bool {
+	mode = normalizeAntigravityPermissionMode(mode)
 	switch mode {
 	case "default", "accept-edits", "auto", "plan":
 		return true
@@ -2377,6 +2755,10 @@ func (r *antigravityRun) syncExternalDiskState(v *antigravityTranscript, externa
 	return changed, fullOpen
 }
 
+func (r *antigravityRun) isFullAccessLocked() bool {
+	return normalizeAntigravityPermissionMode(r.permissionMode) == "full-access" && r.manager != nil && r.manager.allowFullAccess
+}
+
 func (r *antigravityRun) applySessionState(state *acpSessionState) {
 	if state == nil {
 		return
@@ -2389,7 +2771,7 @@ func (r *antigravityRun) applySessionState(state *acpSessionState) {
 	if thought := strings.TrimSpace(state.CurrentThoughtLevel()); thought != "" {
 		r.effort = thought
 	}
-	if mode := strings.TrimSpace(state.CurrentMode()); mode != "" {
+	if mode := strings.TrimSpace(state.CurrentMode()); mode != "" && !r.isFullAccessLocked() {
 		r.permissionMode = mode
 	}
 	if state.Tier != nil {
@@ -2680,7 +3062,7 @@ func (r *antigravityRun) onUpdate(u acpSessionUpdate) {
 		}
 
 	case "current_mode_update":
-		if mode := strings.TrimSpace(u.CurrentModeID); mode != "" {
+		if mode := strings.TrimSpace(u.CurrentModeID); mode != "" && !r.isFullAccessLocked() {
 			r.permissionMode = mode
 			shouldPublish = !r.loading
 		}
@@ -2696,7 +3078,7 @@ func (r *antigravityRun) onUpdate(u acpSessionUpdate) {
 			case "thought_level":
 				r.effort = val
 			case "mode":
-				if val != "" {
+				if val != "" && !r.isFullAccessLocked() {
 					r.permissionMode = val
 				}
 			}
@@ -3095,6 +3477,29 @@ func convertACPToolCall(tc acpToolCallInfo, itemID string, prev *Item) (Item, st
 
 func (r *antigravityRun) onPermission(req acpPermissionRequest) {
 	now := r.manager.nowTime()
+
+	r.mu.Lock()
+	if req.SessionID != "" && r.id != "" && req.SessionID != r.id {
+		r.mu.Unlock()
+		return
+	}
+	autoApprove := r.isFullAccessLocked()
+	client := r.client
+	daemon := r.daemon
+	if autoApprove {
+		r.lastActivity = now
+	}
+	r.mu.Unlock()
+
+	if autoApprove {
+		optID, cancelled, err := resolvePermissionOption(req.Options, "", "acceptForSession")
+		if err == nil && client != nil && !client.Closed() {
+			_ = client.RespondPermission(req.RequestID, optID, cancelled)
+			daemon.touchActivity(now)
+			return
+		}
+	}
+
 	diffText := req.ToolCall.DiffText()
 	toolKind := classifyACPToolKind(req.ToolCall, diffText)
 
@@ -3614,6 +4019,49 @@ func resolvePermissionOption(options []acpPermissionOption, optionID, decision s
 	default:
 		return "", false, errors.New("Unknown Approval Decision")
 	}
+}
+
+func (r *antigravityRun) autoApprovePendingPermissions() {
+	now := r.manager.nowTime()
+	r.mu.Lock()
+	if len(r.permissions) == 0 || !r.manager.allowFullAccess {
+		r.mu.Unlock()
+		return
+	}
+	pending := make([]antigravityPendingPerm, 0, len(r.permissions))
+	for _, id := range r.reqOrder {
+		if perm, ok := r.permissions[id]; ok {
+			pending = append(pending, perm)
+			delete(r.permissions, id)
+		}
+	}
+	for id, perm := range r.permissions {
+		pending = append(pending, perm)
+		delete(r.permissions, id)
+	}
+	filtered := r.reqOrder[:0]
+	for _, id := range r.reqOrder {
+		if _, ok := r.elicitations[id]; ok {
+			filtered = append(filtered, id)
+		}
+	}
+	r.reqOrder = filtered
+	r.lastActivity = now
+	client := r.client
+	daemon := r.daemon
+	r.mu.Unlock()
+
+	if client != nil && !client.Closed() {
+		for _, perm := range pending {
+			optID, cancelled, err := resolvePermissionOption(perm.acpReq.Options, "", "acceptForSession")
+			if err == nil {
+				_ = client.RespondPermission(perm.acpReq.RequestID, optID, cancelled)
+			}
+		}
+		daemon.touchActivity(now)
+	}
+	r.publish(true)
+	r.manager.requestRefresh()
 }
 
 func (r *antigravityRun) approvePermission(reqID, optionID, decision string) error {

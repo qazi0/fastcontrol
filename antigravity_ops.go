@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -265,9 +266,6 @@ func (m *AntigravityManager) discoverModels(ctx context.Context) error {
 		records = m.snapshotRecords()
 	}
 
-	// Pick an existing idle non-subagent conversation so we can probe via
-	// session/load + session/close without creating a stray conversation.
-	var probeRec *antigravityRecord
 	m.mu.Lock()
 	activeRunIDs := make(map[string]bool, len(m.runs))
 	for id := range m.runs {
@@ -275,8 +273,19 @@ func (m *AntigravityManager) discoverModels(ctx context.Context) error {
 	}
 	m.mu.Unlock()
 
+	// Collect idle non-subagent, non-ghost probe candidates grouped by appDataDir,
+	// plus valid workspace directories as fallbacks for session/new if os.TempDir() fails.
+	candidatesByDir := map[string][]antigravityRecord{}
+	var workspaceFallbacks []string
+	seenWS := map[string]bool{}
 	for i := range records {
 		rec := records[i]
+		if cwd := strings.TrimSpace(rec.Cwd); cwd != "" && !seenWS[cwd] {
+			if st, statErr := os.Stat(cwd); statErr == nil && st.IsDir() {
+				seenWS[cwd] = true
+				workspaceFallbacks = append(workspaceFallbacks, cwd)
+			}
+		}
 		if antigravityRecordIsSubagent(rec) || rec.Running || activeRunIDs[rec.ID] {
 			continue
 		}
@@ -284,70 +293,163 @@ func (m *AntigravityManager) discoverModels(ctx context.Context) error {
 		if antigravityConversationsDirExists(m.geminiRoot(), recAppDir) && !antigravityHasConversationPB(m.geminiRoot(), recAppDir, rec.ID) {
 			continue
 		}
-		if probeRec == nil || (probeRec.AppDataDir != acpDefaultAppDataDir && rec.AppDataDir == acpDefaultAppDataDir) {
-			cp := rec
-			probeRec = &cp
-			if rec.AppDataDir == acpDefaultAppDataDir {
-				break
-			}
+		candidatesByDir[recAppDir] = append(candidatesByDir[recAppDir], rec)
+	}
+
+	// Build ordered appDataDir attempts so CLI-only users (signed in under
+	// antigravity-cli) automatically fall back cleanly when Desktop antigravity
+	// has no credentials or returns no models.
+	primaryAppDir := m.preferredDefaultAppDataDir()
+	if len(candidatesByDir[primaryAppDir]) == 0 {
+		if primaryAppDir == acpDefaultAppDataDir && len(candidatesByDir[acpCLIAppDataDir]) > 0 {
+			primaryAppDir = acpCLIAppDataDir
+		} else if primaryAppDir == acpCLIAppDataDir && len(candidatesByDir[acpDefaultAppDataDir]) > 0 {
+			primaryAppDir = acpDefaultAppDataDir
 		}
 	}
-
-	probeCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-
-	appDir := acpDefaultAppDataDir
-	if probeRec != nil && antigravityValidAppDataDir(probeRec.AppDataDir) {
-		appDir = probeRec.AppDataDir
+	appDirOrder := []string{primaryAppDir}
+	if primaryAppDir == acpDefaultAppDataDir {
+		appDirOrder = append(appDirOrder, acpCLIAppDataDir)
+	} else {
+		appDirOrder = append(appDirOrder, acpDefaultAppDataDir)
 	}
 
-	daemon, err := m.ensureDaemon(probeCtx, acpDaemonKey{
+	newSessionCwds := make([]string, 0, 2+len(workspaceFallbacks))
+	addCwd := func(dir string) {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			return
+		}
+		for _, existing := range newSessionCwds {
+			if existing == dir {
+				return
+			}
+		}
+		if st, err := os.Stat(dir); err == nil && st.IsDir() {
+			newSessionCwds = append(newSessionCwds, dir)
+		}
+	}
+	addCwd(os.TempDir())
+	if home, err := os.UserHomeDir(); err == nil {
+		addCwd(home)
+	}
+	for _, ws := range workspaceFallbacks {
+		addCwd(ws)
+	}
+	if len(newSessionCwds) == 0 {
+		newSessionCwds = append(newSessionCwds, os.TempDir())
+	}
+
+	perAttemptTimeout := 20 * time.Second
+	if runtime.GOOS == "windows" {
+		perAttemptTimeout = 25 * time.Second
+	}
+
+	var lastErr error
+	for _, appDir := range appDirOrder {
+		attemptCtx, cancel := context.WithTimeout(ctx, perAttemptTimeout)
+		state, initRes, err := m.probeModelsInAppDir(attemptCtx, appDir, candidatesByDir[appDir], newSessionCwds)
+		cancel()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if antigravityStateHasModels(state) {
+			m.updateCatalogFromState(state, initRes)
+			m.setPreferredDefaultAppDataDir(appDir)
+			if len(m.catalogSnapshot().Models) > 0 {
+				return nil
+			}
+		}
+		lastErr = errors.New("No Antigravity Models Returned. Check Antigravity Sign-In And Retry")
+	}
+
+	if lastErr != nil {
+		return lastErr
+	}
+	return errors.New("Could Not Load Antigravity Models. Check Antigravity Sign-In And Retry")
+}
+
+func (m *AntigravityManager) probeModelsInAppDir(
+	ctx context.Context,
+	appDir string,
+	candidates []antigravityRecord,
+	newSessionCwds []string,
+) (*acpSessionState, *acpInitResult, error) {
+	daemon, err := m.ensureDaemon(ctx, acpDaemonKey{
 		appDataDir:      appDir,
 		skipPermissions: false,
 	})
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	client := daemon.client
 
-	var state *acpSessionState
-	if probeRec != nil {
-		unlockProbe := m.lockThread(probeRec.ID)
+	// 1. Try existing idle non-ghost sessions via session/load (falling back to session/resume)
+	// so we avoid creating a stray conversation whenever possible.
+	supportsResume := daemon.initRes != nil && daemon.initRes.AgentCapabilities.SessionCapabilities.Resume
+	tried := 0
+	for _, rec := range candidates {
+		if tried >= 3 {
+			break
+		}
+		unlockProbe := m.lockThread(rec.ID)
 		m.mu.Lock()
-		alreadyLive := m.runs[probeRec.ID] != nil
+		alreadyLive := m.runs[rec.ID] != nil
 		m.mu.Unlock()
-		if !alreadyLive {
-			cwd := probeRec.Cwd
-			if cwd == "" {
-				cwd = os.TempDir()
-			} else if st, statErr := os.Stat(cwd); statErr != nil || !st.IsDir() {
-				cwd = os.TempDir()
+		if alreadyLive {
+			unlockProbe()
+			continue
+		}
+		tried++
+		cwd := rec.Cwd
+		if cwd == "" {
+			cwd = newSessionCwds[0]
+		} else if st, statErr := os.Stat(cwd); statErr != nil || !st.IsDir() {
+			cwd = newSessionCwds[0]
+		}
+		loaded, loadErr := client.LoadSession(ctx, rec.ID, cwd)
+		if (loadErr != nil || !antigravityStateHasModels(loaded)) && supportsResume {
+			if resumed, resumeErr := client.ResumeSession(ctx, rec.ID, cwd); resumeErr == nil && antigravityStateHasModels(resumed) {
+				loaded = resumed
+				loadErr = nil
 			}
-			loaded, loadErr := client.LoadSession(probeCtx, probeRec.ID, cwd)
-			if loadErr == nil && loaded != nil {
-				state = loaded
-				if !daemon.hasRun(probeRec.ID) {
-					_ = client.CloseSession(probeCtx, probeRec.ID)
-				}
+		}
+		if loadErr == nil && loaded != nil {
+			if !daemon.hasRun(rec.ID) {
+				_ = client.CloseSession(ctx, rec.ID)
 			}
+			unlockProbe()
+			if antigravityStateHasModels(loaded) {
+				daemon.touchActivity(m.nowTime())
+				return loaded, daemon.initRes, nil
+			}
+			continue
 		}
 		unlockProbe()
 	}
 
-	if state == nil {
-		created, newErr := client.NewSession(probeCtx, os.TempDir(), nil)
-		if newErr != nil {
-			return newErr
+	// 2. Fallback to session/new + session/close across available working directories.
+	var newErr error
+	for _, cwd := range newSessionCwds {
+		created, err := client.NewSession(ctx, cwd, nil)
+		if err != nil {
+			newErr = err
+			continue
 		}
-		state = created
-		if created.SessionID != "" && !daemon.hasRun(created.SessionID) {
-			_ = client.CloseSession(probeCtx, created.SessionID)
+		if created != nil && created.SessionID != "" && !daemon.hasRun(created.SessionID) {
+			_ = client.CloseSession(ctx, created.SessionID)
 		}
+		if antigravityStateHasModels(created) {
+			daemon.touchActivity(m.nowTime())
+			return created, daemon.initRes, nil
+		}
+		newErr = errors.New("No Antigravity Models Returned. Check Antigravity Sign-In And Retry")
 	}
-
-	daemon.touchActivity(m.nowTime())
-	m.updateCatalogFromState(state, daemon.initRes)
-	return nil
+	if newErr != nil {
+		return nil, nil, newErr
+	}
+	return nil, nil, errors.New("Could Not Load Antigravity Models. Check Antigravity Sign-In And Retry")
 }
 
 func (m *AntigravityManager) handleModels(c *Client) {
@@ -357,15 +459,26 @@ func (m *AntigravityManager) handleModels(c *Client) {
 	if models == nil {
 		models = []Model{}
 	}
-	modes := make([]map[string]any, 0, len(cat.Modes))
+	modes := make([]map[string]any, 0, len(cat.Modes)+1)
+	hasFullAccess := false
 	for _, md := range cat.Modes {
-		if md.ID == "full-access" && !m.allowFullAccess {
-			continue
+		if md.ID == "full-access" {
+			if !m.allowFullAccess {
+				continue
+			}
+			hasFullAccess = true
 		}
 		modes = append(modes, map[string]any{
 			"id":          md.ID,
 			"name":        md.Name,
 			"description": md.Description,
+		})
+	}
+	if m.allowFullAccess && !hasFullAccess {
+		modes = append(modes, map[string]any{
+			"id":          antigravityTurboMode.ID,
+			"name":        antigravityTurboMode.Name,
+			"description": antigravityTurboMode.Description,
 		})
 	}
 	result := map[string]any{
@@ -994,7 +1107,7 @@ func (m *AntigravityManager) handleNew(v map[string]any, ack func(error, map[str
 
 	model := strings.TrimSpace(str(v, "model"))
 	effort := strings.TrimSpace(str(v, "effort"))
-	permMode := strings.TrimSpace(str(v, "permissionMode"))
+	permMode := normalizeAntigravityPermissionMode(str(v, "permissionMode"))
 	if permMode == "" {
 		permMode = "default"
 	}
@@ -1010,8 +1123,9 @@ func (m *AntigravityManager) handleNew(v map[string]any, ack func(error, map[str
 	ctx, cancel := context.WithTimeout(m.baseContext(), 30*time.Second)
 	defer cancel()
 
+	appDir := m.preferredDefaultAppDataDir()
 	daemon, err := m.ensureDaemon(ctx, acpDaemonKey{
-		appDataDir:      acpDefaultAppDataDir,
+		appDataDir:      appDir,
 		skipPermissions: permMode == "full-access" && m.allowFullAccess,
 	})
 	if err != nil {
@@ -1033,7 +1147,7 @@ func (m *AntigravityManager) handleNew(v map[string]any, ack func(error, map[str
 	sid := strings.TrimSpace(sessionState.SessionID)
 	daemon.touchActivity(m.nowTime())
 
-	run := newAntigravityRun(m, sid, acpDefaultAppDataDir, cwd)
+	run := newAntigravityRun(m, sid, appDir, cwd)
 	run.mu.Lock()
 	run.daemon = daemon
 	run.client = client
@@ -1136,6 +1250,7 @@ func (m *AntigravityManager) ensureRun(ctx context.Context, id string) (*antigra
 	}
 
 	pref := m.state.Pref(id)
+	pref.PermissionMode = normalizeAntigravityPermissionMode(pref.PermissionMode)
 	run := newAntigravityRun(m, id, appDir, cwd)
 	if hist, err := m.readRecordTranscript(rec, antigravityDefaultWindow); err == nil {
 		run.seedFromTranscript(hist)
@@ -1307,6 +1422,7 @@ func (m *AntigravityManager) applySessionPreferences(ctx context.Context, run *a
 			run.mu.Unlock()
 		}
 	}
+	permMode = normalizeAntigravityPermissionMode(permMode)
 	if permMode != "" && permMode != "full-access" && permMode != curMode {
 		if err := client.SetMode(ctx, sid, permMode); err != nil {
 			if strict {
@@ -1416,7 +1532,7 @@ func (m *AntigravityManager) handleSettings(c *Client, id string, raw []byte, ac
 		pref.Effort = effort
 	}
 	if req.PermissionMode != nil {
-		mode := strings.TrimSpace(*req.PermissionMode)
+		mode := normalizeAntigravityPermissionMode(*req.PermissionMode)
 		if mode == "" {
 			mode = "default"
 		}
@@ -1464,15 +1580,23 @@ func (m *AntigravityManager) handleSettings(c *Client, id string, raw []byte, ac
 			run.mu.Unlock()
 		}
 		if req.PermissionMode != nil {
-			if pref.PermissionMode != "full-access" {
+			if pref.PermissionMode == "full-access" && m.allowFullAccess {
+				// Apply full-access before best-effort SetMode("auto") so concurrent
+				// ACP mode echoes and permission requests immediately see Turbo mode.
+				run.mu.Lock()
+				run.permissionMode = pref.PermissionMode
+				run.mu.Unlock()
+				run.autoApprovePendingPermissions()
+				_ = client.SetMode(ctx, id, "auto")
+			} else {
 				if err := client.SetMode(ctx, id, pref.PermissionMode); err != nil {
 					ack(err, nil)
 					return
 				}
+				run.mu.Lock()
+				run.permissionMode = pref.PermissionMode
+				run.mu.Unlock()
 			}
-			run.mu.Lock()
-			run.permissionMode = pref.PermissionMode
-			run.mu.Unlock()
 		}
 		daemon.touchActivity(m.nowTime())
 		run.publish(true)

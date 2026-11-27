@@ -507,3 +507,29 @@ func TestAntigravityUsageServeAndThreeProviderRefreshLifecycle(t *testing.T) {
 		t.Fatal("stale 2-provider disk cache should have been ignored")
 	}
 }
+
+func TestFindAntigravityUsageBinaryEnvOverrides(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PATH", "")
+
+	binName := "agy-override"
+	if runtime.GOOS == "windows" {
+		binName = "agy-override.cmd"
+	}
+	override := filepath.Join(t.TempDir(), binName)
+	if err := os.WriteFile(override, []byte("stub"), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("AGY_BIN", override)
+	t.Setenv("ANTIGRAVITY_CLI", "")
+	if got := findAntigravityUsageBinary(home); got != filepath.Clean(override) {
+		t.Fatalf("expected AGY_BIN override %q, got %q", override, got)
+	}
+
+	t.Setenv("AGY_BIN", "")
+	t.Setenv("ANTIGRAVITY_CLI", override)
+	if got := findAntigravityUsageBinary(home); got != filepath.Clean(override) {
+		t.Fatalf("expected ANTIGRAVITY_CLI override %q, got %q", override, got)
+	}
+}

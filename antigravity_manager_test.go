@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2800,5 +2801,626 @@ func TestAntigravityManagerPrewarmAndPooledCleanShutdown(t *testing.T) {
 	h.mgr.mu.Unlock()
 	if remRuns != 0 || remDaemons != 0 {
 		t.Fatalf("expected 0 remaining runs and daemons after shutdown, got runs=%d daemons=%d", remRuns, remDaemons)
+	}
+}
+
+func TestAntigravityDynamicRedetectionDistinctErrorsAndDualInstallFallback(t *testing.T) {
+	h := newAgyTestHarness(t)
+	h.mgr.bin = ""
+	h.mgr.supportsACP = nil
+
+	// 1. Missing binary -> distinct "Not Found" error on send/new/wake (not generic install prompt after install).
+	var discovered atomic.Value
+	discovered.Store([]string{})
+	h.mgr.findBin = func() string {
+		all := discovered.Load().([]string)
+		if len(all) > 0 {
+			return all[0]
+		}
+		return ""
+	}
+	h.mgr.findAllBins = func() []string {
+		return discovered.Load().([]string)
+	}
+
+	if h.mgr.available() {
+		t.Fatalf("expected available=false before agy is installed")
+	}
+	h.send(h.client, map[string]any{"op": "new", "cwd": h.home, "text": "Hello", "nonce": "new-missing"})
+	ack := waitAck(t, h.client, "new-missing")
+	if ok, _ := ack["ok"].(bool); ok || str(ack, "msg") != "Antigravity CLI (agy) Not Found On This Computer" {
+		t.Fatalf("expected distinct missing binary error, got %+v", ack)
+	}
+
+	// 2. Old version lacking ACP -> distinct upgrade message (NOT "Not Found" or "Install").
+	binDir := t.TempDir()
+	oldName, goodName := "agy-old", "agy-new"
+	if runtime.GOOS == "windows" {
+		oldName, goodName = "agy-old.cmd", "agy-new.exe"
+	}
+	oldBin := filepath.Join(binDir, oldName)
+	goodBin := filepath.Join(binDir, goodName)
+	if err := os.WriteFile(oldBin, []byte("old"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(goodBin, []byte("new"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	var probeMode atomic.Int32 // 0=unsupported, 1=timeout, 2=execErr, 3=ok-for-goodBin
+	h.mgr.probeACP = func(bin string, forceRetry bool) acpProbeResult {
+		switch probeMode.Load() {
+		case 0:
+			return acpProbeResult{status: acpSupportUnsupported, detail: "unknown command acp"}
+		case 1:
+			return acpProbeResult{status: acpSupportTimeout, detail: "timed out after 15s"}
+		case 2:
+			return acpProbeResult{status: acpSupportExecError, detail: "access is denied"}
+		default:
+			if bin == goodBin {
+				return acpProbeResult{status: acpSupportOK}
+			}
+			return acpProbeResult{status: acpSupportUnsupported, detail: "ide launcher without acp"}
+		}
+	}
+
+	discovered.Store([]string{oldBin})
+	h.send(h.client, map[string]any{"op": "new", "cwd": h.home, "text": "Hello", "nonce": "new-old"})
+	ack = waitAck(t, h.client, "new-old")
+	if ok, _ := ack["ok"].(bool); ok || str(ack, "msg") != "Antigravity CLI Needs Upgrade (Run agy update)" {
+		t.Fatalf("expected distinct upgrade error, got %+v", ack)
+	}
+
+	// 3. Probe timeout surfaces timeout diagnostic (NOT install prompt).
+	probeMode.Store(1)
+	h.send(h.client, map[string]any{"op": "new", "cwd": h.home, "text": "Hello", "nonce": "new-timeout"})
+	ack = waitAck(t, h.client, "new-timeout")
+	if ok, _ := ack["ok"].(bool); ok || !strings.Contains(str(ack, "msg"), "Timed Out") {
+		t.Fatalf("expected timeout diagnostic, got %+v", ack)
+	}
+
+	// 4. Probe execution failure surfaces real diagnostic (NOT install prompt).
+	probeMode.Store(2)
+	h.send(h.client, map[string]any{"op": "new", "cwd": h.home, "text": "Hello", "nonce": "new-execerr"})
+	ack = waitAck(t, h.client, "new-execerr")
+	if ok, _ := ack["ok"].(bool); ok || !strings.Contains(str(ack, "msg"), "Failed To Start") || !strings.Contains(str(ack, "msg"), "access is denied") {
+		t.Fatalf("expected exec error diagnostic, got %+v", ack)
+	}
+
+	// 5. Dual-install fallback & dynamic re-detection without relay restart:
+	// oldBin fails ACP, goodBin succeeds -> available() flips true and ensureDaemon dials goodBin!
+	probeMode.Store(3)
+	discovered.Store([]string{oldBin, goodBin})
+	if !h.mgr.available() {
+		t.Fatalf("expected available() to flip true dynamically when goodBin is installed")
+	}
+
+	var dialedBin string
+	h.mgr.dialACP = func(ctx context.Context, cfg acpClientConfig) (*acpClient, *acpInitResult, error) {
+		dialedBin = cfg.Binary
+		srv, cli := newMockACPServer(t, cfg)
+		srv.on("initialize", func(msg mockACPRPCMessage) {
+			_ = srv.sendResult(msg.ID, mockInitResultPayload())
+		})
+		srv.on("session/new", func(msg mockACPRPCMessage) {
+			_ = srv.sendResult(msg.ID, mockStandardSessionState("sess-dyn-1", "gemini-4-neon", "high", "default"))
+		})
+		srv.on("session/prompt", func(msg mockACPRPCMessage) {
+			_ = srv.sendResult(msg.ID, map[string]any{"stopReason": "end_turn"})
+		})
+		srv.on("session/close", func(msg mockACPRPCMessage) {
+			_ = srv.sendResult(msg.ID, map[string]any{})
+		})
+		srv.start()
+		initRes, err := cli.Initialize(ctx)
+		if err != nil {
+			_ = cli.Close()
+			return nil, nil, err
+		}
+		return cli, initRes, nil
+	}
+
+	h.send(h.client, map[string]any{"op": "new", "cwd": h.home, "text": "Hello after install", "nonce": "new-dyn-ok"})
+	ack = waitAck(t, h.client, "new-dyn-ok")
+	if ok, _ := ack["ok"].(bool); !ok {
+		t.Fatalf("expected dynamic post-install new chat to succeed, got %+v", ack)
+	}
+	if dialedBin != goodBin {
+		t.Fatalf("expected ensureDaemon to pick ACP-capable %q over %q, dialed %q", goodBin, oldBin, dialedBin)
+	}
+}
+
+func TestAntigravityDiscoverModelsReliabilityAndFallbacks(t *testing.T) {
+	t.Run("empty catalog is never cached and retries on next call", func(t *testing.T) {
+		h := newAgyTestHarness(t)
+		var returnModels atomic.Bool
+		var newCalls atomic.Int32
+
+		h.mgr.dialACP = func(ctx context.Context, cfg acpClientConfig) (*acpClient, *acpInitResult, error) {
+			srv, cli := newMockACPServer(t, cfg)
+			srv.on("initialize", func(msg mockACPRPCMessage) {
+				_ = srv.sendResult(msg.ID, mockInitResultPayload())
+			})
+			srv.on("session/new", func(msg mockACPRPCMessage) {
+				newCalls.Add(1)
+				if !returnModels.Load() {
+					_ = srv.sendResult(msg.ID, map[string]any{"sessionId": "empty-sess"})
+					return
+				}
+				_ = srv.sendResult(msg.ID, mockStandardSessionState("ok-sess", "gemini-4-neon", "high", "default"))
+			})
+			srv.on("session/close", func(msg mockACPRPCMessage) {
+				_ = srv.sendResult(msg.ID, map[string]any{})
+			})
+			srv.start()
+			initRes, err := cli.Initialize(ctx)
+			if err != nil {
+				_ = cli.Close()
+				return nil, nil, err
+			}
+			return cli, initRes, nil
+		}
+
+		h.send(h.client, map[string]any{"op": "models"})
+		f1 := waitFrame(t, h.client, 3*time.Second, func(m map[string]any) bool { return str(m, "t") == "models" })
+		if len(arrayValue(f1["models"])) != 0 || str(f1, "error") == "" {
+			t.Fatalf("expected empty models with error on first call, got %+v", f1)
+		}
+
+		// Second call within TTL must NOT hit an empty cache; it retries and populates models.
+		returnModels.Store(true)
+		h.send(h.client, map[string]any{"op": "models"})
+		f2 := waitFrame(t, h.client, 3*time.Second, func(m map[string]any) bool { return str(m, "t") == "models" })
+		if len(arrayValue(f2["models"])) != 2 || str(f2, "error") != "" {
+			t.Fatalf("expected retry to populate 2 models without error, got %+v", f2)
+		}
+		if newCalls.Load() < 3 {
+			t.Fatalf("expected retries after empty response, got newCalls=%d", newCalls.Load())
+		}
+	})
+
+	t.Run("antigravity falls back to antigravity-cli and persists default for handleNew", func(t *testing.T) {
+		h := newAgyTestHarness(t)
+		var dialedDirs []string
+		var newChatDir string
+		var mu sync.Mutex
+
+		h.mgr.dialACP = func(ctx context.Context, cfg acpClientConfig) (*acpClient, *acpInitResult, error) {
+			mu.Lock()
+			dialedDirs = append(dialedDirs, cfg.AppDataDir)
+			mu.Unlock()
+			if cfg.AppDataDir == acpDefaultAppDataDir {
+				return nil, nil, errors.New("not signed in under desktop antigravity")
+			}
+			srv, cli := newMockACPServer(t, cfg)
+			srv.on("initialize", func(msg mockACPRPCMessage) {
+				_ = srv.sendResult(msg.ID, mockInitResultPayload())
+			})
+			srv.on("session/new", func(msg mockACPRPCMessage) {
+				mu.Lock()
+				newChatDir = cfg.AppDataDir
+				mu.Unlock()
+				_ = srv.sendResult(msg.ID, mockStandardSessionState("cli-sess-1", "gemini-4-neon", "high", "default"))
+			})
+			srv.on("session/prompt", func(msg mockACPRPCMessage) {
+				_ = srv.sendResult(msg.ID, map[string]any{"stopReason": "end_turn"})
+			})
+			srv.on("session/close", func(msg mockACPRPCMessage) {
+				_ = srv.sendResult(msg.ID, map[string]any{})
+			})
+			srv.start()
+			initRes, err := cli.Initialize(ctx)
+			if err != nil {
+				_ = cli.Close()
+				return nil, nil, err
+			}
+			return cli, initRes, nil
+		}
+
+		h.send(h.client, map[string]any{"op": "models"})
+		mf := waitFrame(t, h.client, 3*time.Second, func(m map[string]any) bool { return str(m, "t") == "models" })
+		if len(arrayValue(mf["models"])) != 2 || str(mf, "error") != "" {
+			t.Fatalf("expected fallback to antigravity-cli to return 2 models, got %+v", mf)
+		}
+		mu.Lock()
+		gotDirs := append([]string(nil), dialedDirs...)
+		mu.Unlock()
+		if len(gotDirs) != 2 || gotDirs[0] != acpDefaultAppDataDir || gotDirs[1] != acpCLIAppDataDir {
+			t.Fatalf("expected dial order [antigravity, antigravity-cli], got %v", gotDirs)
+		}
+
+		// Subsequent handleNew reuses the remembered working antigravity-cli appDataDir!
+		h.send(h.client, map[string]any{"op": "new", "cwd": h.home, "text": "CLI-only user prompt", "nonce": "new-cli-dir"})
+		ack := waitAck(t, h.client, "new-cli-dir")
+		if ok, _ := ack["ok"].(bool); !ok {
+			t.Fatalf("expected handleNew on remembered antigravity-cli dir to succeed, got %+v", ack)
+		}
+		mu.Lock()
+		usedDir := newChatDir
+		mu.Unlock()
+		if usedDir != acpCLIAppDataDir {
+			t.Fatalf("expected handleNew to use %q, got %q", acpCLIAppDataDir, usedDir)
+		}
+	})
+
+	t.Run("availableModels-only fallback derives base models and ascending efforts without configOptions", func(t *testing.T) {
+		h := newAgyTestHarness(t)
+		h.mgr.dialACP = func(ctx context.Context, cfg acpClientConfig) (*acpClient, *acpInitResult, error) {
+			srv, cli := newMockACPServer(t, cfg)
+			srv.on("initialize", func(msg mockACPRPCMessage) {
+				_ = srv.sendResult(msg.ID, mockInitResultPayload())
+			})
+			srv.on("session/new", func(msg mockACPRPCMessage) {
+				_ = srv.sendResult(msg.ID, map[string]any{
+					"sessionId": "avail-only-1",
+					"models": map[string]any{
+						"currentModelId": "gemini-4-neon-high",
+						"availableModels": []map[string]any{
+							{"modelId": "gemini-4-neon-xhigh", "name": "Gemini 4 Neon (Max)"},
+							{"modelId": "gemini-4-neon-low", "name": "Gemini 4 Neon (Low)"},
+							{"modelId": "gemini-4-neon-high", "name": "Gemini 4 Neon (High)"},
+							{"modelId": "claude-sonnet-5-5", "name": "Claude Sonnet 5.5"},
+						},
+					},
+				})
+			})
+			srv.on("session/close", func(msg mockACPRPCMessage) {
+				_ = srv.sendResult(msg.ID, map[string]any{})
+			})
+			srv.start()
+			initRes, err := cli.Initialize(ctx)
+			if err != nil {
+				_ = cli.Close()
+				return nil, nil, err
+			}
+			return cli, initRes, nil
+		}
+
+		h.send(h.client, map[string]any{"op": "models"})
+		mf := waitFrame(t, h.client, 3*time.Second, func(m map[string]any) bool { return str(m, "t") == "models" })
+		models := arrayValue(mf["models"])
+		if len(models) != 2 {
+			t.Fatalf("expected 2 grouped base models, got %+v", models)
+		}
+		m0 := mapValue(models[0])
+		if str(m0, "slug") != "gemini-4-neon" || str(m0, "name") != "Gemini 4 Neon" {
+			t.Fatalf("unexpected grouped base model[0]: %+v", m0)
+		}
+		effs := stringArray(m0["efforts"])
+		if strings.Join(effs, ",") != "low,high,xhigh" {
+			t.Fatalf("expected strictly ascending efforts [low high xhigh], got %v", effs)
+		}
+		m1 := mapValue(models[1])
+		if str(m1, "slug") != "claude-sonnet-5-5" || str(m1, "name") != "Claude Sonnet 5.5" {
+			t.Fatalf("unexpected model[1]: %+v", m1)
+		}
+		def := mapValue(mf["default"])
+		if str(def, "model") != "gemini-4-neon" || str(def, "effort") != "high" {
+			t.Fatalf("expected derived default model=gemini-4-neon effort=high, got %+v", def)
+		}
+	})
+
+	t.Run("ghost row skipped and falls back cleanly to session/new with close", func(t *testing.T) {
+		h := newAgyTestHarness(t)
+		// Create conversations dir so ghost-row detection is active, with NO .pb file for conv-ghost.
+		if err := os.MkdirAll(filepath.Join(h.geminiDir, antigravityAppDirDesktop, "conversations"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		dbPath := antigravityDBPath(h.geminiDir, antigravityAppDirDesktop)
+		createAntigravityTestDB(t, dbPath, []antigravityTestRow{
+			{id: "conv-ghost", title: "Ghost Chat", lastMod: "2026-11-27T14:55:00Z", status: "CASCADE_RUN_STATUS_IDLE"},
+		})
+		h.mgr.refresh()
+
+		var loadCalls, newCalls, closeCalls atomic.Int32
+		h.mgr.dialACP = func(ctx context.Context, cfg acpClientConfig) (*acpClient, *acpInitResult, error) {
+			srv, cli := newMockACPServer(t, cfg)
+			srv.on("initialize", func(msg mockACPRPCMessage) {
+				_ = srv.sendResult(msg.ID, mockInitResultPayload())
+			})
+			srv.on("session/load", func(msg mockACPRPCMessage) {
+				loadCalls.Add(1)
+				_ = srv.sendError(msg.ID, -32000, "ghost conversation missing")
+			})
+			srv.on("session/new", func(msg mockACPRPCMessage) {
+				n := newCalls.Add(1)
+				if n == 1 {
+					// Simulate first cwd (os.TempDir) rejected, second cwd succeeds!
+					_ = srv.sendError(msg.ID, -32000, "temp dir not allowed")
+					return
+				}
+				_ = srv.sendResult(msg.ID, mockStandardSessionState("fallback-new-1", "gemini-4-neon", "high", "default"))
+			})
+			srv.on("session/close", func(msg mockACPRPCMessage) {
+				closeCalls.Add(1)
+				_ = srv.sendResult(msg.ID, map[string]any{})
+			})
+			srv.start()
+			initRes, err := cli.Initialize(ctx)
+			if err != nil {
+				_ = cli.Close()
+				return nil, nil, err
+			}
+			return cli, initRes, nil
+		}
+
+		h.send(h.client, map[string]any{"op": "models"})
+		mf := waitFrame(t, h.client, 3*time.Second, func(m map[string]any) bool { return str(m, "t") == "models" })
+		if len(arrayValue(mf["models"])) != 2 || str(mf, "error") != "" {
+			t.Fatalf("expected fallback session/new to yield 2 models, got %+v", mf)
+		}
+		if loadCalls.Load() != 0 {
+			t.Fatalf("expected ghost row without .pb to be skipped before session/load, got loadCalls=%d", loadCalls.Load())
+		}
+		if newCalls.Load() != 2 || closeCalls.Load() != 1 {
+			t.Fatalf("expected session/new retry across fallback cwd + session/close, got new=%d close=%d", newCalls.Load(), closeCalls.Load())
+		}
+	})
+}
+
+func TestAntigravityTurboModeDefaultModelsAndLiveAutoApprove(t *testing.T) {
+	// 1. newAntigravityManager defaults allowFullAccess to true.
+	prodMgr := newAntigravityManager(nil)
+	t.Cleanup(prodMgr.shutdown)
+	if !prodMgr.allowFullAccess {
+		t.Fatalf("expected newAntigravityManager to enable allowFullAccess by default")
+	}
+
+	// 2. handleModels includes Turbo (full-access) when allowFullAccess is true.
+	h := newAgyTestHarness(t)
+	h.mgr.allowFullAccess = true
+
+	var (
+		mu             sync.Mutex
+		dialedSkip     []bool
+		setModes       []string
+		activeSrv      *mockACPServer
+		turn1Block     = make(chan struct{})
+		prompt1Started = make(chan struct{})
+	)
+	h.mgr.dialACP = func(ctx context.Context, cfg acpClientConfig) (*acpClient, *acpInitResult, error) {
+		mu.Lock()
+		dialedSkip = append(dialedSkip, cfg.DangerouslySkipPermissions)
+		mu.Unlock()
+		srv, cli := newMockACPServer(t, cfg)
+		mu.Lock()
+		activeSrv = srv
+		mu.Unlock()
+		srv.on("initialize", func(msg mockACPRPCMessage) {
+			_ = srv.sendResult(msg.ID, mockInitResultPayload())
+		})
+		srv.on("session/new", func(msg mockACPRPCMessage) {
+			sid := fmt.Sprintf("sess-turbo-%d", len(dialedSkip))
+			_ = srv.sendResult(msg.ID, mockStandardSessionState(sid, "gemini-4-neon", "high", "default"))
+		})
+		srv.on("session/set_mode", func(msg mockACPRPCMessage) {
+			var p struct {
+				SessionID string `json:"sessionId"`
+				ModeID    string `json:"modeId"`
+			}
+			_ = json.Unmarshal(msg.Params, &p)
+			mu.Lock()
+			setModes = append(setModes, p.ModeID)
+			mu.Unlock()
+			// Simulate ACP server echoing mode updates back during session/set_mode.
+			_ = srv.sendNotify("session/update", map[string]any{
+				"sessionId": p.SessionID,
+				"update":    map[string]any{"sessionUpdate": "current_mode_update", "currentModeId": p.ModeID},
+			})
+			_ = srv.sendNotify("session/update", map[string]any{
+				"sessionId": p.SessionID,
+				"update": map[string]any{
+					"sessionUpdate": "config_option_update",
+					"configOptions": []map[string]any{{"id": "mode", "currentValue": p.ModeID}},
+				},
+			})
+			_ = srv.sendResult(msg.ID, map[string]any{})
+		})
+		srv.on("session/prompt", func(msg mockACPRPCMessage) {
+			var p struct {
+				SessionID string `json:"sessionId"`
+			}
+			_ = json.Unmarshal(msg.Params, &p)
+			if p.SessionID == "sess-turbo-1" {
+				select {
+				case <-prompt1Started:
+				default:
+					close(prompt1Started)
+				}
+				<-turn1Block
+			}
+			_ = srv.sendResult(msg.ID, map[string]any{"stopReason": "end_turn"})
+		})
+		srv.on("session/close", func(msg mockACPRPCMessage) {
+			_ = srv.sendResult(msg.ID, map[string]any{})
+		})
+		srv.start()
+		initRes, err := cli.Initialize(ctx)
+		if err != nil {
+			_ = cli.Close()
+			return nil, nil, err
+		}
+		return cli, initRes, nil
+	}
+
+	h.send(h.client, map[string]any{"op": "models"})
+	mf := waitFrame(t, h.client, 3*time.Second, func(m map[string]any) bool { return str(m, "t") == "models" })
+	if mf["allowFullAccess"] != true {
+		t.Fatalf("expected allowFullAccess=true, got %v", mf["allowFullAccess"])
+	}
+	modes := arrayValue(mf["modes"])
+	foundTurbo := false
+	for _, raw := range modes {
+		md := mapValue(raw)
+		if str(md, "id") == "full-access" && str(md, "name") == "Turbo" && str(md, "description") == "Auto-Approves All Edits And Commands" {
+			foundTurbo = true
+		}
+	}
+	if !foundTurbo || len(modes) != 5 {
+		t.Fatalf("expected 5 modes including Turbo full-access, got %+v", modes)
+	}
+
+	// 3. Start a normal session in default mode, receive a pending permission, then switch live to "turbo" alias:
+	// should call best-effort SetMode("auto"), auto-approve the pending permission, AND auto-approve future permissions without emitting attention!
+	h.send(h.client, map[string]any{"op": "new", "cwd": h.home, "text": "Run tasks", "permissionMode": "default", "nonce": "new-def"})
+	ack := waitAck(t, h.client, "new-def")
+	if ok, _ := ack["ok"].(bool); !ok {
+		t.Fatalf("new default session failed: %+v", ack)
+	}
+	sid1 := str(ack, "thread")
+	<-prompt1Started
+
+	mu.Lock()
+	srv1 := activeSrv
+	mu.Unlock()
+
+	permResp1, err := srv1.sendServerRequest("perm-pending", "session/request_permission", map[string]any{
+		"sessionId": sid1,
+		"toolCall":  map[string]any{"toolCallId": "tc-1", "title": "Run ls", "kind": "execute"},
+		"options": []map[string]any{
+			{"optionId": "allow-once", "name": "Allow Once", "kind": "allow_once"},
+			{"optionId": "allow-always", "name": "Allow Always", "kind": "allow_always"},
+			{"optionId": "deny", "name": "Deny", "kind": "reject_once"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Wait for the attention event for the pending permission while in default mode.
+	_ = waitFrame(t, h.evClient, 3*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "event" && str(m, "id") == sid1 && str(m, "kind") == "attention"
+	})
+
+	// Switch live session to Turbo using defensive "Turbo" alias -> normalizes to "full-access"!
+	h.send(h.client, map[string]any{"op": "settings", "id": sid1, "permissionMode": "Turbo", "nonce": "set-turbo"})
+	ack = waitAck(t, h.client, "set-turbo")
+	if ok, _ := ack["ok"].(bool); !ok {
+		t.Fatalf("settings switch to Turbo failed: %+v", ack)
+	}
+	if pref := h.mgr.state.Pref(sid1); pref.PermissionMode != "full-access" {
+		t.Fatalf("expected normalized pref full-access, got %q", pref.PermissionMode)
+	}
+
+	// Pending permission must have been auto-approved with allow_always!
+	select {
+	case msg := <-permResp1:
+		var out struct {
+			Outcome struct {
+				Outcome  string `json:"outcome"`
+				OptionID string `json:"optionId"`
+			} `json:"outcome"`
+		}
+		if err := json.Unmarshal(msg.Result, &out); err != nil || out.Outcome.Outcome != "selected" || out.Outcome.OptionID != "allow-always" {
+			t.Fatalf("expected pending permission auto-approved with allow-always, got %s", string(msg.Result))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for auto-approval of pending permission on Turbo switch")
+	}
+
+	// Emit explicit ACP mode echoes ("auto") and applySessionState("auto") after switching to Turbo:
+	// none of them may downgrade meta.PermissionMode away from "full-access".
+	h.mgr.mu.Lock()
+	run1 := h.mgr.runs[sid1]
+	h.mgr.mu.Unlock()
+	_ = srv1.sendNotify("session/update", map[string]any{
+		"sessionId": sid1,
+		"update":    map[string]any{"sessionUpdate": "current_mode_update", "currentModeId": "auto"},
+	})
+	_ = srv1.sendNotify("session/update", map[string]any{
+		"sessionId": sid1,
+		"update": map[string]any{
+			"sessionUpdate": "config_option_update",
+			"configOptions": []map[string]any{{"id": "mode", "currentValue": "auto"}},
+		},
+	})
+	run1.mu.Lock()
+	daemon1 := run1.daemon
+	run1.mu.Unlock()
+	daemon1.drainDispatchForSession(sid1)
+	run1.applySessionState(&acpSessionState{
+		SessionID: sid1,
+		Modes:     acpModesState{CurrentModeID: "auto"},
+	})
+	if meta1, _ := run1.snapshot(); meta1.PermissionMode != "full-access" {
+		t.Fatalf("ACP mode echoes must not downgrade Turbo full-access mode, got %q", meta1.PermissionMode)
+	}
+
+	// Drain any stale events before sending a second permission in Turbo mode.
+	for len(h.evClient.out) > 0 {
+		<-h.evClient.out
+	}
+
+	// Subsequent permission while in Turbo mode auto-approves immediately with ZERO attention event and ZERO stored pending permissions!
+	permResp2, err := srv1.sendServerRequest("perm-turbo-live", "session/request_permission", map[string]any{
+		"sessionId": sid1,
+		"toolCall":  map[string]any{"toolCallId": "tc-2", "title": "Edit main.go", "kind": "edit"},
+		"options": []map[string]any{
+			{"optionId": "opt-once", "name": "Allow Once", "kind": "allow_once"},
+			{"optionId": "opt-deny", "name": "Deny", "kind": "reject_once"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case msg := <-permResp2:
+		var out struct {
+			Outcome struct {
+				Outcome  string `json:"outcome"`
+				OptionID string `json:"optionId"`
+			} `json:"outcome"`
+		}
+		if err := json.Unmarshal(msg.Result, &out); err != nil || out.Outcome.Outcome != "selected" || out.Outcome.OptionID != "opt-once" {
+			t.Fatalf("expected live Turbo permission auto-approved with opt-once, got %s", string(msg.Result))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for immediate Turbo auto-approval")
+	}
+	// Verify zero pending permissions stored and zero attention notification emitted.
+	run1.mu.Lock()
+	pendingCount := len(run1.permissions)
+	run1.mu.Unlock()
+	if pendingCount != 0 {
+		t.Fatalf("expected 0 pending permissions in Turbo mode, got %d", pendingCount)
+	}
+	select {
+	case raw := <-h.evClient.out:
+		var ev map[string]any
+		if json.Unmarshal(raw, &ev) == nil && str(ev, "kind") == "attention" {
+			t.Fatalf("Turbo mode must not emit attention notification, got %+v", ev)
+		}
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Explicit user switch away from Turbo via handleSettings leaves full-access cleanly.
+	h.send(h.client, map[string]any{"op": "settings", "id": sid1, "permissionMode": "plan", "nonce": "set-plan"})
+	ack = waitAck(t, h.client, "set-plan")
+	if ok, _ := ack["ok"].(bool); !ok {
+		t.Fatalf("settings switch away from Turbo to plan failed: %+v", ack)
+	}
+	if meta1, _ := run1.snapshot(); meta1.PermissionMode != "plan" {
+		t.Fatalf("expected explicit switch away from Turbo to set mode=plan, got %q", meta1.PermissionMode)
+	}
+	close(turn1Block)
+
+	// Verify best-effort SetMode("auto") was called on switch to Turbo.
+	mu.Lock()
+	gotSetModes := append([]string(nil), setModes...)
+	mu.Unlock()
+	if !contains(gotSetModes, "auto") {
+		t.Fatalf("expected best-effort SetMode(\"auto\") on Turbo switch, got %v", gotSetModes)
+	}
+
+	// 4. handleNew with permissionMode "turbo" dials a full-access daemon with DangerouslySkipPermissions=true.
+	h.send(h.client, map[string]any{"op": "new", "cwd": h.home, "text": "Turbo chat", "permissionMode": "turbo", "nonce": "new-turbo"})
+	ack = waitAck(t, h.client, "new-turbo")
+	if ok, _ := ack["ok"].(bool); !ok {
+		t.Fatalf("new Turbo session failed: %+v", ack)
+	}
+	mu.Lock()
+	gotSkips := append([]bool(nil), dialedSkip...)
+	mu.Unlock()
+	if len(gotSkips) < 2 || !gotSkips[len(gotSkips)-1] {
+		t.Fatalf("expected handleNew with turbo mode to dial DangerouslySkipPermissions=true, got %v", gotSkips)
 	}
 }
