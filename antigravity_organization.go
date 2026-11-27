@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -127,9 +128,11 @@ func (s *antigravityState) saveLocked() error {
 	tmpPath := f.Name()
 	defer os.Remove(tmpPath)
 
-	if err := f.Chmod(0600); err != nil {
-		_ = f.Close()
-		return err
+	if runtime.GOOS != "windows" {
+		if err := f.Chmod(0600); err != nil {
+			_ = f.Close()
+			return err
+		}
 	}
 	if _, err := f.Write(encoded); err != nil {
 		_ = f.Close()

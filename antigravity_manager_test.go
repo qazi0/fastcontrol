@@ -612,6 +612,7 @@ func TestAntigravityManagerModelsDiscoveryProbeAndCaching(t *testing.T) {
 func TestAntigravityManagerNewStreamDiffSteeringAndSettings(t *testing.T) {
 	h := newAgyTestHarness(t)
 	t.Setenv("HOME", h.home)
+	t.Setenv("USERPROFILE", h.home)
 
 	ws := filepath.Join(h.home, "project")
 	_ = os.MkdirAll(ws, 0700)
@@ -1437,6 +1438,7 @@ func TestAntigravityManagerWakeAppDataDirMoreAndIdleReap(t *testing.T) {
 func TestAntigravityManagerSubagentsReadOnlyAndFilesServing(t *testing.T) {
 	h := newAgyTestHarness(t)
 	t.Setenv("HOME", h.home)
+	t.Setenv("USERPROFILE", h.home)
 
 	dbPath := antigravityDBPath(h.geminiDir, antigravityAppDirDesktop)
 	createAntigravityTestDB(t, dbPath, []antigravityTestRow{
@@ -1529,7 +1531,11 @@ func TestAntigravityManagerSubagentsReadOnlyAndFilesServing(t *testing.T) {
 	}
 
 	// file:// URI download succeeds.
-	fileURI := "file://" + filepath.ToSlash(planFile)
+	slashed := filepath.ToSlash(planFile)
+	if len(slashed) == 0 || slashed[0] != '/' {
+		slashed = "/" + slashed
+	}
+	fileURI := (&url.URL{Scheme: "file", Path: slashed}).String()
 	w := httptest.NewRecorder()
 	serveFile(w, httptest.NewRequest("GET", "/file?path="+url.QueryEscape(fileURI), nil))
 	if w.Code != 200 || !bytes.Equal(w.Body.Bytes(), planBody) {
