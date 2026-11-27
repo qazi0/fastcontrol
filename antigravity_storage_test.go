@@ -940,9 +940,231 @@ func TestAntigravityLiveReadOnlyDBSmoke(t *testing.T) {
 		if view.Meta.Provider != "antigravity" {
 			t.Fatalf("unexpected transcript provider: %q", view.Meta.Provider)
 		}
+		for _, turn := range view.Turns {
+			for _, it := range turn.Items {
+				if it.K == "user" && (strings.Contains(it.Text, "<USER_REQUEST>") || strings.Contains(it.Text, "<ADDITIONAL_METADATA>")) {
+					t.Fatalf("live read-only transcript leaked raw Antigravity XML wrapper in user item")
+				}
+			}
+		}
 		checked++
 		if checked >= 3 {
 			break
 		}
+	}
+}
+
+func TestCleanAntigravityUserText(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "full_wrapped_prompt_with_metadata_skill_and_settings",
+			in: "<USER_REQUEST>\nFix the login bug in auth.go\n</USER_REQUEST>\n" +
+				"<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-27T20:00:00Z\n" +
+				"<SKILL>\nname: auth-helper\n</SKILL>\n</ADDITIONAL_METADATA>\n" +
+				"<USER_SETTINGS_CHANGE>\nModel set to gemini-4-neon\n</USER_SETTINGS_CHANGE>",
+			want: "Fix the login bug in auth.go",
+		},
+		{
+			name: "case_insensitive_and_inline_consecutive_tags",
+			in:   `<user_request id="1">Hello world</user_request><additional_metadata>local time</additional_metadata>`,
+			want: "Hello world",
+		},
+		{
+			name: "begin_end_chat_standalone_lines",
+			in:   "BEGIN CHAT\nCheck the failing build\nEND CHAT\n<ADDITIONAL_METADATA>\nlocal time\n</ADDITIONAL_METADATA>",
+			want: "Check the failing build",
+		},
+		{
+			name: "begin_end_chat_decorated_and_xml_tags",
+			in:   "--- BEGIN CHAT ---\n<begin_chat>\n<USER_REQUEST>\nDeploy release v0.2.19\n</USER_REQUEST>\n<end_chat>\n--- END CHAT ---",
+			want: "Deploy release v0.2.19",
+		},
+		{
+			name: "single_line_begin_end_chat_tags",
+			in:   "<begin_chat>Quick question<end_chat>",
+			want: "Quick question",
+		},
+		{
+			name: "truncated_preview_missing_closing_tag",
+			in:   "<USER_REQUEST>\nBuild a dashboard for metrics and telemetry",
+			want: "Build a dashboard for metrics and telemetry",
+		},
+		{
+			name: "truncated_preview_partial_closing_tag",
+			in:   "<USER_REQUEST>\nBuild a dashboard</USER_REQU",
+			want: "Build a dashboard",
+		},
+		{
+			name: "truncated_preview_partial_metadata_tag_with_ellipsis",
+			in:   "<USER_REQUEST>\nBuild a dashboard\n</USER_REQUEST>\n<ADDITIONAL_ME…",
+			want: "Build a dashboard",
+		},
+		{
+			name: "multiple_context_and_metadata_blocks",
+			in: "<ATTACHED_FILES>\na.go\n</ATTACHED_FILES>\n" +
+				"<CURRENT_EDITOR>\nmain.go\n</CURRENT_EDITOR>\n" +
+				"<OPEN_FILES>\napp.js\n</OPEN_FILES>\n" +
+				"<USER_CONTEXT>\nworkspace\n</USER_CONTEXT>\n" +
+				"<CONTEXT>\nextra\n</CONTEXT>\n" +
+				"<EPHEMERAL_MESSAGE>\nnote\n</EPHEMERAL_MESSAGE>\n" +
+				"Actual prompt line",
+			want: "Actual prompt line",
+		},
+		{
+			name: "system_only_wakeup_with_preamble_returns_empty",
+			in: "The following is a <SYSTEM_MESSAGE> not actually sent by the user. It is provided by the system as important information to pay attention to.\n\n" +
+				"<SYSTEM_MESSAGE>\n[Message] background task finished\n</SYSTEM_MESSAGE>",
+			want: "",
+		},
+		{
+			name: "settings_and_metadata_only_returns_empty",
+			in: "<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-27T20:00:00Z\n</ADDITIONAL_METADATA>\n" +
+				"<USER_SETTINGS_CHANGE>\neffort=high\n</USER_SETTINGS_CHANGE>",
+			want: "",
+		},
+		{
+			name: "fenced_code_with_xml_unwrapped_preserved",
+			in: "Here is an example:\n```xml\n<USER_REQUEST>demo</USER_REQUEST>\n<ADDITIONAL_METADATA>meta</ADDITIONAL_METADATA>\nBEGIN CHAT\nhello\nEND CHAT\n```",
+			want: "Here is an example:\n```xml\n<USER_REQUEST>demo</USER_REQUEST>\n<ADDITIONAL_METADATA>meta</ADDITIONAL_METADATA>\nBEGIN CHAT\nhello\nEND CHAT\n```",
+		},
+		{
+			name: "fenced_code_with_xml_inside_user_request_preserved",
+			in: "<USER_REQUEST>\nStrip this:\n```xml\n<USER_REQUEST>demo</USER_REQUEST>\n<ADDITIONAL_METADATA>meta</ADDITIONAL_METADATA>\nBEGIN CHAT\nhello\nEND CHAT\n```\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nreal meta\n</ADDITIONAL_METADATA>",
+			want: "Strip this:\n```xml\n<USER_REQUEST>demo</USER_REQUEST>\n<ADDITIONAL_METADATA>meta</ADDITIONAL_METADATA>\nBEGIN CHAT\nhello\nEND CHAT\n```",
+		},
+		{
+			name: "inline_backticks_and_plain_html_preserved",
+			in:   "<USER_REQUEST>\nStrip `<USER_REQUEST>` and `</USER_REQUEST>` from <div>markup</div>.\n</USER_REQUEST>\n<ADDITIONAL_METADATA>meta</ADDITIONAL_METADATA>",
+			want: "Strip `<USER_REQUEST>` and `</USER_REQUEST>` from <div>markup</div>.",
+		},
+		{
+			name: "plain_prose_mentioning_begin_and_end_chat_preserved",
+			in:   "Let's begin chat testing and end chat logging with <span>tags</span>.",
+			want: "Let's begin chat testing and end chat logging with <span>tags</span>.",
+		},
+		{
+			name: "tilde_code_fence_preserved",
+			in:   "~~~\n<USER_REQUEST>inside tilde</USER_REQUEST>\n~~~",
+			want: "~~~\n<USER_REQUEST>inside tilde</USER_REQUEST>\n~~~",
+		},
+		{
+			name: "long_multiline_metadata_block_followed_by_settings_and_trailing_spaces",
+			in: "<USER_REQUEST>\nShort prompt\n</USER_REQUEST>\n" +
+				"<ADDITIONAL_METADATA>\n" + strings.Repeat("line of workspace metadata\n", 40) + "</ADDITIONAL_METADATA>   \n" +
+				"<USER_SETTINGS_CHANGE>\n" + strings.Repeat("setting=value\n", 10) + "</USER_SETTINGS_CHANGE>\n",
+			want: "Short prompt",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cleanAntigravityUserText(tc.in); got != tc.want {
+				t.Fatalf("cleanAntigravityUserText(%q)\ngot:  %q\nwant: %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAntigravityTranscriptAndDBStripXMLEnvelopes(t *testing.T) {
+	geminiDir := t.TempDir()
+	convID := "conv-xml-clean"
+	tPath := antigravityTranscriptPath(geminiDir, antigravityAppDirDesktop, convID)
+	annPath := antigravityAnnotationPath(geminiDir, antigravityAppDirDesktop, convID)
+
+	if err := os.MkdirAll(filepath.Dir(annPath), 0700); err != nil {
+		t.Fatalf("mkdir annotations: %v", err)
+	}
+	if err := os.WriteFile(annPath, []byte("title: \"Clean Annotation Fallback\"\n"), 0600); err != nil {
+		t.Fatalf("write annotation: %v", err)
+	}
+
+	wrappedTurn1 := "<USER_REQUEST>\nFix Antigravity XML tags\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-27T20:00:00Z\n<SKILL>\nname: helper\n</SKILL>\n</ADDITIONAL_METADATA>\n<USER_SETTINGS_CHANGE>\nmode=default\n</USER_SETTINGS_CHANGE>"
+	systemOnlyTurn := "The following is a <SYSTEM_MESSAGE> not actually sent by the user. It is provided by the system as important information to pay attention to.\n\n<SYSTEM_MESSAGE>\n[Message] wakeup\n</SYSTEM_MESSAGE>"
+	beginEndTurn := "BEGIN CHAT\nKeep fenced example:\n```xml\n<USER_REQUEST>literal</USER_REQUEST>\n```\nEND CHAT\n<ADDITIONAL_METADATA>\ntime\n</ADDITIONAL_METADATA>"
+
+	line1, _ := json.Marshal(map[string]any{"step_index": 0, "type": "USER_INPUT", "status": "DONE", "source": "USER_EXPLICIT", "created_at": "2026-11-27T10:00:00Z", "content": wrappedTurn1})
+	line2, _ := json.Marshal(map[string]any{"step_index": 1, "type": "PLANNER_RESPONSE", "status": "DONE", "created_at": "2026-11-27T10:00:05Z", "content": "Working on it."})
+	line3, _ := json.Marshal(map[string]any{"step_index": 2, "type": "USER_INPUT", "status": "DONE", "source": "SYSTEM", "created_at": "2026-11-27T10:01:00Z", "content": systemOnlyTurn})
+	line4, _ := json.Marshal(map[string]any{"step_index": 3, "type": "USER_INPUT", "status": "DONE", "source": "USER_EXPLICIT", "created_at": "2026-11-27T10:02:00Z", "content": beginEndTurn})
+	line5, _ := json.Marshal(map[string]any{"step_index": 4, "type": "PLANNER_RESPONSE", "status": "DONE", "created_at": "2026-11-27T10:02:05Z", "content": "Done."})
+
+	writeTestTranscript(t, tPath, []string{string(line1), string(line2), string(line3), string(line4), string(line5)}, time.Time{})
+
+	// DB rows with wrapped title, truncated preview, and system-only title falling back to annotation.
+	desktopDB := antigravityDBPath(geminiDir, antigravityAppDirDesktop)
+	createAntigravityTestDB(t, desktopDB, []antigravityTestRow{
+		{
+			id:            convID,
+			title:         "<SYSTEM_MESSAGE>\ninternal wakeup\n</SYSTEM_MESSAGE>",
+			preview:       "<USER_REQUEST>\nFix Antigravity XML tags and truncated tail</USER_REQ",
+			stepCount:     5,
+			lastMod:       "2026-11-27 10:02:05+00:00",
+			workspaceURIs: `["file:///Users/siraj/dev/fastcontrol"]`,
+			status:        "CASCADE_RUN_STATUS_IDLE",
+			appDataDir:    antigravityAppDirDesktop,
+		},
+		{
+			id:            "conv-xml-title",
+			title:         "<USER_REQUEST>\nWrapped DB Title\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\ntime\n</ADDITIONAL_METADATA>",
+			preview:       "<begin_chat>\nWrapped preview text\n<end_chat>",
+			stepCount:     2,
+			lastMod:       "2026-11-27 10:01:00+00:00",
+			workspaceURIs: `["file:///Users/siraj/dev/fastcontrol"]`,
+			status:        "CASCADE_RUN_STATUS_IDLE",
+			appDataDir:    antigravityAppDirDesktop,
+		},
+	})
+
+	records, err := antigravityListRecords(context.Background(), geminiDir, nil)
+	if err != nil {
+		t.Fatalf("antigravityListRecords: %v", err)
+	}
+	byID := map[string]antigravityRecord{}
+	for _, r := range records {
+		byID[r.ID] = r
+	}
+	if byID[convID].Title != "Clean Annotation Fallback" {
+		t.Fatalf("expected system-only DB title to fall back to annotation, got %q", byID[convID].Title)
+	}
+	if byID[convID].Preview != "Fix Antigravity XML tags and truncated tail" {
+		t.Fatalf("expected cleaned truncated preview, got %q", byID[convID].Preview)
+	}
+	if byID["conv-xml-title"].Title != "Wrapped DB Title" || byID["conv-xml-title"].Preview != "Wrapped preview text" {
+		t.Fatalf("expected cleaned DB title/preview, got title=%q preview=%q", byID["conv-xml-title"].Title, byID["conv-xml-title"].Preview)
+	}
+
+	// Verify ThreadInfo carries clean Title/Preview.
+	reader := NewOrganizationReader(t.TempDir())
+	threads, _ := reader.Antigravity(false, nil, records)
+	for _, th := range threads {
+		if strings.Contains(th.Title, "<USER_REQUEST>") || strings.Contains(th.Preview, "<USER_REQUEST>") || strings.Contains(th.Preview, "<begin_chat>") {
+			t.Fatalf("ThreadInfo leaked XML wrapper: %+v", th)
+		}
+	}
+
+	// Verify transcript parsing: 2 real turns (system-only wakeup skipped cleanly), clean First & Meta.Title.
+	view, err := readAntigravityTranscriptWithOptions(tPath, antigravityTranscriptOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("readAntigravityTranscriptWithOptions: %v", err)
+	}
+	if view.First != "Fix Antigravity XML tags" {
+		t.Fatalf("expected clean First, got %q", view.First)
+	}
+	if view.Meta.Title != "Fix Antigravity XML tags" {
+		t.Fatalf("expected clean fallback Meta.Title, got %q", view.Meta.Title)
+	}
+	if len(view.Turns) != 2 {
+		t.Fatalf("expected 2 turns (system-only wakeup skipped), got %d: %+v", len(view.Turns), view.Turns)
+	}
+	if view.Turns[0].Items[0].K != "user" || view.Turns[0].Items[0].Text != "Fix Antigravity XML tags" {
+		t.Fatalf("unexpected turn 0 user item: %+v", view.Turns[0].Items[0])
+	}
+	wantTurn1User := "Keep fenced example:\n```xml\n<USER_REQUEST>literal</USER_REQUEST>\n```"
+	if view.Turns[1].Items[0].K != "user" || view.Turns[1].Items[0].Text != wantTurn1User {
+		t.Fatalf("unexpected turn 1 user item:\ngot:  %q\nwant: %q", view.Turns[1].Items[0].Text, wantTurn1User)
 	}
 }

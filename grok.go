@@ -1969,21 +1969,20 @@ func grokModelsFromInfos(infos []grokModelInfo) ([]Model, map[string]int64) {
 		}
 		seen[slug] = true
 		var efforts []string
-		effortSeen := map[string]bool{}
-		defEffort := strings.TrimSpace(info.DefaultReasoningEffort)
+		defEffort := strings.ToLower(strings.TrimSpace(info.DefaultReasoningEffort))
 		for _, opt := range info.ReasoningEfforts {
-			val := strings.TrimSpace(opt.Value)
+			val := strings.ToLower(strings.TrimSpace(opt.Value))
 			if val == "" {
-				val = strings.TrimSpace(opt.ID)
+				val = strings.ToLower(strings.TrimSpace(opt.ID))
 			}
-			if val != "" && !effortSeen[val] {
-				effortSeen[val] = true
+			if val != "" {
 				efforts = append(efforts, val)
 				if opt.Default && defEffort == "" {
 					defEffort = val
 				}
 			}
 		}
+		efforts = sortGrokEfforts(efforts)
 		if len(efforts) == 0 && info.SupportsReasoningEffort {
 			efforts = []string{"minimal", "low", "medium", "high", "xhigh"}
 		}
@@ -2016,7 +2015,8 @@ func mergeGrokModels(primary, fallback []Model) []Model {
 	if len(primary) == 0 {
 		out := make([]Model, len(fallback))
 		for i, m := range fallback {
-			m.Efforts = append([]string(nil), m.Efforts...)
+			m.Efforts = sortGrokEfforts(m.Efforts)
+			m.DefaultEffort = strings.ToLower(strings.TrimSpace(m.DefaultEffort))
 			out[i] = m
 		}
 		return out
@@ -2032,7 +2032,8 @@ func mergeGrokModels(primary, fallback []Model) []Model {
 			continue
 		}
 		seen[m.Slug] = true
-		m.Efforts = append([]string(nil), m.Efforts...)
+		m.Efforts = sortGrokEfforts(m.Efforts)
+		m.DefaultEffort = strings.ToLower(strings.TrimSpace(m.DefaultEffort))
 		if fb, ok := fallbackBySlug[m.Slug]; ok {
 			if m.Name == "" || m.Name == m.Slug {
 				if fb.Name != "" {
@@ -2043,10 +2044,10 @@ func mergeGrokModels(primary, fallback []Model) []Model {
 				m.Description = fb.Description
 			}
 			if len(m.Efforts) == 0 && len(fb.Efforts) > 0 {
-				m.Efforts = append([]string(nil), fb.Efforts...)
+				m.Efforts = sortGrokEfforts(fb.Efforts)
 			}
 			if m.DefaultEffort == "" {
-				m.DefaultEffort = fb.DefaultEffort
+				m.DefaultEffort = strings.ToLower(strings.TrimSpace(fb.DefaultEffort))
 			}
 		}
 		out = append(out, m)
@@ -2121,11 +2122,12 @@ func (m *GrokManager) updateCatalogFromConfigOptions(opts []acpConfigOption) {
 					efforts = append(efforts, v)
 				}
 			}
-			if v := strings.TrimSpace(opt.CurrentValue); v != "" {
+			if v := strings.ToLower(strings.TrimSpace(opt.CurrentValue)); v != "" {
 				defaultEffort = v
 			}
 		}
 	}
+	efforts = sortGrokEfforts(efforts)
 
 	for _, opt := range opts {
 		if opt.ID != "model" {
@@ -2161,6 +2163,8 @@ func (m *GrokManager) updateCatalogFromConfigOptions(opts []acpConfigOption) {
 		for i := range cat.Models {
 			if len(cat.Models[i].Efforts) == 0 {
 				cat.Models[i].Efforts = append([]string(nil), efforts...)
+			} else {
+				cat.Models[i].Efforts = sortGrokEfforts(cat.Models[i].Efforts)
 			}
 			if cat.Models[i].DefaultEffort == "" && defaultEffort != "" {
 				cat.Models[i].DefaultEffort = defaultEffort
@@ -2206,8 +2210,9 @@ func (m *GrokManager) defaultModes() []string {
 }
 
 func (m *GrokManager) validEffort(effort string) bool {
+	effort = strings.ToLower(strings.TrimSpace(effort))
 	switch effort {
-	case "minimal", "low", "medium", "high", "xhigh":
+	case "minimal", "low", "medium", "high", "xhigh", "max":
 		return true
 	}
 	m.mu.Lock()

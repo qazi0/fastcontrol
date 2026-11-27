@@ -16,6 +16,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Message
+import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -36,12 +37,42 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.Toast
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.FileNotFoundException
 import java.io.File
+
+/** Tracks the double-back-to-exit confirmation window on the root screen. */
+internal class BackExitTracker(
+    private val windowMs: Long = DEFAULT_WINDOW_MS,
+) {
+    companion object {
+        const val DEFAULT_WINDOW_MS = 2000L
+    }
+
+    private var lastPressMs: Long = Long.MIN_VALUE
+
+    @Synchronized
+    fun onRootBackPress(nowMs: Long): Boolean {
+        val armed = lastPressMs != Long.MIN_VALUE &&
+            nowMs >= lastPressMs &&
+            (nowMs - lastPressMs) <= windowMs
+        if (armed) {
+            lastPressMs = Long.MIN_VALUE
+            return true
+        }
+        lastPressMs = nowMs
+        return false
+    }
+
+    @Synchronized
+    fun reset() {
+        lastPressMs = Long.MIN_VALUE
+    }
+}
 
 class MainActivity : Activity() {
 
@@ -52,11 +83,43 @@ class MainActivity : Activity() {
         const val EXTRA_SERVER = "server"
         const val EXTRA_THREAD = "thread"
         const val EXTRA_PROVIDER = "provider"
+        internal const val BACK_EXIT_TOAST = "Press back again to exit"
+        internal const val HANDLE_BACK_JS =
+            "(function(){try{return typeof window.handleAndroidBack==='function'?Boolean(window.handleAndroidBack()):null;}catch(e){return null;}})()"
         private const val REQ_FILES = 1
         private const val REQ_NOTIFY = 2
         private const val REQ_MIC = 3
         private const val REQ_SAVE_IMAGE = 4
         private const val REQ_ATTACHMENTS = 5
+
+        internal enum class BackAction {
+            HANDLED,
+            WEBVIEW_BACK,
+            SHOW_EXIT_TOAST,
+            EXIT_APP,
+        }
+
+        internal fun resolveBackAction(
+            jsResult: String?,
+            canWebViewGoBack: Boolean,
+            tracker: BackExitTracker,
+            nowMs: Long,
+        ): BackAction {
+            val normalized = jsResult?.trim()
+            if (normalized == "true") {
+                tracker.reset()
+                return BackAction.HANDLED
+            }
+            if ((normalized == null || normalized == "null") && canWebViewGoBack) {
+                tracker.reset()
+                return BackAction.WEBVIEW_BACK
+            }
+            return if (tracker.onRootBackPress(nowMs)) {
+                BackAction.EXIT_APP
+            } else {
+                BackAction.SHOW_EXIT_TOAST
+            }
+        }
 
         internal fun threadIntentExtras(
             serverId: String,
@@ -171,6 +234,8 @@ class MainActivity : Activity() {
         json.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
 
     @Volatile private var pendingLaunch = ""
+    private val backExitTracker = BackExitTracker()
+    private var exitToast: Toast? = null
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -282,6 +347,7 @@ class MainActivity : Activity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        resetBackExit()
         val launch = describeIntent(intent)
         if (launch.isNotEmpty()) {
             pendingLaunch = launch
@@ -292,6 +358,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         UiState.resumed = true
+        resetBackExit()
         AppUpdates.observer = updateObserver
         // A force stop or app update kills the service; bring it back if the user wants alerts.
         if (Store.notificationsEnabled(this) && !RelayWatchService.isRunning) {
@@ -326,6 +393,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        resetBackExit()
         RelayDiscovery.release("main")
         networkMonitor?.stop()
         networkMonitor = null
@@ -453,30 +521,64 @@ class MainActivity : Activity() {
         container.requestApplyInsets()
     }
 
-    // Back navigation follows the web history (thread view and sheets use pushState).
+    // Back navigation delegates to window.handleAndroidBack() and confirms root exits with a toast.
+
+    private fun resetBackExit() {
+        backExitTracker.reset()
+        exitToast?.cancel()
+        exitToast = null
+    }
+
+    private fun handleBackPress() {
+        if (isDestroyed) return
+        webView.evaluateJavascript(HANDLE_BACK_JS) { raw ->
+            if (isDestroyed) return@evaluateJavascript
+            when (resolveBackAction(raw, webView.canGoBack(), backExitTracker, SystemClock.elapsedRealtime())) {
+                BackAction.HANDLED -> {
+                    exitToast?.cancel()
+                    exitToast = null
+                }
+                BackAction.WEBVIEW_BACK -> {
+                    exitToast?.cancel()
+                    exitToast = null
+                    webView.goBack()
+                }
+                BackAction.SHOW_EXIT_TOAST -> {
+                    exitToast?.cancel()
+                    exitToast = Toast.makeText(this, BACK_EXIT_TOAST, Toast.LENGTH_SHORT).also { it.show() }
+                }
+                BackAction.EXIT_APP -> {
+                    exitToast?.cancel()
+                    exitToast = null
+                    // Same as the platform default for a launcher root: keep the page alive.
+                    moveTaskToBack(true)
+                }
+            }
+        }
+    }
 
     override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {
-        if (keyCode == android.view.KeyEvent.KEYCODE_BACK && Build.VERSION.SDK_INT < 33 &&
-            webView.canGoBack()
-        ) {
-            webView.goBack()
+        if (keyCode == android.view.KeyEvent.KEYCODE_BACK && Build.VERSION.SDK_INT < 33) {
+            if ((event?.repeatCount ?: 0) == 0) {
+                handleBackPress()
+            }
             return true
         }
         return super.onKeyDown(keyCode, event)
     }
 
+    @Deprecated("Deprecated in Java")
+    @Suppress("DEPRECATION")
+    override fun onBackPressed() {
+        handleBackPress()
+    }
+
     /** On API 33+ the system no longer sends KEYCODE_BACK, so a callback is registered for the
-     * activity's lifetime. pushState does not reliably report history changes to the client,
-     * so the decision is made at press time. */
+     * activity's lifetime. */
     private fun registerBackCallback() {
         if (Build.VERSION.SDK_INT < 33) return
         val cb = OnBackInvokedCallback {
-            if (webView.canGoBack()) {
-                webView.goBack()
-            } else {
-                // Same as the platform default for a launcher root: keep the page alive.
-                moveTaskToBack(true)
-            }
+            handleBackPress()
         }
         onBackInvokedDispatcher.registerOnBackInvokedCallback(
             OnBackInvokedDispatcher.PRIORITY_DEFAULT, cb
@@ -876,6 +978,14 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun notificationsEnabled(): Boolean = Store.notificationsEnabled(ctx)
+
+        @JavascriptInterface
+        fun getNotificationPrefs(): String = Store.getNotificationPrefsJson(ctx)
+
+        @JavascriptInterface
+        fun setNotificationPrefs(json: String?) {
+            Store.setNotificationPrefsJson(ctx, json)
+        }
 
         @JavascriptInterface
         fun setActiveThread(serverId: String, threadId: String, provider: String) {

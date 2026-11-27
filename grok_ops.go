@@ -247,16 +247,32 @@ func (m *GrokManager) organizationGroup(id string) ([]ThreadInfo, error) {
 	return threads, nil
 }
 
+func normalizeGrokModelsEfforts(models []Model) []Model {
+	if len(models) == 0 {
+		return models
+	}
+	out := make([]Model, len(models))
+	for i, model := range models {
+		model.Efforts = sortGrokEfforts(model.Efforts)
+		if def := strings.ToLower(strings.TrimSpace(model.DefaultEffort)); def != "" {
+			model.DefaultEffort = def
+		}
+		out[i] = model
+	}
+	return out
+}
+
 func (m *GrokManager) discoverModels(ctx context.Context) ([]Model, grokDefaults, error) {
 	m.modelsMu.Lock()
 	defer m.modelsMu.Unlock()
 
 	cachedModels, defaults, _ := grokReadModelsCache(m.grokRoot())
+	cachedModels = normalizeGrokModelsEfforts(cachedModels)
 
 	now := m.nowTime()
 	cat := m.catalogSnapshot()
 	if cat.LiveLoaded && len(cat.Models) > 0 && now.Sub(cat.UpdatedAt) < m.modelsTTL() {
-		merged := mergeGrokModels(cat.Models, cachedModels)
+		merged := normalizeGrokModelsEfforts(mergeGrokModels(cat.Models, cachedModels))
 		def := defaults
 		if def.Model == "" {
 			def.Model = cat.DefaultModel
@@ -318,7 +334,7 @@ func (m *GrokManager) discoverModels(ctx context.Context) ([]Model, grokDefaults
 		m.updateCatalogFromModelsState(liveState)
 	}
 	cat = m.catalogSnapshot()
-	merged := mergeGrokModels(cat.Models, cachedModels)
+	merged := normalizeGrokModelsEfforts(mergeGrokModels(cat.Models, cachedModels))
 	if len(merged) > 0 {
 		m.mu.Lock()
 		m.catalog.Models = append([]Model(nil), merged...)

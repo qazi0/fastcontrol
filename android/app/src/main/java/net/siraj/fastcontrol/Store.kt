@@ -38,11 +38,33 @@ data class Server(
             .distinct()
 }
 
+/** Per-event-kind push notification preferences shared with the web UI. */
+data class NotificationPrefs(
+    val completed: Boolean = true,
+    val attention: Boolean = true,
+    val failed: Boolean = true,
+) {
+    fun shouldNotify(kind: String?): Boolean = when (kind?.trim()?.lowercase()) {
+        "completed" -> completed
+        "attention" -> attention
+        "failed" -> failed
+        else -> true
+    }
+
+    fun toJson(): JSONObject = JSONObject()
+        .put("completed", completed)
+        .put("attention", attention)
+        .put("failed", failed)
+
+    fun toJsonString(): String = toJson().toString()
+}
+
 /** Persistent settings shared by the activity, the bridge and the watch service. */
 object Store {
     private const val FILE = "relay"
     private const val KEY_SERVERS = "servers"
     private const val KEY_NOTIFY = "notifications"
+    private const val KEY_NOTIFY_PREFS = "notification_prefs"
     const val MAX_ALTS = 8
 
     private val lock = Any()
@@ -292,6 +314,40 @@ object Store {
     fun setNotificationsEnabled(ctx: Context, on: Boolean) {
         prefs(ctx).edit().putBoolean(KEY_NOTIFY, on).apply()
     }
+
+    fun parseNotificationPrefs(json: String?): NotificationPrefs {
+        if (json.isNullOrBlank()) return NotificationPrefs()
+        val obj = try { JSONObject(json) } catch (_: Exception) { return NotificationPrefs() }
+        return NotificationPrefs(
+            completed = parsePrefBoolean(obj, "completed", default = true),
+            attention = parsePrefBoolean(obj, "attention", default = true),
+            failed = parsePrefBoolean(obj, "failed", default = true),
+        )
+    }
+
+    private fun parsePrefBoolean(obj: JSONObject, key: String, default: Boolean): Boolean {
+        if (!obj.has(key) || obj.isNull(key)) return default
+        return when (val raw = obj.opt(key)) {
+            is Boolean -> raw
+            else -> default
+        }
+    }
+
+    fun getNotificationPrefs(ctx: Context): NotificationPrefs = synchronized(lock) {
+        parseNotificationPrefs(prefs(ctx).getString(KEY_NOTIFY_PREFS, null))
+    }
+
+    fun getNotificationPrefsJson(ctx: Context): String =
+        getNotificationPrefs(ctx).toJsonString()
+
+    fun setNotificationPrefsJson(ctx: Context, json: String?): NotificationPrefs = synchronized(lock) {
+        val parsed = parseNotificationPrefs(json)
+        prefs(ctx).edit().putString(KEY_NOTIFY_PREFS, parsed.toJsonString()).apply()
+        parsed
+    }
+
+    fun shouldNotify(ctx: Context, kind: String?): Boolean =
+        getNotificationPrefs(ctx).shouldNotify(kind)
 }
 
 /** Live UI state the watch service consults to avoid alerting about the thread on screen. */

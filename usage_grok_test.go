@@ -798,3 +798,21 @@ func TestGrokUsageServeFourProviderRefreshAndCacheInvalidation(t *testing.T) {
 		t.Fatal("stale 3-provider disk cache should have been invalidated")
 	}
 }
+
+func TestFindGrokUsageBinaryEnvOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PATH", "")
+
+	binName := "grok-override"
+	if runtime.GOOS == "windows" {
+		binName = "grok-override.cmd"
+	}
+	override := filepath.Join(t.TempDir(), binName)
+	if err := os.WriteFile(override, []byte("stub"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GROK_BIN", override)
+	if got := findGrokUsageBinary(home); got != filepath.Clean(override) {
+		t.Fatalf("expected GROK_BIN override %q, got %q", override, got)
+	}
+}

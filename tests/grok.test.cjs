@@ -82,7 +82,7 @@ test("HTML, CSS, service worker, and guardrails support 4-provider Grok layout w
   assert.match(htmlSource, /data-provider="claude"/);
   assert.match(htmlSource, /data-provider="antigravity"/);
   assert.match(htmlSource, /data-provider="grok"[^>]*><span>Grok<\/span>/);
-  assert.match(swSource, /const CACHE = "fastcontrol-v20";/);
+  assert.match(swSource, /const CACHE = "fastcontrol-v21";/);
   assert.match(cssSource, /@media\s*\(max-height:\s*680px\)\s*\{[\s\S]*\.provider-choice[\s\S]*\.provider-option/);
   assert.match(cssSource, /@media\s*\(max-width:\s*380px\)\s*\{[\s\S]*\.usage-body/);
   assert.match(cssSource, /@media\s*\(min-width:\s*620px\)\s*\{[\s\S]*\.usage-providers\s*\{\s*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);[\s\S]*\.usage-provider:nth-child\(n\+3\)/);
@@ -577,6 +577,153 @@ test("Grok modes, reasoning_effort, model formatting, external takeover, steerin
     ch: { effort: "minimal" },
     label: "Intelligence: Minimal",
   });
+});
+
+test("Grok effort slider and speedometer always sort ascending even when relay sends reversed efforts", () => {
+  const els = {};
+  for (const id of ["t-ring", "banner", "wake", "earlier", "voice", "stop", "send", "perm-chip", "model-chip", "effort-btn", "input", "slash-menu", "composer"]) {
+    els[id] = makeElement(id === "input" ? "textarea" : "button", id);
+  }
+  const reversedModels = [
+    { slug: "grok-4.7", name: "Grok 4.7", efforts: ["xhigh", "high", "medium", "low"] },
+    { slug: "grok-4.8", name: "Grok 4.8", efforts: ["xhigh", "low", "minimal", "high", "low", "medium", "custom"] },
+  ];
+  const connection = {
+    state: "on",
+    threads: [{ cwd: "/work/grok" }],
+    projects: [{ cwd: "/work/grok" }],
+    home: "/work",
+    capabilities: { codex: true, claude: true, antigravity: true, grok: true },
+    models: { models: reversedModels, default: { model: "grok-4.7", effort: "", mode: "default" } },
+    send() {},
+    call: async () => ({ ok: true }),
+  };
+  const applied = [];
+  const gauges = [];
+  const ctx = vm.createContext({
+    Map,
+    Set,
+    Math,
+    JSON,
+    Array,
+    Number,
+    Object,
+    String,
+    Native: null,
+    I: { shield: "S", edit: "E", shieldok: "A", lock: "P", rocket: "F", gear: "G", down: "V", check: "C", close: "X" },
+    S: {
+      provider: "grok",
+      sid: "m1",
+      id: "grok-rev",
+      sheet: "effort",
+      servers: [{ id: "m1", name: "Studio", url: "http://127.0.0.1:8787" }],
+      machine: "m1",
+      newAttach: [],
+      meta: { mode: "live", running: false, model: "grok-4.7", effort: "", permissionMode: "default" },
+      turns: [],
+    },
+    $: (id) => els[id] || makeElement("div", id),
+    esc: (s) => String(s ?? ""),
+    base: (p) => String(p || "").split("/").pop(),
+    hostOf: (u) => u,
+    conn: () => connection,
+    conns: new Map([["m1", connection]]),
+    serverName: () => "Studio",
+    loadingHTML: (s) => s,
+    attHTML: () => "",
+    projectsOf: () => [],
+    attachmentBatches: new Map(),
+    persistAttachmentBatches() {},
+    store: { get: (_, d) => d, set() {} },
+    renderStatus() {},
+    renderCards() {},
+    renderThreadHeader() {},
+    gauge: (f) => { gauges.push(f); return `gauge(${f.toFixed(2)})`; },
+    matchMedia: () => ({ matches: false }),
+    innerHeight: 800,
+    voiceState: { phase: "idle" },
+    window: {},
+    document: { activeElement: null },
+    toast() {},
+    nice: (s) => s,
+    buzz() {},
+    closeSheet() {},
+    openSheet() {},
+    setTimeout: (fn) => fn(),
+    requestAnimationFrame: (fn) => fn(),
+    applySettings: (ch, label) => applied.push({ ch, label }),
+  });
+
+  const logoStart = appSource.indexOf("const AGENT_LOGOS =");
+  const logoEnd = appSource.indexOf("// ------------------------------------------------------------------ state --");
+  const metaStart = appSource.indexOf("function contextMetrics(");
+  const metaEnd = appSource.indexOf("// ------------------------------------------------- approvals and questions --");
+  const compStart = appSource.indexOf("const PERMS =");
+  const compEnd = appSource.indexOf('$("perm-chip").onclick');
+  const effortStart = appSource.indexOf("  effort(sh) {");
+  const effortEnd = appSource.indexOf("  diff(sh) {", effortStart);
+  vm.runInContext(
+    appSource.slice(logoStart, logoEnd) +
+      "\n" +
+      appSource.slice(metaStart, metaEnd) +
+      "\n" +
+      appSource.slice(compStart, compEnd) +
+      "\nconst SHEETS = {\n" +
+      appSource.slice(effortStart, effortEnd) +
+      "};\nglobalThis.SHEETS = SHEETS;\n" +
+      newChatSource,
+    ctx
+  );
+
+  // providerEfforts must normalize strictly ascending (Default -> Low -> Medium -> High -> Extra High).
+  assert.deepEqual(Array.from(ctx.providerEfforts(reversedModels[0], "grok")), ["", "low", "medium", "high", "xhigh"]);
+  assert.deepEqual(Array.from(ctx.providerEfforts(reversedModels[1], "grok")), ["", "minimal", "low", "medium", "high", "xhigh", "custom"]);
+
+  // Speedometer gauge monotonically increases from Default (0) to Extra High (1).
+  for (const eff of ["", "low", "medium", "high", "xhigh"]) {
+    ctx.S.meta = { ...ctx.S.meta, effort: eff };
+    ctx.renderComposer();
+  }
+  assert.deepEqual(gauges.map((v) => Number(v.toFixed(2))), [0, 0.25, 0.5, 0.75, 1]);
+
+  // SHEETS.effort steps strictly ascending as user moves right.
+  ctx.S.meta = { ...ctx.S.meta, effort: "" };
+  const track = makeElement("div", "eo-track");
+  const fill = makeElement("div");
+  const knob = makeElement("div");
+  const levelOut = makeElement("b", "eo-level");
+  const dots = Array.from({ length: 5 }, () => makeElement("span"));
+  track.querySelector = (sel) => ({ ".eo-fill": fill, ".eo-knob": knob }[sel] || null);
+  track.querySelectorAll = () => dots;
+  const effortSheet = makeElement("div", "sheet");
+  effortSheet.querySelector = (sel) => ({ "#eo-track": track, "#eo-level": levelOut }[sel] || null);
+  ctx.SHEETS.effort(effortSheet);
+  const visited = [levelOut.textContent];
+  for (let i = 0; i < 4; i++) {
+    track.onkeydown({ key: "ArrowRight", preventDefault() {} });
+    visited.push(levelOut.textContent);
+  }
+  assert.deepEqual(visited, ["Default", "Low", "Medium", "High", "Extra High"]);
+  track.onkeydown({ key: "Enter" });
+  assert.deepEqual(JSON.parse(JSON.stringify(applied[0])), { ch: { effort: "xhigh" }, label: "Intelligence: Extra High" });
+
+  // New-chat slider (web/new-chat.js) also sorts reversed Grok efforts ascending.
+  ctx.S.sheet = "new";
+  ctx.S.newDraft = null;
+  const newSheet = makeElement("div", "sheet");
+  const sliderEl = makeElement("input", "nt-effort");
+  const levelLabel = makeElement("output", "nt-level");
+  newSheet.contains = () => false;
+  newSheet.querySelector = (sel) => ({ "#nt-text": makeElement("textarea", "nt-text"), "#nt-cwd": makeElement("input", "nt-cwd"), "#nt-effort": sliderEl, "#nt-level": levelLabel }[sel] || null);
+  ctx.SHEETS.new(newSheet);
+  assert.match(newSheet.innerHTML, /<div class="setup-effort-ends"><span>Default<\/span><span>Extra High<\/span><\/div>/);
+  const sliderStops = [];
+  for (let i = 0; i <= 4; i++) {
+    sliderEl.value = String(i);
+    sliderEl.oninput();
+    sliderStops.push(`${ctx.S.newDraft.effort}:${levelLabel.textContent}`);
+  }
+  assert.deepEqual(sliderStops, [":Default", "low:Low", "medium:Medium", "high:High", "xhigh:Extra High"]);
 });
 
 test("new-chat Grok flow renders models, reasoning_effort slider, Execution Mode, and sends permissionMode", async () => {

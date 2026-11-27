@@ -35,73 +35,70 @@ const (
 
 	acpDefaultStderrBytes = 16 << 10
 	acpMaxLineBytes       = 64 << 20
-	acpSupportProbeLimit  = 5 * time.Second
+	acpSupportProbeLimit  = 8 * time.Second
 	acpMaxListPages       = 50
 	acpDiffContextLines   = 3
 	acpDiffMaxDPMatrix    = 400000
 )
 
+type acpSupportStatus int
+
+const (
+	acpSupportUnknown acpSupportStatus = iota
+	acpSupportOK
+	acpSupportUnsupported
+	acpSupportTimeout
+	acpSupportExecError
+)
+
+type acpProbeResult struct {
+	status acpSupportStatus
+	detail string
+}
+
 type acpSupportCacheEntry struct {
 	size      int64
 	modTimeNs int64
 	supported bool
+	status    acpSupportStatus
+	detail    string
+	checkedAt time.Time
 }
 
 var (
-	agyACPCacheMu    sync.Mutex
-	agyACPCache      = map[string]acpSupportCacheEntry{}
-	agyACPInFlight   = map[string]chan struct{}{}
-	agyProbeHelpFunc = probeAgyACPHelp
+	// Platform hooks populated on Windows in platform_windows.go.
+	platformWindowsLivePathDirs func() []string
+	platformWindowsEnvVar       func(name string) string
+	platformBuildCLICmd         func(ctx context.Context, bin string, args ...string) (*exec.Cmd, error)
+
+	acpNegativeCacheTTL = 30 * time.Second
+	acpCacheNow         = time.Now
+
+	agyACPCacheMu      sync.Mutex
+	agyACPCache        = map[string]acpSupportCacheEntry{}
+	agyACPInFlight     = map[string]chan struct{}{}
+	agyProbeHelpFunc   func(string) bool
+	agyProbeDetailFunc = probeAgyACPDetail
 )
 
-// agyBinary locates the Antigravity CLI binary (`agy`) via PATH and standard
-// platform install paths such as `~/.local/bin/agy`.
-func agyBinary() string {
-	names := []string{"agy"}
+func acpSupportProbeTimeout() time.Duration {
 	if runtime.GOOS == "windows" {
-		names = []string{"agy.exe", "agy"}
+		return 15 * time.Second
 	}
-	for _, name := range names {
-		if p, err := exec.LookPath(name); err == nil && isAgyExecutable(p) {
-			return p
-		}
-	}
-	home, _ := os.UserHomeDir()
-	for _, candidate := range agyBinaryCandidates(home, os.Getenv("LOCALAPPDATA"), runtime.GOOS) {
-		if isAgyExecutable(candidate) {
-			return candidate
-		}
-	}
-	return ""
+	return acpSupportProbeLimit
 }
 
-func agyBinaryCandidates(home, localAppData, goos string) []string {
-	var out []string
-	add := func(parts ...string) {
-		for _, p := range parts {
-			if p == "" {
-				return
-			}
-		}
-		out = append(out, filepath.Join(parts...))
-	}
-	if goos == "windows" {
-		add(home, ".local", "bin", "agy.exe")
-		add(localAppData, "Antigravity", "agy.exe")
-		add(localAppData, "Programs", "Antigravity", "agy.exe")
-		add(localAppData, "Programs", "Antigravity", "bin", "agy.exe")
-		return out
-	}
-	add(home, ".local", "bin", "agy")
-	if goos == "darwin" {
-		out = append(out, "/opt/homebrew/bin/agy", "/usr/local/bin/agy")
-	} else {
-		out = append(out, "/usr/local/bin/agy", "/usr/bin/agy")
-	}
-	return out
+func isWindowsBatchFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(path)))
+	return ext == ".cmd" || ext == ".bat"
 }
 
-func isAgyExecutable(path string) bool {
+func isWindowsExecutablePath(path string) bool {
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(path)))
+	return ext == ".exe" || ext == ".cmd" || ext == ".bat" || ext == ".com"
+}
+
+func isCLIExecutableForOS(path, goos string) bool {
 	if strings.TrimSpace(path) == "" {
 		return false
 	}
@@ -109,64 +106,652 @@ func isAgyExecutable(path string) bool {
 	if err != nil || !st.Mode().IsRegular() {
 		return false
 	}
-	if runtime.GOOS == "windows" {
-		return true
+	if goos == "windows" {
+		return isWindowsExecutablePath(path)
 	}
 	return st.Mode()&0111 != 0
 }
 
-// agySupportsACP verifies that `bin` supports `acp` and `--app-data-dir`.
-// Results are cached under a mutex keyed by path, size, and mtime so repeated
-// checks do not spawn extra subprocesses while still noticing in-place upgrades.
-func agySupportsACP(bin string) bool {
+// expandWindowsEnvVars expands %VAR% placeholders using lookup.
+// Unmatched tokens are kept verbatim so literal percent signs are preserved.
+func expandWindowsEnvVars(raw string, lookup func(string) string) string {
+	if raw == "" || !strings.Contains(raw, "%") || lookup == nil {
+		return raw
+	}
+	var out strings.Builder
+	out.Grow(len(raw))
+	for i := 0; i < len(raw); {
+		if raw[i] != '%' {
+			out.WriteByte(raw[i])
+			i++
+			continue
+		}
+		end := strings.IndexByte(raw[i+1:], '%')
+		if end < 0 {
+			out.WriteString(raw[i:])
+			break
+		}
+		name := raw[i+1 : i+1+end]
+		if name == "" {
+			out.WriteString("%%")
+			i += 2
+			continue
+		}
+		if val := lookup(name); val != "" {
+			out.WriteString(val)
+		} else {
+			out.WriteString(raw[i : i+2+end])
+		}
+		i += end + 2
+	}
+	return out.String()
+}
+
+// splitWindowsPathList expands %VAR% entries in a semicolon-delimited Windows PATH
+// string and returns deduplicated, trimmed directory paths.
+func splitWindowsPathList(raw string, lookup func(string) string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	expanded := expandWindowsEnvVars(raw, lookup)
+	var out []string
+	seen := map[string]bool{}
+	for _, part := range strings.Split(expanded, ";") {
+		dir := strings.TrimSpace(part)
+		dir = strings.Trim(dir, `"`)
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			continue
+		}
+		key := strings.ToLower(dir)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, dir)
+	}
+	return out
+}
+
+func isSafeWindowsBatchBareArg(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		ok := (c >= 'a' && c <= 'z') ||
+			(c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') ||
+			c == '_' || c == '-' || c == '.' || c == '/' || c == ':' || c == '=' || c == '+' || c == '@' || c == ',' || c == '\\'
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// quoteWindowsBatchArg quotes a single argument for cmd.exe /d /s /c invocation.
+// Rejects control characters and embedded quotes that cannot be passed safely to batch files.
+func quoteWindowsBatchArg(s string, forceQuote bool) (string, error) {
+	if strings.ContainsAny(s, "\r\n\x00\"") {
+		return "", errors.New("invalid character in windows batch argument")
+	}
+	if s == "" {
+		return `""`, nil
+	}
+	if !forceQuote && isSafeWindowsBatchBareArg(s) {
+		return s, nil
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 4)
+	b.WriteByte('"')
+	backslashes := 0
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '\\' {
+			backslashes++
+			b.WriteByte('\\')
+			continue
+		}
+		if ch == '%' {
+			// Escape percent outside quotes so cmd.exe does not expand %VAR% tokens.
+			for j := 0; j < backslashes; j++ {
+				b.WriteByte('\\')
+			}
+			backslashes = 0
+			b.WriteString(`"^%"`)
+			continue
+		}
+		backslashes = 0
+		b.WriteByte(ch)
+	}
+	// Double trailing backslashes so Windows CommandLineToArgvW does not escape the closing quote.
+	for j := 0; j < backslashes; j++ {
+		b.WriteByte('\\')
+	}
+	b.WriteByte('"')
+	return b.String(), nil
+}
+
+// buildWindowsBatchCmdLine constructs an explicit SysProcAttr.CmdLine for
+// executing a .cmd or .bat shim cleanly through cmd.exe /d /s /c even when the
+// shim path or arguments contain spaces.
+func buildWindowsBatchCmdLine(comspec, bin string, args []string) (string, error) {
+	comspec = strings.TrimSpace(comspec)
+	if comspec == "" {
+		comspec = "cmd.exe"
+	}
+	if strings.ContainsAny(comspec, "\r\n\x00\"") {
+		return "", errors.New("invalid comspec path")
+	}
+	binQ, err := quoteWindowsBatchArg(bin, true)
+	if err != nil {
+		return "", err
+	}
+	parts := make([]string, 0, 1+len(args))
+	parts = append(parts, binQ)
+	for _, arg := range args {
+		q, err := quoteWindowsBatchArg(arg, false)
+		if err != nil {
+			return "", err
+		}
+		parts = append(parts, q)
+	}
+	comspecQ := comspec
+	if strings.ContainsAny(comspec, " \t") {
+		comspecQ = `"` + comspec + `"`
+	}
+	return comspecQ + ` /d /s /c "` + strings.Join(parts, " ") + `"`, nil
+}
+
+func buildCLICommand(ctx context.Context, bin string, args ...string) (*exec.Cmd, error) {
+	if platformBuildCLICmd != nil {
+		return platformBuildCLICmd(ctx, bin, args...)
+	}
+	if ctx != nil {
+		return exec.CommandContext(ctx, bin, args...), nil
+	}
+	return exec.Command(bin, args...), nil
+}
+
+// mergeWindowsPathEnv appends missing live Windows Registry PATH directories
+// onto the PATH variable of base without duplicating existing entries.
+func mergeWindowsPathEnv(base []string, liveDirs []string) []string {
+	if len(liveDirs) == 0 {
+		return base
+	}
+	out := append([]string(nil), base...)
+	pathIdx := -1
+	pathKey := "PATH"
+	pathVal := ""
+	for i, entry := range out {
+		k, v, ok := strings.Cut(entry, "=")
+		if ok && strings.EqualFold(k, "PATH") {
+			pathIdx = i
+			pathKey = k
+			pathVal = v
+			break
+		}
+	}
+	existing := splitWindowsPathList(pathVal, nil)
+	seen := make(map[string]bool, len(existing)+len(liveDirs))
+	merged := make([]string, 0, len(existing)+len(liveDirs))
+	for _, d := range existing {
+		seen[strings.ToLower(d)] = true
+		merged = append(merged, d)
+	}
+	added := false
+	for _, d := range liveDirs {
+		d = strings.TrimSpace(strings.Trim(d, `"`))
+		if d == "" {
+			continue
+		}
+		key := strings.ToLower(d)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		merged = append(merged, d)
+		added = true
+	}
+	if !added {
+		return base
+	}
+	entry := pathKey + "=" + strings.Join(merged, ";")
+	if pathIdx >= 0 {
+		out[pathIdx] = entry
+	} else {
+		out = append(out, entry)
+	}
+	return out
+}
+
+func cliProcessEnv(base []string) []string {
+	if runtime.GOOS != "windows" || platformWindowsLivePathDirs == nil {
+		return base
+	}
+	return mergeWindowsPathEnv(base, platformWindowsLivePathDirs())
+}
+
+type cliDiscoveryEnv struct {
+	goos            string
+	home            string
+	localAppData    string
+	appData         string
+	programFiles    string
+	programFilesX86 string
+	grokHome        string
+	livePathDirs    []string
+	envOverrides    []string
+}
+
+func lookupCLIEnv(name string) string {
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		return v
+	}
+	if runtime.GOOS == "windows" && platformWindowsEnvVar != nil {
+		return strings.TrimSpace(platformWindowsEnvVar(name))
+	}
+	return ""
+}
+
+func defaultCLIEnv(goos, homeOverride string) cliDiscoveryEnv {
+	home := strings.TrimSpace(homeOverride)
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+	env := cliDiscoveryEnv{
+		goos:            goos,
+		home:            home,
+		localAppData:    strings.TrimSpace(os.Getenv("LOCALAPPDATA")),
+		appData:         strings.TrimSpace(os.Getenv("APPDATA")),
+		programFiles:    strings.TrimSpace(os.Getenv("ProgramFiles")),
+		programFilesX86: strings.TrimSpace(os.Getenv("ProgramFiles(x86)")),
+		grokHome:        strings.TrimSpace(os.Getenv("GROK_HOME")),
+	}
+	if goos == "windows" {
+		if env.localAppData == "" && home != "" {
+			env.localAppData = filepath.Join(home, "AppData", "Local")
+		}
+		if env.appData == "" && home != "" {
+			env.appData = filepath.Join(home, "AppData", "Roaming")
+		}
+		if env.programFiles == "" {
+			env.programFiles = `C:\Program Files`
+		}
+		if env.programFilesX86 == "" {
+			env.programFilesX86 = `C:\Program Files (x86)`
+		}
+		if platformWindowsLivePathDirs != nil {
+			env.livePathDirs = platformWindowsLivePathDirs()
+		}
+	}
+	return env
+}
+
+func appendWindowsCommandVariants(out *[]string, seen map[string]bool, dir, name string) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return
+	}
+	for _, ext := range []string{".exe", ".cmd", ".bat"} {
+		cand := filepath.Join(dir, name+ext)
+		key := strings.ToLower(filepath.Clean(cand))
+		if !seen[key] {
+			seen[key] = true
+			*out = append(*out, cand)
+		}
+	}
+}
+
+func appendWindowsWinGetPackageCandidates(out *[]string, seen map[string]bool, localAppData, needle, binName string) {
+	if strings.TrimSpace(localAppData) == "" {
+		return
+	}
+	pkgRoot := filepath.Join(localAppData, "Microsoft", "WinGet", "Packages")
+	entries, err := os.ReadDir(pkgRoot)
+	if err != nil {
+		return
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name() > entries[j].Name()
+	})
+	needle = strings.ToLower(needle)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		lower := strings.ToLower(entry.Name())
+		if !strings.Contains(lower, needle) && !strings.Contains(lower, strings.ToLower(binName)) {
+			continue
+		}
+		pkgDir := filepath.Join(pkgRoot, entry.Name())
+		appendWindowsCommandVariants(out, seen, pkgDir, binName)
+		appendWindowsCommandVariants(out, seen, filepath.Join(pkgDir, "bin"), binName)
+	}
+}
+
+func agyBinaryCandidatesForEnv(env cliDiscoveryEnv) []string {
+	var out []string
+	seen := map[string]bool{}
+	addPath := func(p string) {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return
+		}
+		clean := filepath.Clean(p)
+		key := clean
+		if env.goos == "windows" {
+			key = strings.ToLower(clean)
+		}
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, clean)
+		}
+	}
+	addJoin := func(parts ...string) {
+		for _, p := range parts {
+			if strings.TrimSpace(p) == "" {
+				return
+			}
+		}
+		addPath(filepath.Join(parts...))
+	}
+
+	for _, override := range env.envOverrides {
+		addPath(override)
+	}
+
+	if env.goos == "windows" {
+		// Prioritize native .exe in ~/.local/bin first, then user-scoped CLI dirs.
+		addJoin(env.home, ".local", "bin", "agy.exe")
+		addJoin(env.home, ".local", "bin", "agy.cmd")
+		addJoin(env.home, ".local", "bin", "agy.bat")
+		if env.home != "" {
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.home, ".antigravity", "bin"), "agy")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.home, ".gemini", "antigravity", "bin"), "agy")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.home, ".gemini", "antigravity-cli", "bin"), "agy")
+		}
+		// Live Windows Registry User + System PATH (covers Scheduled Tasks with stale PATH).
+		for _, dir := range env.livePathDirs {
+			appendWindowsCommandVariants(&out, seen, dir, "agy")
+		}
+		// Standard Windows desktop, CLI, WinGet, npm, Scoop, and Program Files locations.
+		if env.localAppData != "" {
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.localAppData, "Programs", "Antigravity", "bin"), "agy")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.localAppData, "Programs", "Antigravity"), "agy")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.localAppData, "Programs", "Antigravity IDE", "bin"), "agy")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.localAppData, "Programs", "Antigravity IDE"), "agy")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.localAppData, "Antigravity", "bin"), "agy")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.localAppData, "Antigravity"), "agy")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.localAppData, "antigravity-cli", "bin"), "agy")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.localAppData, "antigravity-cli"), "agy")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.localAppData, "Microsoft", "WinGet", "Links"), "agy")
+			appendWindowsWinGetPackageCandidates(&out, seen, env.localAppData, "antigravity", "agy")
+		}
+		if env.appData != "" {
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.appData, "npm"), "agy")
+		}
+		if env.home != "" {
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.home, "scoop", "shims"), "agy")
+		}
+		if env.programFiles != "" {
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.programFiles, "Antigravity", "bin"), "agy")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.programFiles, "Antigravity"), "agy")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.programFiles, "Antigravity IDE", "bin"), "agy")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.programFiles, "Antigravity IDE"), "agy")
+		}
+		if env.programFilesX86 != "" {
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.programFilesX86, "Antigravity", "bin"), "agy")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.programFilesX86, "Antigravity"), "agy")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.programFilesX86, "Antigravity IDE", "bin"), "agy")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.programFilesX86, "Antigravity IDE"), "agy")
+		}
+		return out
+	}
+
+	addJoin(env.home, ".local", "bin", "agy")
+	addJoin(env.home, ".antigravity", "bin", "agy")
+	if env.goos == "darwin" {
+		addPath("/opt/homebrew/bin/agy")
+		addPath("/usr/local/bin/agy")
+		addPath("/Applications/Antigravity.app/Contents/Resources/app/bin/agy")
+	} else {
+		addPath("/usr/local/bin/agy")
+		addPath("/usr/bin/agy")
+	}
+	return out
+}
+
+func agyBinaryCandidates(home, localAppData, goos string) []string {
+	env := cliDiscoveryEnv{
+		goos:         goos,
+		home:         home,
+		localAppData: localAppData,
+	}
+	if goos == "windows" {
+		if env.localAppData == "" && home != "" {
+			env.localAppData = filepath.Join(home, "AppData", "Local")
+		}
+		if home != "" {
+			env.appData = filepath.Join(home, "AppData", "Roaming")
+		}
+		env.programFiles = `C:\Program Files`
+		env.programFilesX86 = `C:\Program Files (x86)`
+	}
+	return agyBinaryCandidatesForEnv(env)
+}
+
+func findAgyBinariesWithHome(homeOverride string) []string {
+	goos := runtime.GOOS
+	var found []string
+	seen := map[string]bool{}
+	addValid := func(p string, allowAnyRegularOnWin bool) {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return
+		}
+		if allowAnyRegularOnWin && goos == "windows" {
+			st, err := os.Stat(p)
+			if err != nil || !st.Mode().IsRegular() {
+				return
+			}
+		} else if !isCLIExecutableForOS(p, goos) {
+			return
+		}
+		clean := filepath.Clean(p)
+		key := clean
+		if goos == "windows" {
+			key = strings.ToLower(clean)
+		}
+		if !seen[key] {
+			seen[key] = true
+			found = append(found, clean)
+		}
+	}
+
+	// 1. Explicit environment overrides take highest priority.
+	for _, envName := range []string{"AGY_BIN", "ANTIGRAVITY_CLI"} {
+		val := lookupCLIEnv(envName)
+		if val == "" {
+			continue
+		}
+		if strings.ContainsAny(val, `/\`) {
+			addValid(val, true)
+		} else if p, err := exec.LookPath(val); err == nil {
+			addValid(p, true)
+		}
+	}
+
+	// 2. Process PATH lookup (preferring .exe/.cmd/.bat on Windows so extensionless POSIX scripts are skipped).
+	names := []string{"agy"}
+	if goos == "windows" {
+		names = []string{"agy.exe", "agy.cmd", "agy.bat", "agy"}
+	}
+	for _, name := range names {
+		if p, err := exec.LookPath(name); err == nil {
+			addValid(p, false)
+		}
+	}
+
+	// 3. User-scoped dirs, live Windows Registry PATH, and standard platform install paths.
+	env := defaultCLIEnv(goos, homeOverride)
+	for _, candidate := range agyBinaryCandidatesForEnv(env) {
+		addValid(candidate, false)
+	}
+	return found
+}
+
+// agyBinaryAll returns all discovered Antigravity CLI binaries in priority order.
+func agyBinaryAll() []string {
+	return findAgyBinariesWithHome("")
+}
+
+// agyBinary locates the Antigravity CLI binary (`agy`) via explicit overrides,
+// PATH, live Windows Registry PATH, and standard platform install locations.
+func agyBinary() string {
+	if all := agyBinaryAll(); len(all) > 0 {
+		return all[0]
+	}
+	return ""
+}
+
+func isAgyExecutable(path string) bool {
+	return isCLIExecutableForOS(path, runtime.GOOS)
+}
+
+func looksLikeWindowsShellError(lower string) bool {
+	for _, needle := range []string{
+		"is not recognized",
+		"cannot find the path",
+		"cannot find the file",
+		"not a valid win32 application",
+		"access is denied",
+		"cannot execute",
+	} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeUnsupportedSubcommandOutput(lower string) bool {
+	for _, needle := range []string{
+		"unknown command",
+		"unrecognized",
+		"invalid command",
+		"invalid subcommand",
+		"no such command",
+		"unknown flag",
+		"usage:",
+		"commands:",
+		"flags:",
+		"options:",
+	} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// probeAgyACPSupport verifies that `bin` supports `acp` and `--app-data-dir` and
+// classifies any failure as unsupported, timeout, or execution error.
+// Positive results are cached for `(path, size, mtime)`; negative results expire
+// after acpNegativeCacheTTL and are bypassed when forceRetry is true.
+func probeAgyACPSupport(bin string, forceRetry bool) acpProbeResult {
 	bin = strings.TrimSpace(bin)
 	if bin == "" {
-		return false
+		return acpProbeResult{status: acpSupportExecError, detail: "binary path is empty"}
 	}
 	st, err := os.Stat(bin)
 	if err != nil || !st.Mode().IsRegular() {
-		return false
+		detail := "binary is not a regular file"
+		if err != nil {
+			detail = err.Error()
+		}
+		return acpProbeResult{status: acpSupportExecError, detail: detail}
 	}
 	size := st.Size()
 	modNs := st.ModTime().UnixNano()
 	key := fmt.Sprintf("%s|%d|%d", bin, size, modNs)
+	waited := false
 
 	for {
 		agyACPCacheMu.Lock()
 		if entry, ok := agyACPCache[bin]; ok && entry.size == size && entry.modTimeNs == modNs {
-			agyACPCacheMu.Unlock()
-			return entry.supported
+			if entry.supported {
+				agyACPCacheMu.Unlock()
+				return acpProbeResult{status: acpSupportOK}
+			}
+			withinTTL := acpCacheNow().Sub(entry.checkedAt) < acpNegativeCacheTTL
+			if waited || (!forceRetry && withinTTL) {
+				res := acpProbeResult{status: entry.status, detail: entry.detail}
+				agyACPCacheMu.Unlock()
+				return res
+			}
 		}
 		if wait, busy := agyACPInFlight[key]; busy {
 			agyACPCacheMu.Unlock()
 			<-wait
+			waited = true
 			continue
 		}
 		done := make(chan struct{})
 		agyACPInFlight[key] = done
-		probe := agyProbeHelpFunc
+		helpHook := agyProbeHelpFunc
+		detailHook := agyProbeDetailFunc
 		agyACPCacheMu.Unlock()
 
-		supported := probe(bin)
+		var res acpProbeResult
+		if helpHook != nil {
+			if helpHook(bin) {
+				res = acpProbeResult{status: acpSupportOK}
+			} else {
+				res = acpProbeResult{status: acpSupportUnsupported, detail: "acp probe returned false"}
+			}
+		} else if detailHook != nil {
+			res = detailHook(bin)
+		} else {
+			res = probeAgyACPDetail(bin)
+		}
 
+		checkedAt := acpCacheNow()
 		agyACPCacheMu.Lock()
 		agyACPCache[bin] = acpSupportCacheEntry{
 			size:      size,
 			modTimeNs: modNs,
-			supported: supported,
+			supported: res.status == acpSupportOK,
+			status:    res.status,
+			detail:    res.detail,
+			checkedAt: checkedAt,
 		}
 		delete(agyACPInFlight, key)
 		close(done)
 		agyACPCacheMu.Unlock()
-		return supported
+		return res
 	}
 }
 
+// agySupportsACP verifies that `bin` supports `acp` and `--app-data-dir`.
+func agySupportsACP(bin string) bool {
+	return probeAgyACPSupport(bin, false).status == acpSupportOK
+}
+
 func probeAgyACPHelp(bin string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), acpSupportProbeLimit)
+	return probeAgyACPDetail(bin).status == acpSupportOK
+}
+
+func probeAgyACPDetail(bin string) acpProbeResult {
+	timeout := acpSupportProbeTimeout()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, "acp", "--help")
-	cmd.Env = codexEnv()
+	cmd, err := buildCLICommand(ctx, bin, "acp", "--help")
+	if err != nil {
+		return acpProbeResult{status: acpSupportExecError, detail: err.Error()}
+	}
+	cmd.Env = cliProcessEnv(codexEnv())
 	prepareProcess(cmd)
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
@@ -176,11 +761,42 @@ func probeAgyACPHelp(bin string) bool {
 	}
 	cmd.WaitDelay = 500 * time.Millisecond
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return false
+	text := strings.ReplaceAll(string(out), "\r\n", "\n")
+	lower := strings.ToLower(text)
+
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return acpProbeResult{
+			status: acpSupportTimeout,
+			detail: fmt.Sprintf("timed out after %s probing %s", timeout, bin),
+		}
 	}
-	text := string(out)
-	return strings.Contains(text, "--app-data-dir")
+	// Because we ran `agy acp --help` without passing `--app-data-dir`, its presence
+	// in stdout or stderr proves the CLI documents ACP app-data-dir support.
+	if strings.Contains(lower, "--app-data-dir") || strings.Contains(lower, "--app_data_dir") {
+		return acpProbeResult{status: acpSupportOK}
+	}
+	trimmed := clipPlain(strings.TrimSpace(text), 200)
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			if looksLikeWindowsShellError(lower) {
+				return acpProbeResult{status: acpSupportExecError, detail: trimmed}
+			}
+			if looksLikeUnsupportedSubcommandOutput(lower) {
+				return acpProbeResult{status: acpSupportUnsupported, detail: trimmed}
+			}
+			detail := err.Error()
+			if trimmed != "" {
+				detail = trimmed
+			}
+			return acpProbeResult{status: acpSupportExecError, detail: detail}
+		}
+		return acpProbeResult{status: acpSupportExecError, detail: err.Error()}
+	}
+	if trimmed == "" {
+		trimmed = "help output missing --app-data-dir"
+	}
+	return acpProbeResult{status: acpSupportUnsupported, detail: trimmed}
 }
 
 // acpClientConfig configures an Antigravity ACP JSON-RPC 2.0 client.
@@ -685,14 +1301,18 @@ func newACPClient(cfg acpClientConfig) (*acpClient, error) {
 	}
 
 	procCtx, procCancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(procCtx, bin, args...)
+	cmd, err := buildCLICommand(procCtx, bin, args...)
+	if err != nil {
+		procCancel()
+		return nil, fmt.Errorf("build agy acp command: %w", err)
+	}
 	if cfg.Cwd != "" {
 		cmd.Dir = cfg.Cwd
 	}
 	if len(cfg.Env) > 0 {
 		cmd.Env = cfg.Env
 	} else {
-		cmd.Env = codexEnv()
+		cmd.Env = cliProcessEnv(codexEnv())
 	}
 	prepareProcess(cmd)
 

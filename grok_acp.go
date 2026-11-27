@@ -51,129 +51,282 @@ const (
 )
 
 var (
-	grokACPCacheMu    sync.Mutex
-	grokACPCache      = map[string]acpSupportCacheEntry{}
-	grokACPInFlight   = map[string]chan struct{}{}
-	grokProbeHelpFunc = probeGrokACPHelp
+	grokACPCacheMu      sync.Mutex
+	grokACPCache        = map[string]acpSupportCacheEntry{}
+	grokACPInFlight     = map[string]chan struct{}{}
+	grokProbeHelpFunc   func(string) bool
+	grokProbeDetailFunc = probeGrokACPDetail
 )
 
-// grokBinary locates the Grok CLI binary (`grok`) via PATH and standard
-// platform install locations such as `~/.local/bin/grok` and `~/.grok/bin/grok`.
-func grokBinary() string {
-	names := []string{"grok"}
-	if runtime.GOOS == "windows" {
-		names = []string{"grok.exe", "grok"}
-	}
-	for _, name := range names {
-		if p, err := exec.LookPath(name); err == nil && isGrokExecutable(p) {
-			return p
-		}
-	}
-	home, _ := os.UserHomeDir()
-	for _, candidate := range grokBinaryCandidates(home, os.Getenv("LOCALAPPDATA"), runtime.GOOS) {
-		if isGrokExecutable(candidate) {
-			return candidate
-		}
-	}
-	return ""
-}
-
-func grokBinaryCandidates(home, localAppData, goos string) []string {
+func grokBinaryCandidatesForEnv(env cliDiscoveryEnv) []string {
 	var out []string
-	add := func(parts ...string) {
+	seen := map[string]bool{}
+	addPath := func(p string) {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return
+		}
+		clean := filepath.Clean(p)
+		key := clean
+		if env.goos == "windows" {
+			key = strings.ToLower(clean)
+		}
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, clean)
+		}
+	}
+	addJoin := func(parts ...string) {
 		for _, p := range parts {
-			if p == "" {
+			if strings.TrimSpace(p) == "" {
 				return
 			}
 		}
-		out = append(out, filepath.Join(parts...))
+		addPath(filepath.Join(parts...))
 	}
-	if goos == "windows" {
-		add(home, ".local", "bin", "grok.exe")
-		add(home, ".grok", "bin", "grok.exe")
-		add(localAppData, "Grok", "grok.exe")
-		add(localAppData, "Grok", "bin", "grok.exe")
-		add(localAppData, "Programs", "Grok", "grok.exe")
-		add(localAppData, "Programs", "Grok", "bin", "grok.exe")
+
+	for _, override := range env.envOverrides {
+		addPath(override)
+	}
+
+	if env.goos == "windows" {
+		// Prioritize native .exe in ~/.local/bin and ~/.grok/bin first.
+		addJoin(env.home, ".local", "bin", "grok.exe")
+		addJoin(env.home, ".grok", "bin", "grok.exe")
+		addJoin(env.home, ".local", "bin", "grok.cmd")
+		addJoin(env.home, ".local", "bin", "grok.bat")
+		addJoin(env.home, ".grok", "bin", "grok.cmd")
+		addJoin(env.home, ".grok", "bin", "grok.bat")
+		if env.grokHome != "" {
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.grokHome, "bin"), "grok")
+		}
+		// Live Windows Registry User + System PATH (covers Scheduled Tasks with stale PATH).
+		for _, dir := range env.livePathDirs {
+			appendWindowsCommandVariants(&out, seen, dir, "grok")
+		}
+		if env.localAppData != "" {
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.localAppData, "Grok", "bin"), "grok")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.localAppData, "Grok"), "grok")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.localAppData, "Programs", "Grok", "bin"), "grok")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.localAppData, "Programs", "Grok"), "grok")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.localAppData, "Microsoft", "WinGet", "Links"), "grok")
+			appendWindowsWinGetPackageCandidates(&out, seen, env.localAppData, "grok", "grok")
+		}
+		if env.appData != "" {
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.appData, "npm"), "grok")
+		}
+		if env.home != "" {
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.home, "scoop", "shims"), "grok")
+		}
+		if env.programFiles != "" {
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.programFiles, "Grok", "bin"), "grok")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.programFiles, "Grok"), "grok")
+		}
+		if env.programFilesX86 != "" {
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.programFilesX86, "Grok", "bin"), "grok")
+			appendWindowsCommandVariants(&out, seen, filepath.Join(env.programFilesX86, "Grok"), "grok")
+		}
 		return out
 	}
-	add(home, ".local", "bin", "grok")
-	add(home, ".grok", "bin", "grok")
-	if goos == "darwin" {
-		out = append(out, "/opt/homebrew/bin/grok", "/usr/local/bin/grok")
+
+	addJoin(env.home, ".local", "bin", "grok")
+	addJoin(env.home, ".grok", "bin", "grok")
+	if env.grokHome != "" {
+		addJoin(env.grokHome, "bin", "grok")
+	}
+	if env.goos == "darwin" {
+		addPath("/opt/homebrew/bin/grok")
+		addPath("/usr/local/bin/grok")
 	} else {
-		out = append(out, "/usr/local/bin/grok", "/usr/bin/grok")
+		addPath("/usr/local/bin/grok")
+		addPath("/usr/bin/grok")
 	}
 	return out
 }
 
-func isGrokExecutable(path string) bool {
-	if strings.TrimSpace(path) == "" {
-		return false
+func grokBinaryCandidates(home, localAppData, goos string) []string {
+	env := cliDiscoveryEnv{
+		goos:         goos,
+		home:         home,
+		localAppData: localAppData,
 	}
-	st, err := os.Stat(path)
-	if err != nil || !st.Mode().IsRegular() {
-		return false
+	if goos == "windows" {
+		if env.localAppData == "" && home != "" {
+			env.localAppData = filepath.Join(home, "AppData", "Local")
+		}
+		if home != "" {
+			env.appData = filepath.Join(home, "AppData", "Roaming")
+		}
+		env.programFiles = `C:\Program Files`
+		env.programFilesX86 = `C:\Program Files (x86)`
 	}
-	if runtime.GOOS == "windows" {
-		return true
-	}
-	return st.Mode()&0111 != 0
+	return grokBinaryCandidatesForEnv(env)
 }
 
-// grokSupportsACP verifies that `bin` supports `grok agent stdio`.
-// Results are cached under a mutex keyed by path, size, and mtime with in-flight
-// deduplication so concurrent callers share a single bounded probe while noticing
-// in-place upgrades automatically.
-func grokSupportsACP(bin string) bool {
+func findGrokBinariesWithHome(homeOverride string) []string {
+	goos := runtime.GOOS
+	var found []string
+	seen := map[string]bool{}
+	addValid := func(p string, allowAnyRegularOnWin bool) {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return
+		}
+		if allowAnyRegularOnWin && goos == "windows" {
+			st, err := os.Stat(p)
+			if err != nil || !st.Mode().IsRegular() {
+				return
+			}
+		} else if !isCLIExecutableForOS(p, goos) {
+			return
+		}
+		clean := filepath.Clean(p)
+		key := clean
+		if goos == "windows" {
+			key = strings.ToLower(clean)
+		}
+		if !seen[key] {
+			seen[key] = true
+			found = append(found, clean)
+		}
+	}
+
+	// 1. Explicit GROK_BIN environment override.
+	if val := lookupCLIEnv("GROK_BIN"); val != "" {
+		if strings.ContainsAny(val, `/\`) {
+			addValid(val, true)
+		} else if p, err := exec.LookPath(val); err == nil {
+			addValid(p, true)
+		}
+	}
+
+	// 2. Process PATH lookup.
+	names := []string{"grok"}
+	if goos == "windows" {
+		names = []string{"grok.exe", "grok.cmd", "grok.bat", "grok"}
+	}
+	for _, name := range names {
+		if p, err := exec.LookPath(name); err == nil {
+			addValid(p, false)
+		}
+	}
+
+	// 3. User-scoped dirs, live Windows Registry PATH, and standard platform install paths.
+	env := defaultCLIEnv(goos, homeOverride)
+	for _, candidate := range grokBinaryCandidatesForEnv(env) {
+		addValid(candidate, false)
+	}
+	return found
+}
+
+// grokBinary locates the Grok CLI binary (`grok`) via explicit override, PATH,
+// live Windows Registry PATH, and standard platform install locations.
+func grokBinary() string {
+	if all := findGrokBinariesWithHome(""); len(all) > 0 {
+		return all[0]
+	}
+	return ""
+}
+
+func isGrokExecutable(path string) bool {
+	return isCLIExecutableForOS(path, runtime.GOOS)
+}
+
+// probeGrokACPSupport verifies that `bin` supports `grok agent stdio`.
+// Positive results are cached for `(path, size, mtime)`; negative results expire
+// after acpNegativeCacheTTL and are bypassed when forceRetry is true.
+func probeGrokACPSupport(bin string, forceRetry bool) acpProbeResult {
 	bin = strings.TrimSpace(bin)
 	if bin == "" {
-		return false
+		return acpProbeResult{status: acpSupportExecError, detail: "binary path is empty"}
 	}
 	st, err := os.Stat(bin)
 	if err != nil || !st.Mode().IsRegular() {
-		return false
+		detail := "binary is not a regular file"
+		if err != nil {
+			detail = err.Error()
+		}
+		return acpProbeResult{status: acpSupportExecError, detail: detail}
 	}
 	size := st.Size()
 	modNs := st.ModTime().UnixNano()
 	key := fmt.Sprintf("%s|%d|%d", bin, size, modNs)
+	waited := false
 
 	for {
 		grokACPCacheMu.Lock()
 		if entry, ok := grokACPCache[bin]; ok && entry.size == size && entry.modTimeNs == modNs {
-			grokACPCacheMu.Unlock()
-			return entry.supported
+			if entry.supported {
+				grokACPCacheMu.Unlock()
+				return acpProbeResult{status: acpSupportOK}
+			}
+			withinTTL := acpCacheNow().Sub(entry.checkedAt) < acpNegativeCacheTTL
+			if waited || (!forceRetry && withinTTL) {
+				res := acpProbeResult{status: entry.status, detail: entry.detail}
+				grokACPCacheMu.Unlock()
+				return res
+			}
 		}
 		if wait, busy := grokACPInFlight[key]; busy {
 			grokACPCacheMu.Unlock()
 			<-wait
+			waited = true
 			continue
 		}
 		done := make(chan struct{})
 		grokACPInFlight[key] = done
-		probe := grokProbeHelpFunc
+		helpHook := grokProbeHelpFunc
+		detailHook := grokProbeDetailFunc
 		grokACPCacheMu.Unlock()
 
-		supported := probe(bin)
+		var res acpProbeResult
+		if helpHook != nil {
+			if helpHook(bin) {
+				res = acpProbeResult{status: acpSupportOK}
+			} else {
+				res = acpProbeResult{status: acpSupportUnsupported, detail: "grok acp probe returned false"}
+			}
+		} else if detailHook != nil {
+			res = detailHook(bin)
+		} else {
+			res = probeGrokACPDetail(bin)
+		}
 
+		checkedAt := acpCacheNow()
 		grokACPCacheMu.Lock()
 		grokACPCache[bin] = acpSupportCacheEntry{
 			size:      size,
 			modTimeNs: modNs,
-			supported: supported,
+			supported: res.status == acpSupportOK,
+			status:    res.status,
+			detail:    res.detail,
+			checkedAt: checkedAt,
 		}
 		delete(grokACPInFlight, key)
 		close(done)
 		grokACPCacheMu.Unlock()
-		return supported
+		return res
 	}
 }
 
+// grokSupportsACP verifies that `bin` supports `grok agent stdio`.
+func grokSupportsACP(bin string) bool {
+	return probeGrokACPSupport(bin, false).status == acpSupportOK
+}
+
 func probeGrokACPHelp(bin string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), acpSupportProbeLimit)
+	return probeGrokACPDetail(bin).status == acpSupportOK
+}
+
+func probeGrokACPDetail(bin string) acpProbeResult {
+	timeout := acpSupportProbeTimeout()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, "agent", "stdio", "--help")
-	cmd.Env = codexEnv()
+	cmd, err := buildCLICommand(ctx, bin, "agent", "stdio", "--help")
+	if err != nil {
+		return acpProbeResult{status: acpSupportExecError, detail: err.Error()}
+	}
+	cmd.Env = cliProcessEnv(codexEnv())
 	prepareProcess(cmd)
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
@@ -183,10 +336,44 @@ func probeGrokACPHelp(bin string) bool {
 	}
 	cmd.WaitDelay = 500 * time.Millisecond
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return false
+	text := strings.ReplaceAll(string(out), "\r\n", "\n")
+	lower := strings.ToLower(text)
+
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return acpProbeResult{
+			status: acpSupportTimeout,
+			detail: fmt.Sprintf("timed out after %s probing %s", timeout, bin),
+		}
 	}
-	return strings.Contains(strings.ToLower(string(out)), "stdio")
+	if err == nil && strings.Contains(lower, "stdio") {
+		return acpProbeResult{status: acpSupportOK}
+	}
+	if err != nil && strings.Contains(lower, "usage:") && strings.Contains(lower, "stdio") &&
+		!strings.Contains(lower, "unrecognized") && !strings.Contains(lower, "unknown") && !looksLikeWindowsShellError(lower) {
+		return acpProbeResult{status: acpSupportOK}
+	}
+	trimmed := clipPlain(strings.TrimSpace(text), 200)
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			if looksLikeWindowsShellError(lower) {
+				return acpProbeResult{status: acpSupportExecError, detail: trimmed}
+			}
+			if looksLikeUnsupportedSubcommandOutput(lower) {
+				return acpProbeResult{status: acpSupportUnsupported, detail: trimmed}
+			}
+			detail := err.Error()
+			if trimmed != "" {
+				detail = trimmed
+			}
+			return acpProbeResult{status: acpSupportExecError, detail: detail}
+		}
+		return acpProbeResult{status: acpSupportExecError, detail: err.Error()}
+	}
+	if trimmed == "" {
+		trimmed = "help output missing stdio"
+	}
+	return acpProbeResult{status: acpSupportUnsupported, detail: trimmed}
 }
 
 // grokACPClientConfig configures a Grok CLI ACP JSON-RPC 2.0 client.
@@ -669,14 +856,18 @@ func newGrokACPClient(cfg grokACPClientConfig) (*grokACPClient, error) {
 	}
 
 	procCtx, procCancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(procCtx, bin, args...)
+	cmd, err := buildCLICommand(procCtx, bin, args...)
+	if err != nil {
+		procCancel()
+		return nil, fmt.Errorf("build grok agent command: %w", err)
+	}
 	if cfg.Cwd != "" {
 		cmd.Dir = cfg.Cwd
 	}
 	if len(cfg.Env) > 0 {
 		cmd.Env = cfg.Env
 	} else {
-		cmd.Env = codexEnv()
+		cmd.Env = cliProcessEnv(codexEnv())
 	}
 	prepareProcess(cmd)
 

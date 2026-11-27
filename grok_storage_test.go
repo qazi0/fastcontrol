@@ -470,6 +470,137 @@ permission_mode = "auto" # auto-review mode
 	}
 }
 
+func TestSortGrokEffortsAndModelsCacheAscendingOrder(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{
+			name: "descending live grok order",
+			in:   []string{"xhigh", "high", "medium", "low"},
+			want: []string{"low", "medium", "high", "xhigh"},
+		},
+		{
+			name: "mixed case duplicates and minimal through max",
+			in:   []string{" XHIGH ", "high", "LOW", "minimal", "medium", "high", "max", "low", ""},
+			want: []string{"minimal", "low", "medium", "high", "xhigh", "max"},
+		},
+		{
+			name: "unknown future labels preserved after known ones",
+			in:   []string{"ultra", "xhigh", "turbo", "low", "max", "minimal", "ULTRA"},
+			want: []string{"minimal", "low", "xhigh", "max", "ultra", "turbo"},
+		},
+		{
+			name: "empty and whitespace only",
+			in:   []string{"", "   "},
+			want: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sortGrokEfforts(tc.in)
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") || len(got) != len(tc.want) {
+				t.Fatalf("sortGrokEfforts(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+
+	// Regression: live m5p ~/.grok/models_cache.json stores models as an object map
+	// with nested info and descending reasoning_efforts (xhigh -> high -> medium -> low).
+	grokHome := t.TempDir()
+	liveCacheJSON := `{
+		"fetched_at": 1764200000,
+		"grok_version": "1.0.92",
+		"models": {
+			"grok-4.7": {
+				"info": {
+					"id": "grok-4.7",
+					"model": "grok-4.7",
+					"name": "Grok 4.7",
+					"description": "Frontier model",
+					"context_window": 256000,
+					"hidden": false,
+					"reasoning_effort": "high",
+					"supports_reasoning_effort": true,
+					"reasoning_efforts": [
+						{"id": "xhigh", "value": "xhigh", "label": "Extra High", "default": false},
+						{"id": "high", "value": "high", "label": "High", "default": true},
+						{"id": "medium", "value": "medium", "label": "Medium", "default": false},
+						{"id": "low", "value": "low", "label": "Low", "default": false}
+					]
+				}
+			},
+			"grok-hidden": {
+				"info": {
+					"id": "grok-hidden",
+					"name": "Hidden Model",
+					"hidden": true,
+					"reasoning_efforts": [{"value": "xhigh"}, {"value": "low"}]
+				}
+			},
+			"grok-4.5": {
+				"info": {
+					"id": "grok-4.5",
+					"name": "Grok 4.5",
+					"context_window": 256000,
+					"hidden": false,
+					"reasoning_effort": "high",
+					"reasoning_efforts": [
+						{"id": "high", "value": "high", "default": true},
+						{"id": "medium", "value": "medium", "default": false},
+						{"id": "low", "value": "low", "default": false}
+					]
+				}
+			}
+		}
+	}`
+	writeGrokFile(t, filepath.Join(grokHome, "models_cache.json"), []byte(liveCacheJSON), time.Time{})
+
+	models, defaults, err := grokReadModelsCache(grokHome)
+	if err != nil {
+		t.Fatalf("grokReadModelsCache live map format error: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("expected 2 visible models, got %d: %+v", len(models), models)
+	}
+	if models[0].Slug != "grok-4.7" || models[0].Name != "Grok 4.7" || models[0].DefaultEffort != "high" {
+		t.Fatalf("unexpected models[0]: %+v", models[0])
+	}
+	want47 := []string{"low", "medium", "high", "xhigh"}
+	if strings.Join(models[0].Efforts, ",") != strings.Join(want47, ",") {
+		t.Fatalf("grok-4.7 efforts = %v, want %v", models[0].Efforts, want47)
+	}
+	if models[1].Slug != "grok-4.5" || models[1].DefaultEffort != "high" {
+		t.Fatalf("unexpected models[1]: %+v", models[1])
+	}
+	want45 := []string{"low", "medium", "high"}
+	if strings.Join(models[1].Efforts, ",") != strings.Join(want45, ",") {
+		t.Fatalf("grok-4.5 efforts = %v, want %v", models[1].Efforts, want45)
+	}
+	if defaults.ContextWindows["grok-4.7"] != 256000 || defaults.ContextWindows["grok-4.5"] != 256000 {
+		t.Fatalf("unexpected context windows: %+v", defaults.ContextWindows)
+	}
+
+	// Regression: array-shaped cache with mixed, duplicate, and minimal efforts.
+	arrModels, _, err := parseGrokModelsCacheJSON([]byte(`{
+		"models": [
+			{
+				"id": "grok-mixed",
+				"display_name": "Grok Mixed",
+				"supported_reasoning_efforts": ["XHIGH", "high", "medium", "low", "minimal", "high", " LOW "]
+			}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("parseGrokModelsCacheJSON mixed array error: %v", err)
+	}
+	wantMixed := []string{"minimal", "low", "medium", "high", "xhigh"}
+	if len(arrModels) != 1 || strings.Join(arrModels[0].Efforts, ",") != strings.Join(wantMixed, ",") {
+		t.Fatalf("mixed array efforts = %+v, want %v", arrModels, wantMixed)
+	}
+}
+
 func TestGrokTranscriptProjectionDiffsImagesAndPagination(t *testing.T) {
 	// Isolate HOME/USERPROFILE so cacheImage writes into t.TempDir().
 	fakeHome := t.TempDir()

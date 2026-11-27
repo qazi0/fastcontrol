@@ -224,8 +224,8 @@ func TestGrokBinaryCandidates(t *testing.T) {
 	}
 	if !strings.HasSuffix(mac[0], filepath.Join(".local", "bin", "grok")) ||
 		!strings.HasSuffix(mac[1], filepath.Join(".grok", "bin", "grok")) ||
-		mac[2] != "/opt/homebrew/bin/grok" ||
-		mac[3] != "/usr/local/bin/grok" {
+		filepath.ToSlash(mac[2]) != "/opt/homebrew/bin/grok" ||
+		filepath.ToSlash(mac[3]) != "/usr/local/bin/grok" {
 		t.Fatalf("unexpected darwin candidates: %v", mac)
 	}
 
@@ -1686,6 +1686,127 @@ func TestGrokACPLiveReadOnlyInitializeAndExtensions(t *testing.T) {
 	for _, s := range sessions {
 		if s.SessionID == "" {
 			t.Fatalf("live session/list returned empty sessionId: %+v", s)
+		}
+	}
+}
+
+func TestGrokWindowsDiscoveryOverrideAndTransientProbeRetry(t *testing.T) {
+	// 1. Windows candidate enumeration covers .local/bin, .grok/bin, GROK_HOME, Registry PATH, npm, scoop, WinGet, Program Files.
+	tmpLocal := t.TempDir()
+	wingetDir := filepath.Join(tmpLocal, "Microsoft", "WinGet", "Packages", "xAI.GrokCLI_1.0", "bin")
+	if err := os.MkdirAll(wingetDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	winCands := grokBinaryCandidatesForEnv(cliDiscoveryEnv{
+		goos:            "windows",
+		home:            `C:\Users\Alice`,
+		localAppData:    tmpLocal,
+		appData:         `C:\Users\Alice\AppData\Roaming`,
+		programFiles:    `C:\Program Files`,
+		programFilesX86: `C:\Program Files (x86)`,
+		grokHome:        `D:\GrokHome`,
+		livePathDirs:    []string{`D:\Tools\GrokBin`},
+		envOverrides:    []string{`E:\Override\grok.exe`},
+	})
+	joined := strings.Join(winCands, "\n")
+	for _, want := range []string{
+		`E:\Override\grok.exe`,
+		filepath.Join(".local", "bin", "grok.exe"),
+		filepath.Join(".grok", "bin", "grok.exe"),
+		filepath.Join(`D:\GrokHome`, "bin", "grok.exe"),
+		filepath.Join(`D:\Tools\GrokBin`, "grok.cmd"),
+		filepath.Join("Programs", "Grok", "bin", "grok.cmd"),
+		filepath.Join("npm", "grok.cmd"),
+		filepath.Join("scoop", "shims", "grok.exe"),
+		filepath.Join("xAI.GrokCLI_1.0", "bin", "grok.exe"),
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected Windows grok candidates to include %q; got:\n%s", want, joined)
+		}
+	}
+
+	// 2. GROK_BIN explicit override works.
+	overrideName := "custom-grok"
+	if runtime.GOOS == "windows" {
+		overrideName = "custom-grok.exe"
+	}
+	overridePath := filepath.Join(t.TempDir(), overrideName)
+	if err := os.WriteFile(overridePath, []byte("#!/bin/sh\necho ok\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GROK_BIN", overridePath)
+	if got := grokBinary(); got != filepath.Clean(overridePath) {
+		t.Fatalf("expected GROK_BIN override %q, got %q", overridePath, got)
+	}
+
+	// 3. Transient failure is not cached forever (forceRetry and TTL expiration both recover).
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fake-grok-retry")
+	if err := os.WriteFile(bin, []byte("stub-grok"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 28, 2, 0, 0, 0, time.UTC)
+	var nowMu sync.Mutex
+	var calls atomic.Int32
+	var nextRes atomic.Value
+	nextRes.Store(acpProbeResult{status: acpSupportTimeout, detail: "cold scan timeout"})
+
+	grokACPCacheMu.Lock()
+	origHelp := grokProbeHelpFunc
+	origDetail := grokProbeDetailFunc
+	origNow := acpCacheNow
+	origTTL := acpNegativeCacheTTL
+	grokProbeHelpFunc = nil
+	grokProbeDetailFunc = func(string) acpProbeResult {
+		calls.Add(1)
+		return nextRes.Load().(acpProbeResult)
+	}
+	acpCacheNow = func() time.Time {
+		nowMu.Lock()
+		defer nowMu.Unlock()
+		return now
+	}
+	acpNegativeCacheTTL = 30 * time.Second
+	delete(grokACPCache, bin)
+	grokACPCacheMu.Unlock()
+
+	t.Cleanup(func() {
+		grokACPCacheMu.Lock()
+		grokProbeHelpFunc = origHelp
+		grokProbeDetailFunc = origDetail
+		acpCacheNow = origNow
+		acpNegativeCacheTTL = origTTL
+		delete(grokACPCache, bin)
+		grokACPCacheMu.Unlock()
+	})
+
+	if grokSupportsACP(bin) || calls.Load() != 1 {
+		t.Fatalf("expected initial timeout false, calls=%d", calls.Load())
+	}
+	nextRes.Store(acpProbeResult{status: acpSupportOK})
+	nowMu.Lock()
+	now = now.Add(31 * time.Second)
+	nowMu.Unlock()
+	if !grokSupportsACP(bin) || calls.Load() != 2 {
+		t.Fatalf("expected expired negative cache to retry and succeed, calls=%d", calls.Load())
+	}
+
+	// 4. Real subprocess probe verifies CRLF stderr help acceptance and rejects unrecognized 'stdio' subcommand.
+	if runtime.GOOS != "windows" {
+		okBin := filepath.Join(dir, "grok-stderr-crlf")
+		if err := os.WriteFile(okBin, []byte("#!/bin/sh\nprintf 'Usage: grok agent stdio [OPTIONS]\\r\\n' >&2\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if got := probeGrokACPDetail(okBin); got.status != acpSupportOK {
+			t.Fatalf("expected stderr CRLF grok help to succeed, got %+v", got)
+		}
+
+		oldBin := filepath.Join(dir, "grok-old")
+		if err := os.WriteFile(oldBin, []byte("#!/bin/sh\nprintf 'error: unrecognized subcommand \"stdio\"\\r\\n' >&2\nexit 2\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if got := probeGrokACPDetail(oldBin); got.status != acpSupportUnsupported {
+			t.Fatalf("expected old grok CLI mentioning 'stdio' in error to classify unsupported, got %+v", got)
 		}
 	}
 }

@@ -82,8 +82,11 @@ class RelayWatchService : Service() {
             rawProvider: String?,
             rawTitle: String?,
             rawText: String?,
+            prefs: NotificationPrefs = NotificationPrefs(),
         ): ThreadNotificationSpec? {
-            val channel = when (kind) {
+            val normalizedKind = kind.trim().lowercase()
+            if (!prefs.shouldNotify(normalizedKind)) return null
+            val channel = when (normalizedKind) {
                 "completed", "failed" -> CH_TURNS
                 "attention" -> CH_ATTENTION
                 else -> return null
@@ -92,8 +95,8 @@ class RelayWatchService : Service() {
             val provider = Providers.normalize(rawProvider)
             val cleanTitle = rawTitle?.trim().orEmpty()
             val cleanText = rawText?.trim().orEmpty()
-            val title = cleanTitle.ifEmpty { Providers.fallbackNotificationTitle(provider, kind) }
-            val text = cleanText.ifEmpty { Providers.fallbackNotificationText(kind, hasExplicitTitle = cleanTitle.isNotEmpty()) }
+            val title = cleanTitle.ifEmpty { Providers.fallbackNotificationTitle(provider, normalizedKind) }
+            val text = cleanText.ifEmpty { Providers.fallbackNotificationText(normalizedKind, hasExplicitTitle = cleanTitle.isNotEmpty()) }
             return ThreadNotificationSpec(
                 channel = channel,
                 serverId = serverId,
@@ -103,7 +106,25 @@ class RelayWatchService : Service() {
                 title = title,
                 text = text,
                 subText = Providers.notificationSubText(serverName, provider),
-                isAttention = kind == "attention",
+                isAttention = normalizedKind == "attention",
+            )
+        }
+
+        internal fun resolveEventNotification(
+            ctx: Context,
+            server: Server,
+            msg: JSONObject,
+        ): ThreadNotificationSpec? {
+            val normalizedKind = msg.optString("kind").trim().lowercase()
+            if (!Store.shouldNotify(ctx, normalizedKind)) return null
+            return buildNotificationSpec(
+                serverName = server.name,
+                serverId = server.id,
+                kind = normalizedKind,
+                threadId = msg.optString("id"),
+                rawProvider = msg.optString("provider"),
+                rawTitle = msg.optString("title"),
+                rawText = msg.optString("text"),
             )
         }
 
@@ -329,15 +350,7 @@ class RelayWatchService : Service() {
         checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
     private fun onEvent(server: Server, msg: JSONObject) {
-        val spec = buildNotificationSpec(
-            serverName = server.name,
-            serverId = server.id,
-            kind = msg.optString("kind"),
-            threadId = msg.optString("id"),
-            rawProvider = msg.optString("provider"),
-            rawTitle = msg.optString("title"),
-            rawText = msg.optString("text"),
-        ) ?: return
+        val spec = resolveEventNotification(this, server, msg) ?: return
         if (UiState.isShowing(spec.serverId, spec.threadId, spec.provider)) return
         if (!canNotify()) return
 

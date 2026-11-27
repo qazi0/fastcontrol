@@ -385,8 +385,8 @@ func readAntigravityDB(ctx context.Context, dbPath, sourceDir string) ([]antigra
 
 			rec := antigravityRecord{
 				ID:                   convID,
-				Title:                strings.TrimSpace(antigravityScanString(title)),
-				Preview:              strings.TrimSpace(antigravityScanString(preview)),
+				Title:                cleanAntigravityTitle(antigravityScanString(title)),
+				Preview:              cleanAntigravityTitle(antigravityScanString(preview)),
 				StepCount:            int(antigravityScanInt64(stepCount)),
 				Updated:              updated,
 				Created:              created,
@@ -934,7 +934,7 @@ func readAntigravityTranscriptWithOptions(path string, opts antigravityTranscrip
 	}
 
 	v := newAntigravityTranscript()
-	v.Meta.Title = strings.TrimSpace(opts.Title)
+	v.Meta.Title = cleanAntigravityTitle(opts.Title)
 	v.Meta.Cwd = opts.Cwd
 
 	start := st.Size() - tailBytes
@@ -1064,7 +1064,9 @@ func antigravityWindowStartIndex(entries []antigravityRawEntry, limit int) int {
 	hasLeading := false
 	for i, e := range entries {
 		if e.Type == "USER_INPUT" {
-			turnStarts = append(turnStarts, i)
+			if len(e.TruncatedFields) > 0 || cleanAntigravityUserText(e.Content) != "" {
+				turnStarts = append(turnStarts, i)
+			}
 		} else if len(turnStarts) == 0 && e.Type != "" {
 			hasLeading = true
 		}
@@ -1210,7 +1212,7 @@ func antigravityApplyExpandedFields(dst *antigravityRawEntry, full antigravityRa
 
 func (v *antigravityTranscript) applyHeadMetadata(entry antigravityRawEntry) {
 	if entry.Type == "USER_INPUT" && v.First == "" {
-		if text := strings.TrimSpace(entry.Content); text != "" {
+		if text := cleanAntigravityTitle(entry.Content); text != "" {
 			v.First = clipPlain(text, 160)
 		}
 	}
@@ -1267,7 +1269,10 @@ func (v *antigravityTranscript) applyEntry(entry antigravityRawEntry) {
 
 	switch entry.Type {
 	case "USER_INPUT":
-		text := entry.Content
+		text := cleanAntigravityUserText(entry.Content)
+		if text == "" {
+			break
+		}
 		v.startTurn(stepKey, tsMs, status)
 		v.appendItem(Item{
 			ID:     stepKey + ":user",
@@ -1275,8 +1280,10 @@ func (v *antigravityTranscript) applyEntry(entry antigravityRawEntry) {
 			Text:   text,
 			Status: status,
 		})
-		if v.First == "" && strings.TrimSpace(text) != "" {
-			v.First = clipPlain(strings.TrimSpace(text), 160)
+		if v.First == "" {
+			if first := cleanAntigravityTitle(text); first != "" {
+				v.First = clipPlain(first, 160)
+			}
 		}
 
 	case "PLANNER_RESPONSE":
@@ -1815,7 +1822,659 @@ func parseAntigravityPbtxtTitle(data []byte) string {
 	}
 }
 
+// ---- Antigravity XML envelope stripping ----
+
+var antigravityDropBlockTags = map[string]bool{
+	"ADDITIONAL_METADATA":  true,
+	"USER_SETTINGS_CHANGE": true,
+	"SYSTEM_MESSAGE":       true,
+	"EPHEMERAL_MESSAGE":    true,
+	"ATTACHED_FILES":       true,
+	"CURRENT_EDITOR":       true,
+	"OPEN_FILES":           true,
+	"USER_CONTEXT":         true,
+	"CONTEXT":              true,
+	"SKILL":                true,
+}
+
+// antigravityStrictUnclosedDropTags may drop an unclosed truncated tail even
+// when appearing alone at the start of a compact transcript or DB preview.
+var antigravityStrictUnclosedDropTags = map[string]bool{
+	"ADDITIONAL_METADATA":  true,
+	"USER_SETTINGS_CHANGE": true,
+	"SYSTEM_MESSAGE":       true,
+	"EPHEMERAL_MESSAGE":    true,
+	"ATTACHED_FILES":       true,
+	"CURRENT_EDITOR":       true,
+	"OPEN_FILES":           true,
+	"USER_CONTEXT":         true,
+}
+
+var antigravityPartialTagPrefixes = []string{
+	"</USER_REQUEST>",
+	"<USER_REQUEST>",
+	"<ADDITIONAL_METADATA>",
+	"</ADDITIONAL_METADATA>",
+	"<USER_SETTINGS_CHANGE>",
+	"</USER_SETTINGS_CHANGE>",
+	"<SYSTEM_MESSAGE>",
+	"</SYSTEM_MESSAGE>",
+	"<EPHEMERAL_MESSAGE>",
+	"</EPHEMERAL_MESSAGE>",
+	"<ATTACHED_FILES>",
+	"</ATTACHED_FILES>",
+	"<CURRENT_EDITOR>",
+	"</CURRENT_EDITOR>",
+	"<OPEN_FILES>",
+	"</OPEN_FILES>",
+	"<USER_CONTEXT>",
+	"</USER_CONTEXT>",
+	"<CONTEXT>",
+	"</CONTEXT>",
+	"<SKILL>",
+	"</SKILL>",
+	"<BEGIN_CHAT>",
+	"</BEGIN_CHAT>",
+	"<END_CHAT>",
+	"</END_CHAT>",
+	"<BEGIN-CHAT>",
+	"</BEGIN-CHAT>",
+	"<END-CHAT>",
+	"</END-CHAT>",
+}
+
+func antigravityIsChatBoundaryTag(upper string) bool {
+	return upper == "BEGIN_CHAT" || upper == "END_CHAT" || upper == "BEGIN-CHAT" || upper == "END-CHAT"
+}
+
+func antigravityIsEnvelopeTag(upper string) bool {
+	return upper == "USER_REQUEST" || antigravityIsChatBoundaryTag(upper) || antigravityDropBlockTags[upper]
+}
+
+// cleanAntigravityUserText strips Antigravity XML prompt envelopes (such as
+// <USER_REQUEST>, <ADDITIONAL_METADATA>, <USER_SETTINGS_CHANGE>,
+// <SYSTEM_MESSAGE>, <EPHEMERAL_MESSAGE>, <ATTACHED_FILES>, <CURRENT_EDITOR>,
+// <OPEN_FILES>, <USER_CONTEXT>, <CONTEXT>, <SKILL>) and BEGIN CHAT / END CHAT
+// delimiters while preserving markdown code fences, inline code, and normal
+// user text. Returns "" when input contains only system or metadata wrappers.
+func cleanAntigravityUserText(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	s := strings.ReplaceAll(raw, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+
+	var (
+		userRequests []string
+		plainBuf     strings.Builder
+		sawEnvelope  bool
+		sawUserReq   bool
+		fenceChar    byte
+		fenceLen     int
+		pos          int
+		atLineStart  = true
+	)
+
+	n := len(s)
+	for pos < n {
+		// Find current line bounds from pos.
+		nl := strings.IndexByte(s[pos:], '\n')
+		lineEnd := n
+		nextLine := n
+		if nl >= 0 {
+			lineEnd = pos + nl
+			nextLine = lineEnd + 1
+		}
+		seg := s[pos:lineEnd]
+
+		if fenceChar != 0 {
+			if atLineStart {
+				fenceChar, fenceLen, _ = antigravityUpdateFence(seg, fenceChar, fenceLen)
+			}
+			plainBuf.WriteString(seg)
+			if nl >= 0 {
+				plainBuf.WriteByte('\n')
+			}
+			pos = nextLine
+			atLineStart = true
+			continue
+		}
+
+		if atLineStart {
+			if fc, fl, isFence := antigravityUpdateFence(seg, 0, 0); isFence {
+				fenceChar, fenceLen = fc, fl
+				plainBuf.WriteString(seg)
+				if nl >= 0 {
+					plainBuf.WriteByte('\n')
+				}
+				pos = nextLine
+				atLineStart = true
+				continue
+			}
+
+			if antigravityIsChatBoundaryLine(seg) {
+				sawEnvelope = true
+				pos = nextLine
+				atLineStart = true
+				continue
+			}
+
+			if antigravityIsSystemPreambleLine(seg) && antigravityNextNonBlankStartsWithTag(s, nextLine, "SYSTEM_MESSAGE") {
+				sawEnvelope = true
+				pos = nextLine
+				atLineStart = true
+				continue
+			}
+		}
+
+		// Skip leading spaces/tabs when positioned at a logical tag boundary.
+		scanPos := pos
+		for scanPos < lineEnd && (s[scanPos] == ' ' || s[scanPos] == '\t') {
+			scanPos++
+		}
+
+		if scanPos < lineEnd && s[scanPos] == '<' {
+			if name, closing, tagEnd, ok := antigravityParseTagAt(s, scanPos); ok && antigravityIsEnvelopeTag(name) {
+				switch {
+				case name == "USER_REQUEST" && !closing:
+					sawEnvelope = true
+					sawUserReq = true
+					closeStart, closeEnd, found := antigravityFindClosingTag(s, tagEnd, "USER_REQUEST", true)
+					if found {
+						inner := antigravityStripChatBoundaries(s[tagEnd:closeStart])
+						if inner != "" {
+							userRequests = append(userRequests, inner)
+						}
+						pos = antigravitySkipBlankLineTail(s, closeEnd)
+						atLineStart = true
+						continue
+					}
+					// Truncated or unclosed <USER_REQUEST>: strip any unclosed trailing
+					// metadata/system block or partial closing tag at EOF.
+					inner := antigravityCleanUnclosedUserRequest(s[tagEnd:])
+					if inner != "" {
+						userRequests = append(userRequests, inner)
+					}
+					pos = n
+					continue
+
+				case name == "USER_REQUEST" && closing:
+					rest := strings.TrimSpace(s[tagEnd:lineEnd])
+					if sawEnvelope || rest == "" || antigravityStartsWithEnvelopeMarker(rest) {
+						sawEnvelope = true
+						pos = antigravitySkipBlankLineTail(s, tagEnd)
+						atLineStart = true
+						continue
+					}
+
+				case antigravityIsChatBoundaryTag(name):
+					sawEnvelope = true
+					pos = antigravitySkipBlankLineTail(s, tagEnd)
+					atLineStart = true
+					continue
+
+				case antigravityDropBlockTags[name] && !closing:
+					closeStart, closeEnd, found := antigravityFindClosingTag(s, tagEnd, name, false)
+					if found {
+						sawEnvelope = true
+						_ = closeStart
+						pos = antigravitySkipBlankLineTail(s, closeEnd)
+						atLineStart = true
+						continue
+					}
+					// Unclosed metadata/system tag: drop truncated tail when unambiguously
+					// Antigravity metadata, already inside an envelope, or tag is alone on line.
+					aloneOnLine := strings.TrimSpace(s[tagEnd:lineEnd]) == ""
+					if antigravityStrictUnclosedDropTags[name] || sawEnvelope || aloneOnLine {
+						sawEnvelope = true
+						pos = n
+						continue
+					}
+
+				case antigravityDropBlockTags[name] && closing:
+					if sawEnvelope {
+						pos = antigravitySkipBlankLineTail(s, tagEnd)
+						atLineStart = true
+						continue
+					}
+				}
+			}
+
+			// If we already matched an Antigravity envelope and hit a truncated
+			// trailing partial envelope tag at EOF (e.g. "<ADDITIONAL_ME"), drop it.
+			if sawEnvelope && nl < 0 && antigravityIsPartialEnvelopeTag(strings.TrimSpace(s[scanPos:])) {
+				pos = n
+				continue
+			}
+		}
+
+		// Plain content line (preserve inline code; strip trailing chat boundary tag
+		// or partial closing tag only when we already recognized an envelope).
+		outSeg := seg
+		if sawEnvelope {
+			outSeg = antigravityTrimTrailingBoundaryTag(outSeg)
+			if nl < 0 {
+				outSeg = antigravityTrimTrailingPartialTag(outSeg)
+			}
+		}
+		plainBuf.WriteString(outSeg)
+		if nl >= 0 {
+			plainBuf.WriteByte('\n')
+		}
+		pos = nextLine
+		atLineStart = true
+	}
+
+	if !sawEnvelope {
+		return strings.TrimSpace(raw)
+	}
+	if sawUserReq {
+		return strings.TrimSpace(strings.Join(userRequests, "\n\n"))
+	}
+	return strings.TrimSpace(plainBuf.String())
+}
+
+func antigravitySkipBlankLineTail(s string, pos int) int {
+	n := len(s)
+	if pos >= n {
+		return n
+	}
+	tailEnd := n
+	if nl := strings.IndexByte(s[pos:], '\n'); nl >= 0 {
+		tailEnd = pos + nl
+	}
+	if strings.TrimSpace(s[pos:tailEnd]) == "" {
+		if tailEnd < n {
+			return tailEnd + 1
+		}
+		return n
+	}
+	return pos
+}
+
+func antigravityUpdateFence(line string, fenceChar byte, fenceLen int) (byte, int, bool) {
+	i := 0
+	for i < len(line) && i < 3 && line[i] == ' ' {
+		i++
+	}
+	if i >= len(line) || (line[i] != '`' && line[i] != '~') {
+		return fenceChar, fenceLen, false
+	}
+	ch := line[i]
+	j := i
+	for j < len(line) && line[j] == ch {
+		j++
+	}
+	count := j - i
+	if count < 3 {
+		return fenceChar, fenceLen, false
+	}
+	rest := line[j:]
+	if fenceChar == 0 {
+		if ch == '`' && strings.IndexByte(rest, '`') >= 0 {
+			return 0, 0, false
+		}
+		return ch, count, true
+	}
+	if ch == fenceChar && count >= fenceLen && strings.TrimSpace(rest) == "" {
+		return 0, 0, true
+	}
+	return fenceChar, fenceLen, false
+}
+
+func antigravityParseTagAt(s string, pos int) (string, bool, int, bool) {
+	n := len(s)
+	if pos < 0 || pos >= n || s[pos] != '<' {
+		return "", false, 0, false
+	}
+	i := pos + 1
+	closing := false
+	if i < n && s[i] == '/' {
+		closing = true
+		i++
+	}
+	if i >= n || !antigravityIsASCIILetter(s[i]) {
+		return "", false, 0, false
+	}
+	nameStart := i
+	for i < n && (antigravityIsASCIILetter(s[i]) || (s[i] >= '0' && s[i] <= '9') || s[i] == '_' || s[i] == '-') {
+		i++
+		if i-nameStart > 64 {
+			return "", false, 0, false
+		}
+	}
+	upper := strings.ToUpper(s[nameStart:i])
+	if closing {
+		for i < n && (s[i] == ' ' || s[i] == '\t') {
+			i++
+		}
+		if i < n && s[i] == '>' {
+			return upper, true, i + 1, true
+		}
+		return "", false, 0, false
+	}
+	if i < n && s[i] == '>' {
+		return upper, false, i + 1, true
+	}
+	if i < n && (s[i] == ' ' || s[i] == '\t' || s[i] == '/') {
+		limit := pos + 256
+		if limit > n {
+			limit = n
+		}
+		for i < limit {
+			c := s[i]
+			if c == '>' {
+				return upper, false, i + 1, true
+			}
+			if c == '<' || c == '\n' || c == '\r' {
+				return "", false, 0, false
+			}
+			i++
+		}
+	}
+	return "", false, 0, false
+}
+
+func antigravityAdvanceInlineBackticks(line string, idx int) int {
+	n := len(line)
+	tickLen := 0
+	for idx+tickLen < n && line[idx+tickLen] == '`' {
+		tickLen++
+	}
+	i := idx + tickLen
+	for i < n {
+		if line[i] == '`' {
+			run := 0
+			for i+run < n && line[i+run] == '`' {
+				run++
+			}
+			if run == tickLen {
+				return i + run
+			}
+			i += run
+			continue
+		}
+		i++
+	}
+	return idx + tickLen
+}
+
+func antigravityStartsWithEnvelopeMarker(rest string) bool {
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return false
+	}
+	if antigravityIsChatBoundaryLine(rest) {
+		return true
+	}
+	if rest[0] == '<' {
+		if name, _, _, ok := antigravityParseTagAt(rest, 0); ok && antigravityIsEnvelopeTag(name) {
+			return true
+		}
+		if antigravityIsPartialEnvelopeTag(rest) {
+			return true
+		}
+	}
+	return false
+}
+
+func antigravityFindClosingTag(s string, start int, targetUpper string, strictFollowing bool) (int, int, bool) {
+	n := len(s)
+	var fenceChar byte
+	fenceLen := 0
+	depth := 1
+	pos := start
+	for pos < n {
+		nl := strings.IndexByte(s[pos:], '\n')
+		lineEnd := n
+		nextLine := n
+		if nl >= 0 {
+			lineEnd = pos + nl
+			nextLine = lineEnd + 1
+		}
+		line := s[pos:lineEnd]
+		atRealLineStart := pos == 0 || s[pos-1] == '\n'
+
+		if atRealLineStart {
+			fc, fl, isFence := antigravityUpdateFence(line, fenceChar, fenceLen)
+			fenceChar, fenceLen = fc, fl
+			if isFence || fenceChar != 0 {
+				pos = nextLine
+				continue
+			}
+		} else if fenceChar != 0 {
+			pos = nextLine
+			continue
+		}
+
+		for i := 0; i < len(line); {
+			if line[i] == '`' {
+				i = antigravityAdvanceInlineBackticks(line, i)
+				continue
+			}
+			if line[i] == '<' {
+				name, closing, tagEndRel, ok := antigravityParseTagAt(line, i)
+				if ok && name == targetUpper {
+					if !closing {
+						if strings.TrimSpace(line[:i]) == "" {
+							depth++
+						}
+						i = tagEndRel
+						continue
+					}
+					if depth > 1 {
+						depth--
+						i = tagEndRel
+						continue
+					}
+					if !strictFollowing {
+						return pos + i, pos + tagEndRel, true
+					}
+					rest := strings.TrimSpace(line[tagEndRel:])
+					if rest == "" || antigravityStartsWithEnvelopeMarker(rest) {
+						return pos + i, pos + tagEndRel, true
+					}
+					i = tagEndRel
+					continue
+				}
+			}
+			i++
+		}
+		pos = nextLine
+	}
+	return 0, 0, false
+}
+
+func antigravityIsChatBoundaryLine(line string) bool {
+	s := strings.TrimSpace(line)
+	if s == "" || len(s) > 80 {
+		return false
+	}
+	if strings.HasPrefix(s, "<!--") && strings.HasSuffix(s, "-->") {
+		s = strings.TrimSpace(s[4 : len(s)-3])
+	}
+	s = strings.TrimLeft(s, "-=*#<>[( \t")
+	s = strings.TrimRight(s, "-=*#<>]) \t")
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	upper := strings.ToUpper(s)
+	upper = strings.ReplaceAll(upper, "_", " ")
+	upper = strings.ReplaceAll(upper, "-", " ")
+	fields := strings.Fields(upper)
+	return len(fields) == 2 && (fields[0] == "BEGIN" || fields[0] == "END") && fields[1] == "CHAT"
+}
+
+func antigravityIsSystemPreambleLine(line string) bool {
+	s := strings.ToLower(strings.TrimSpace(line))
+	if s == "" {
+		return false
+	}
+	return strings.HasPrefix(s, "the following is a <system_message> not actually sent by the user") ||
+		strings.HasPrefix(s, "the following system message was injected by a sessionstart hook")
+}
+
+func antigravityNextNonBlankStartsWithTag(s string, pos int, targetUpper string) bool {
+	n := len(s)
+	for pos < n {
+		nl := strings.IndexByte(s[pos:], '\n')
+		lineEnd := n
+		nextLine := n
+		if nl >= 0 {
+			lineEnd = pos + nl
+			nextLine = lineEnd + 1
+		}
+		trimmed := strings.TrimSpace(s[pos:lineEnd])
+		if trimmed == "" {
+			pos = nextLine
+			continue
+		}
+		name, closing, _, ok := antigravityParseTagAt(trimmed, 0)
+		return ok && !closing && name == targetUpper
+	}
+	return false
+}
+
+func antigravityIsPartialEnvelopeTag(s string) bool {
+	s = strings.TrimSpace(s)
+	s = strings.TrimSuffix(s, "…")
+	s = strings.TrimSuffix(s, "...")
+	s = strings.TrimSpace(s)
+	if len(s) < 2 || s[0] != '<' || strings.ContainsAny(s, ">\n\r") {
+		return false
+	}
+	upper := strings.ToUpper(s)
+	for _, full := range antigravityPartialTagPrefixes {
+		if strings.HasPrefix(full, upper) && len(upper) < len(full) {
+			return true
+		}
+	}
+	return false
+}
+
+func antigravityTrimTrailingPartialTag(s string) string {
+	trimmed := strings.TrimRight(s, " \t")
+	cut := strings.LastIndexByte(trimmed, '<')
+	if cut < 0 {
+		return s
+	}
+	// Do not strip inside an inline backtick span.
+	if antigravityIndexInInlineBackticks(trimmed, cut) {
+		return s
+	}
+	if antigravityIsPartialEnvelopeTag(trimmed[cut:]) {
+		return strings.TrimRight(trimmed[:cut], " \t")
+	}
+	return s
+}
+
+func antigravityIndexInInlineBackticks(line string, target int) bool {
+	for i := 0; i < len(line) && i < target; {
+		if line[i] == '`' {
+			end := antigravityAdvanceInlineBackticks(line, i)
+			if target > i && target < end {
+				return true
+			}
+			i = end
+			continue
+		}
+		i++
+	}
+	return false
+}
+
+func antigravityTrimTrailingBoundaryTag(line string) string {
+	for {
+		trimmed := strings.TrimRight(line, " \t")
+		if trimmed == "" || trimmed[len(trimmed)-1] != '>' {
+			return line
+		}
+		cut := strings.LastIndexByte(trimmed, '<')
+		if cut < 0 || antigravityIndexInInlineBackticks(trimmed, cut) {
+			return line
+		}
+		name, _, endRel, ok := antigravityParseTagAt(trimmed, cut)
+		if !ok || endRel != len(trimmed) || !antigravityIsChatBoundaryTag(name) {
+			return line
+		}
+		line = strings.TrimRight(trimmed[:cut], " \t")
+	}
+}
+
+func antigravityStripChatBoundaries(s string) string {
+	lines := strings.Split(s, "\n")
+	var out []string
+	var fenceChar byte
+	fenceLen := 0
+	for i, line := range lines {
+		if fenceChar != 0 {
+			fenceChar, fenceLen, _ = antigravityUpdateFence(line, fenceChar, fenceLen)
+			out = append(out, line)
+			continue
+		}
+		if fc, fl, isFence := antigravityUpdateFence(line, 0, 0); isFence {
+			fenceChar, fenceLen = fc, fl
+			out = append(out, line)
+			continue
+		}
+		if antigravityIsChatBoundaryLine(line) {
+			continue
+		}
+		work := line
+		for {
+			trimmed := strings.TrimLeft(work, " \t")
+			name, _, endRel, ok := antigravityParseTagAt(trimmed, 0)
+			if ok && antigravityIsChatBoundaryTag(name) {
+				work = trimmed[endRel:]
+				continue
+			}
+			break
+		}
+		work = antigravityTrimTrailingBoundaryTag(work)
+		if strings.TrimSpace(work) == "" && strings.TrimSpace(line) != "" {
+			continue
+		}
+		if i == len(lines)-1 && strings.TrimSpace(work) != "" {
+			work = antigravityTrimTrailingPartialTag(work)
+		}
+		out = append(out, work)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+func antigravityCleanUnclosedUserRequest(s string) string {
+	// If an unclosed <USER_REQUEST> was followed by a known metadata block on a
+	// later line outside code fences, cut before that metadata block.
+	lines := strings.Split(s, "\n")
+	var out []string
+	var fenceChar byte
+	fenceLen := 0
+	for _, line := range lines {
+		if fenceChar != 0 {
+			fenceChar, fenceLen, _ = antigravityUpdateFence(line, fenceChar, fenceLen)
+			out = append(out, line)
+			continue
+		}
+		if fc, fl, isFence := antigravityUpdateFence(line, 0, 0); isFence {
+			fenceChar, fenceLen = fc, fl
+			out = append(out, line)
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && trimmed[0] == '<' {
+			if name, closing, _, ok := antigravityParseTagAt(trimmed, 0); ok && !closing && antigravityStrictUnclosedDropTags[name] {
+				break
+			}
+		}
+		out = append(out, line)
+	}
+	cleaned := antigravityStripChatBoundaries(strings.Join(out, "\n"))
+	return strings.TrimSpace(antigravityTrimTrailingPartialTag(cleaned))
+}
+
 func cleanAntigravityTitle(s string) string {
+	s = cleanAntigravityUserText(s)
 	s = strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
 			return ' '

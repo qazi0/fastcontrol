@@ -415,7 +415,11 @@ class Conn {
       const cached = this.byProvider[provider] || (this.byProvider[provider] = {});
       if (m.t === "threads") { cached.groups=m.groups || [];store.set("groups:"+this.s.id+":"+provider,cached.groups);cached.threads = m.threads || []; store.set("threads:" + this.s.id + ":" + provider, cached.threads.slice(0,200)); }
       if (m.t === "projects") { cached.projects = m.projects || []; cached.home = m.home; }
-      if (m.t === "models") cached.models = m;
+      if (m.t === "models") {
+        const hasModels = Array.isArray(m.models) && m.models.length > 0;
+        if (hasModels) cached.models = m;
+        else if (!cached.models?.models?.length) delete cached.models;
+      }
       if (provider !== S.provider) return;
     }
     const here = provider === S.provider && S.view === "thread" && S.sid === this.s.id && m.id === S.id;
@@ -484,7 +488,13 @@ class Conn {
         break;
       }
       case "event": onEvent(this, m); break;
-      case "models": this.models = m; if (S.redraw) S.redraw(); if (S.view === "thread" && S.sid === this.s.id && typeof renderComposer === "function") renderComposer(); break;
+      case "models": {
+        const hasModels = Array.isArray(m.models) && m.models.length > 0;
+        if (hasModels || !this.models?.models?.length) this.models = m;
+        if (S.redraw) S.redraw();
+        if (S.view === "thread" && S.sid === this.s.id && typeof renderComposer === "function") renderComposer();
+        break;
+      }
       case "projects": this.projects = m.projects; this.home = m.home; if (S.redraw) S.redraw(); scheduleRender(); break;
       case "project": if(provider===S.provider){this.byCwd[m.cwd] = m.threads || []; if (S.view === "project" && S.cwd === m.cwd) renderProject();} break;
       case "diff": if (here || (S.diffSource?.server === this.s.id && S.diffSource?.id === m.id)) showDiff(m); break;
@@ -571,10 +581,72 @@ window.addEventListener("online", () => handleNetworkChange({ reason: "available
 
 function onEvent(c, e) {
   if (e.kind === "started") return;
+  if (!shouldNotifyEvent(e.kind)) return;
   if (S.provider === (e.provider || "codex") && S.view === "thread" && S.id === e.id && document.visibilityState === "visible") return;
   const label = { completed: "Finished", failed: "Failed", attention: "Needs You" }[e.kind] || "";
-  toast(`${label}: ${e.title}`, () => { selectProvider(e.provider || "codex",false);openThread(c.s.id, e.id, true); });
+  const titleText = typeof cleanThreadText === "function" ? (cleanThreadText(e.title) || e.title || "") : (e.title || "");
+  toast(`${label}: ${titleText}`, () => { selectProvider(e.provider || "codex",false);openThread(c.s.id, e.id, true); });
+  if (!Native && typeof Notification === "function" && Notification.permission === "granted" && document.visibilityState !== "visible") {
+    try { new Notification(label || "fastcontrol", { body: titleText }); } catch {}
+  }
   if (e.kind === "attention") buzz(40);
+}
+
+const NOTIFY_PREFS_KEY = "fc_notify_prefs";
+const NOTIFY_PREFS_DEFAULT = { completed: true, attention: true, failed: true };
+function normalizeNotificationPrefs(raw) {
+  let obj = raw;
+  if (typeof obj === "string") {
+    try { obj = JSON.parse(obj); } catch { obj = null; }
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) obj = {};
+  return {
+    completed: typeof obj.completed === "boolean" ? obj.completed : true,
+    attention: typeof obj.attention === "boolean" ? obj.attention : true,
+    failed: typeof obj.failed === "boolean" ? obj.failed : true,
+  };
+}
+function loadNotificationPrefs() {
+  const localRaw = store.get(NOTIFY_PREFS_KEY, null);
+  let nativeRaw = null;
+  if (Native?.getNotificationPrefs) {
+    try {
+      const text = Native.getNotificationPrefs();
+      if (text && typeof text === "string") {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) nativeRaw = parsed;
+      }
+    } catch {}
+  }
+  if (nativeRaw) {
+    const prefs = normalizeNotificationPrefs(nativeRaw);
+    store.set(NOTIFY_PREFS_KEY, prefs);
+    if (typeof S !== "undefined" && S) S.notifyPrefs = prefs;
+    return prefs;
+  }
+  const prefs = normalizeNotificationPrefs(localRaw);
+  if (localRaw && Native?.setNotificationPrefs) {
+    try { Native.setNotificationPrefs(JSON.stringify(prefs)); } catch {}
+  }
+  if (typeof S !== "undefined" && S) S.notifyPrefs = prefs;
+  return prefs;
+}
+function saveNotificationPrefs(next) {
+  const prefs = normalizeNotificationPrefs(next);
+  if (typeof S !== "undefined" && S) S.notifyPrefs = prefs;
+  store.set(NOTIFY_PREFS_KEY, prefs);
+  if (Native?.setNotificationPrefs) {
+    try { Native.setNotificationPrefs(JSON.stringify(prefs)); } catch {}
+  }
+  return prefs;
+}
+function shouldNotifyEvent(kind) {
+  const key = String(kind || "").trim().toLowerCase();
+  const prefs = (typeof S !== "undefined" && S && S.notifyPrefs) || loadNotificationPrefs();
+  if (key === "completed") return prefs.completed !== false;
+  if (key === "attention") return prefs.attention !== false;
+  if (key === "failed") return prefs.failed !== false;
+  return true;
 }
 
 // -------------------------------------------------------------- utilities --
@@ -657,10 +729,11 @@ window.addEventListener("popstate", (e) => {
   if (S.sheet && !st.sheet) closeSheet(true);
   if (st.view === "thread") { if (S.id !== st.id || S.view !== "thread") openThread(st.sid, st.id, false); }
   else if (st.view === "project") { leaveThread(); if(st.group && window.openNativeGroup)openNativeGroup(st.group.server,st.group.id,false);else openProject(st.cwd, false); }
-  else if (!st.sheet) { leaveThread(); show("home"); renderHome(); }
+  else if (!st.sheet) { navStack = []; leaveThread(); show("home"); renderHome(); }
 });
 function selectProvider(provider, push = true) {
   if (!PROVIDERS.includes(provider)) return;
+  if (typeof navStack !== "undefined") navStack = [];
   leaveThread();
   S.newDraft = null; S.newAttach = [];
   S.provider = provider; store.set("provider", provider);
@@ -678,7 +751,7 @@ function selectProvider(provider, push = true) {
 $('provider-switch').onclick=()=>openSheet('providers');
 $('provider-macs').onclick=()=>openSheet('macs');
 for(const button of document.querySelectorAll('[data-provider]'))button.onclick=()=>selectProvider(button.dataset.provider);
-for (const b of document.querySelectorAll(".back")) b.onclick = () => history.back();
+for (const b of document.querySelectorAll(".back")) b.onclick = () => { if (!window.handleAndroidBack?.()) history.back(); };
 
 // Every list render goes through one animation frame.
 let renderQueued = 0;
@@ -735,6 +808,12 @@ $("machines").addEventListener("click", (e) => {
   renderHome();
 });
 
+function cleanThreadText(value) {
+  const raw = String(value || "");
+  if (!raw) return "";
+  const cleaned = typeof MessageContent !== "undefined" && MessageContent.cleanUserMessage ? MessageContent.cleanUserMessage(raw) : raw;
+  return cleaned.replace(/\s+/g, " ").trim();
+}
 function statusBadge(t) {
   if (t.attention) return '<span class="badge need"><span class="dot"></span>Needs You</span>';
   if (t.running) return `<span class="badge run"><span class="dot"></span>${t.turnAt ? `<span data-since="${t.turnAt}">${dur(Date.now() - t.turnAt)}</span>` : "Running"}</span>`;
@@ -746,7 +825,8 @@ function threadRow(t, { project = true } = {}) {
   if (project) bits.push(`<span>${esc(base(t.cwd))}</span>`);
   if (multi) bits.push(`<span class="badge mac">${esc(serverName(t.sid))}</span>`);
   const msg = t.lastErr ? `<span class="msg err">${esc(t.lastErr)}</span>` : t.lastMsg ? `<span class="msg">${esc(t.lastMsg)}</span>` : "";
-  return `<button class="row" data-sid="${t.sid}" data-id="${esc(t.id)}"><div class="main"><div class="t">${esc(t.displayTitle || t.title || t.preview || "Untitled")}</div>` +
+  const label = cleanThreadText(t.displayTitle) || cleanThreadText(t.title) || cleanThreadText(t.preview) || "Untitled";
+  return `<button class="row" data-sid="${t.sid}" data-id="${esc(t.id)}"><div class="main"><div class="t">${esc(label)}</div>` +
     `<div class="s">${bits.join("")}${msg}</div></div><div class="when">${ago(t.recency)}</div></button>`;
 }
 function projectsOf(threads, withDB, excluded = new Set()) {
@@ -785,7 +865,7 @@ function renderHome() {
   }
   const q = S.query;
   if (q) {
-    const hits = threads.filter((t) => `${t.title} ${t.preview} ${t.cwd} ${t.lastMsg || ""}`.toLowerCase().includes(q)).sort((a, b) => b.recency - a.recency).slice(0, 80);
+    const hits = threads.filter((t) => `${cleanThreadText(t.displayTitle)} ${cleanThreadText(t.title)} ${cleanThreadText(t.preview)} ${t.cwd} ${t.lastMsg || ""}`.toLowerCase().includes(q)).sort((a, b) => b.recency - a.recency).slice(0, 80);
     list.innerHTML = hits.length ? `<div class="sec">Results<span class="n">${hits.length}</span></div><div class="group">${hits.map((t) => threadRow(t)).join("")}</div>` : `<div class="empty"><b>No Matches</b>Nothing in titles, projects or last replies matches.</div>`;
     return;
   }
@@ -825,7 +905,7 @@ function renderHome() {
 }
 $("home-list").addEventListener("click", (e) => {
   const native=e.target.closest('[data-native-group]');
-  if(native){openNativeGroup(native.dataset.server,native.dataset.nativeGroup,true);return;}
+  if(native){if(typeof pushNavSnapshot==="function")pushNavSnapshot();openNativeGroup(native.dataset.server,native.dataset.nativeGroup,true);return;}
   const r = e.target.closest("[data-id]");
   if (r) { openThread(r.dataset.sid, r.dataset.id, true); return; }
   const p = e.target.closest("[data-cwd]");
@@ -842,6 +922,7 @@ setInterval(() => { if (S.view !== "thread" && document.visibilityState === "vis
 // ---------------------------------------------------------------- project --
 
 function openProject(cwd, push) {
+  if (push && typeof pushNavSnapshot === "function") pushNavSnapshot();
   S.group=null;
   if (push) history.pushState({ view: "project", cwd, provider:S.provider }, "");
   S.cwd = cwd;
@@ -864,7 +945,7 @@ function renderProject() {
   $("p-title").textContent = base(S.cwd) || "Home";
   $("p-sub").innerHTML = sids.map((s) => { const c = conns.get(s); return `<span><span class="dot ${computerDotClass(c)}"></span> ${esc(serverName(s))}</span>`; }).join("") + `<span class="mono">${esc(S.cwd)}</span>`;
   const q = $("p-search").value.toLowerCase().trim();
-  const rows = q ? threads.filter((t) => `${t.title} ${t.preview} ${t.lastMsg || ""}`.toLowerCase().includes(q)) : threads;
+  const rows = q ? threads.filter((t) => `${cleanThreadText(t.displayTitle)} ${cleanThreadText(t.title)} ${cleanThreadText(t.preview)} ${t.lastMsg || ""}`.toLowerCase().includes(q)) : threads;
   $("project-list").innerHTML = rows.length ? `<div class="sec">Chats<span class="n">${rows.length}</span></div><div class="group">${window.sessionTreeRows ? sessionTreeRows(rows,threads,{project:false}) : rows.map(t=>threadRow(t,{project:false})).join("")}</div>`
     : `<div class="empty"><b>No Chats Here</b>Start one with New Chat.</div>`;
 }
@@ -883,6 +964,7 @@ $("p-new").onclick = () => {
 
 function openThread(sidv, id, push) {
   if (!conns.has(sidv)) { toast("That Mac Is No Longer Paired"); return; }
+  if (push && typeof pushNavSnapshot === "function") pushNavSnapshot();
   if (push) history.pushState({ view: "thread", sid: sidv, id, provider:S.provider }, "");
   if (S.view === "thread" && (S.sid !== sidv || S.id !== id)) leaveThread();
   if (S.id !== id) { S.open = new Set(); S.minCards = new Set(); S.attach = []; renderAttachments(); }
@@ -935,7 +1017,7 @@ function leaveThread() {
 function renderThreadHeader() {
   const t = findThread(S.sid, S.id) || {};
   const m = S.meta || {};
-  $("t-title").textContent = t.displayTitle || m.title || t.title || t.preview || "Thread";
+  $("t-title").textContent = cleanThreadText(t.displayTitle) || cleanThreadText(m.title) || cleanThreadText(t.title) || cleanThreadText(t.preview) || "Thread";
   const c = conn();
   const cwd = m.cwd || t.cwd;
   const mac = S.servers.length > 1 ? `<span><span class="dot ${computerDotClass(c)}"></span> ${esc(serverName(S.sid))}</span>` : c && !c.ok ? `<span><span class="dot ${computerDotClass(c)}"></span> ${c.state === "wait" ? "Connecting" : "Offline"}</span>` : "";
@@ -1395,8 +1477,11 @@ function turnHTML(t, animate = false) {
   };
   items.forEach((it, i) => {
     if (it.k === "user") {
+      const rawUser = (it.text || "").replace(/\[Image\]/g, it.images?.length ? "" : "[Image]").trim();
+      const cleanedUser = typeof MessageContent !== "undefined" && MessageContent.cleanUserMessage ? MessageContent.cleanUserMessage(rawUser) : rawUser;
+      if (!cleanedUser && !it.images?.length && !it.audio?.length) return;
       flush();
-      out += `<div class="u${userSeen ? " steer" : ""}" data-entry="${esc(t.key+":"+(it.id||i))}">${messageHTML((it.text || "").replace(/\[Image\]/g, it.images?.length ? "" : "[Image]").trim())}${imagesHTML(it.images)}${audioHTMLs(it.audio)}</div>`;
+      out += `<div class="u${userSeen ? " steer" : ""}" data-entry="${esc(t.key+":"+(it.id||i))}">${messageHTML(cleanedUser)}${imagesHTML(it.images)}${audioHTMLs(it.audio)}</div>`;
       userSeen = true;
     } else if (it.k === "assistant") {
       flush();
@@ -2032,7 +2117,7 @@ const ANTIGRAVITY_PERMS = [
   { id: "accept-edits", icon: I.edit, name: "Accept Edits", short: "Accept Edits", d: "Approves File Edits Automatically", set: { permissionMode: "accept-edits" } },
   { id: "auto", icon: I.shieldok, name: "Auto", short: "Auto", d: "Runs Approved Actions Automatically", set: { permissionMode: "auto" }, warn: true },
   { id: "plan", icon: I.lock, name: "Plan", short: "Plan", d: "Plans Without Making Edits", set: { permissionMode: "plan" } },
-  { id: "full-access", icon: I.rocket, name: "Full Access", short: "Full Access", d: "Skips All Permission Prompts", set: { permissionMode: "full-access" }, warn: true, optIn: true },
+  { id: "full-access", icon: I.rocket, name: "Turbo", short: "Turbo", d: "Auto-Approves All Edits And Commands", set: { permissionMode: "full-access" }, warn: true, optIn: true },
 ];
 const GROK_PERMS = [
   { id: "default", icon: I.shield, name: "Default", short: "Default", d: "Asks Before Edits And Commands", set: { permissionMode: "default" } },
@@ -2044,7 +2129,8 @@ const GROK_PERMS = [
 function antigravityPermsFor(meta = S.meta, modelsResp = conn()?.models) {
   const modes = Array.isArray(meta?.modes) ? meta.modes : Array.isArray(modelsResp?.modes) ? modelsResp.modes : null;
   const modeIds = modes ? new Set(modes.map((x) => (typeof x === "string" ? x : x?.id)).filter(Boolean)) : null;
-  const allowFull = Boolean(meta?.allowFullAccess || modelsResp?.allowFullAccess || modeIds?.has("full-access") || meta?.permissionMode === "full-access");
+  const explicitlyDisabled = meta ? (meta.allowFullAccess === false && modelsResp?.allowFullAccess === false) : (modelsResp?.allowFullAccess === false);
+  const allowFull = !explicitlyDisabled || Boolean(modeIds?.has("full-access") || meta?.permissionMode === "full-access");
   return ANTIGRAVITY_PERMS.filter((p) => !p.optIn || allowFull).map((p) => {
     const live = modes?.find((x) => x && typeof x === "object" && x.id === p.id);
     return live?.description ? { ...p, d: live.description } : p;
@@ -2095,6 +2181,18 @@ function modelDisplayName(slug, models = conn()?.models?.models) {
   return shortModel(slug);
 }
 const EFFORT_D = { minimal: "Quickest Replies", low: "Fast Replies", medium: "Balanced", high: "More Thorough", xhigh: "Deep Reasoning", max: "Maximum Reasoning", ultra: "Several Agents In Parallel" };
+const EFFORT_RANK = { minimal: 0, low: 1, medium: 2, high: 3, xhigh: 4, max: 5, ultra: 6 };
+function sortEffortsAscending(list) {
+  const seen = new Set(), items = [];
+  for (const raw of list || []) {
+    const value = String(raw || "").trim().toLowerCase();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    items.push({ value, rank: Object.prototype.hasOwnProperty.call(EFFORT_RANK, value) ? EFFORT_RANK[value] : 999, idx: items.length });
+  }
+  items.sort((a, b) => a.rank - b.rank || a.idx - b.idx);
+  return items.map((x) => x.value);
+}
 function effortName(e) {
   if (!e) return "Default";
   return { xhigh: "Extra High", low: "Low", medium: "Medium", high: "High", max: "Max", ultra: "Ultra", minimal: "Minimal" }[e] || cap(e || "");
@@ -2102,14 +2200,14 @@ function effortName(e) {
 function cap(s) { return String(s).replace(/(^|[\s-])\w/g, (c) => c.toUpperCase()); }
 function providerEfforts(mm, provider = S.provider) {
   if (provider === "antigravity") {
-    const baseEfforts = mm ? (mm.efforts || []) : ["low", "medium", "high", "xhigh"];
-    return baseEfforts.length ? ["", ...baseEfforts.filter(Boolean)] : [];
+    const baseEfforts = sortEffortsAscending(mm ? (mm.efforts || []) : ["low", "medium", "high", "xhigh"]);
+    return baseEfforts.length ? ["", ...baseEfforts] : [];
   }
   if (provider === "grok") {
-    const baseEfforts = mm ? (mm.efforts || []) : ["minimal", "low", "medium", "high", "xhigh"];
-    return baseEfforts.length ? ["", ...baseEfforts.filter(Boolean)] : [];
+    const baseEfforts = sortEffortsAscending(mm ? (mm.efforts || []) : ["minimal", "low", "medium", "high", "xhigh"]);
+    return baseEfforts.length ? ["", ...baseEfforts] : [];
   }
-  return mm ? (mm.efforts || []) : ["low", "medium", "high", "xhigh", "max", "ultra"];
+  return sortEffortsAscending(mm ? (mm.efforts || []) : ["low", "medium", "high", "xhigh", "max", "ultra"]);
 }
 
 const input = $("input");
@@ -2218,7 +2316,7 @@ function renderComposer() {
   const lvl = Math.max(0, efforts.indexOf(effortVal));
   $("effort-btn").innerHTML = gauge(efforts.length > 1 ? lvl / (efforts.length - 1) : 1);
   $("effort-btn").setAttribute("aria-label", "Intelligence: " + (m.effort ? effortName(m.effort) : hasDefaultEffort ? "Default" : "Unknown"));
-  if (!mm && conn() && !conn().models) conn().send({ op: "models" });
+  if (!mm && conn() && !conn().models?.models?.length && !conn().models?.error) conn().send({ op: "models" });
 }
 function autosize() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, innerHeight * 0.38) + "px"; }
 input.addEventListener("input", () => { autosize(); renderSlashMenu(); });
@@ -2758,7 +2856,172 @@ function showDiff(m) {
 // ----------------------------------------------------------------- sheets --
 
 let sheetGeneration = 0;
-function openSheet(name, opts = {}) {
+let navStack = [];
+let sheetStack = [];
+let sheetHistoryDepth = 0;
+const NESTED_SHEETS = {
+  macs: new Set(["connection", "update"]),
+  agents: new Set(["agent"]),
+  menu: new Set(["rename", "diff"]),
+};
+function currentViewEntry() {
+  if (S.view === "thread") return { view: "thread", sid: S.sid, id: S.id, provider: S.provider };
+  if (S.view === "project") {
+    return S.group
+      ? { view: "project", group: { server: S.group.server, id: S.group.id }, cwd: S.cwd, provider: S.provider }
+      : { view: "project", cwd: S.cwd, provider: S.provider };
+  }
+  if (S.view === "providers") return { view: "providers", provider: S.provider };
+  return { view: "home", provider: S.provider };
+}
+function sameNavEntry(a, b) {
+  if (!a || !b || a.view !== b.view || a.provider !== b.provider) return false;
+  if (a.view === "thread") return a.sid === b.sid && a.id === b.id;
+  if (a.view === "project") return (a.cwd || "") === (b.cwd || "") && (a.group?.server || "") === (b.group?.server || "") && (a.group?.id || "") === (b.group?.id || "");
+  return true;
+}
+function pushNavSnapshot(entry = currentViewEntry()) {
+  if (!entry || sameNavEntry(navStack[navStack.length - 1], entry)) return;
+  navStack.push(entry);
+  if (navStack.length > 32) navStack.shift();
+}
+function resetSheetSwipeStyles(sh, scrim) {
+  if (sh) {
+    sh.style.transform = "";
+    sh.style.transition = "";
+  }
+  if (scrim) scrim.style.opacity = "";
+}
+function sheetScrollAtTop(target, sheet) {
+  let el = target;
+  while (el) {
+    if ((el.scrollTop || 0) > 0) return false;
+    if (el === sheet) break;
+    el = el.parentElement;
+  }
+  return (sheet.scrollTop || 0) <= 0;
+}
+function bindSheetSwipe(sh, scrim) {
+  if (!sh || !scrim || sh.__swipeBound) return;
+  sh.__swipeBound = true;
+  const drag = { active: false, via: "", id: null, startX: 0, startY: 0, lastY: 0, lastT: 0, vy: 0, dy: 0, engaged: false, fromHandle: false, startTarget: null };
+  let suppressClickUntil = 0;
+  let snapTimer = 0;
+
+  const isHandle = (target) => !!(target?.closest && target.closest(".grip, .sheet > h2, .new-chat-head"));
+  const isBlockedControl = (target) => !!(target?.closest && target.closest('input[type="range"], .eo-track, select, textarea, input'));
+  const resetDrag = () => {
+    drag.active = false;
+    drag.engaged = false;
+    drag.via = "";
+    drag.id = null;
+    drag.dy = 0;
+    drag.vy = 0;
+    drag.startTarget = null;
+  };
+  const startGesture = (via, id, x, y, target) => {
+    if (!S.sheet || sh.classList.contains("full")) return;
+    const fromHandle = isHandle(target);
+    if (!fromHandle && isBlockedControl(target)) return;
+    clearTimeout(snapTimer);
+    const now = Date.now();
+    drag.active = true;
+    drag.via = via;
+    drag.id = id;
+    drag.startX = x;
+    drag.startY = y;
+    drag.lastY = y;
+    drag.lastT = now;
+    drag.vy = 0;
+    drag.dy = 0;
+    drag.engaged = false;
+    drag.fromHandle = fromHandle;
+    drag.startTarget = target;
+  };
+  const moveGesture = (x, y, e) => {
+    if (!drag.active || !S.sheet || sh.classList.contains("full")) { resetDrag(); return; }
+    const dx = x - drag.startX;
+    const dy = y - drag.startY;
+    if (!drag.engaged) {
+      if (dy <= 0) return;
+      const minDy = drag.fromHandle ? 4 : 8;
+      if (dy <= minDy || dy <= Math.abs(dx) * 1.25) return;
+      if (!drag.fromHandle && !sheetScrollAtTop(drag.startTarget, sh)) { resetDrag(); return; }
+      drag.engaged = true;
+      sh.style.transition = "none";
+    }
+    if (e?.cancelable !== false && typeof e?.preventDefault === "function") e.preventDefault();
+    const now = Date.now();
+    const dt = Math.max(1, now - drag.lastT);
+    drag.vy = (y - drag.lastY) / dt;
+    drag.lastY = y;
+    drag.lastT = now;
+    drag.dy = Math.max(0, dy);
+    sh.style.transform = `translateY(${drag.dy}px)`;
+    const h = Math.max(1, sh.offsetHeight || 360);
+    scrim.style.opacity = String(Math.max(0, 1 - drag.dy / h));
+  };
+  const finishGesture = (cancelled) => {
+    if (!drag.active) return;
+    const wasEngaged = drag.engaged;
+    const dy = drag.dy;
+    const vy = drag.vy;
+    resetDrag();
+    if (!wasEngaged) return;
+    suppressClickUntil = Date.now() + 350;
+    const threshold = Math.min(110, (sh.offsetHeight || 360) * 0.28);
+    if (!cancelled && (dy >= threshold || (dy >= 40 && vy >= 0.45))) {
+      closeSheet();
+      return;
+    }
+    sh.style.transition = "transform 180ms cubic-bezier(0.22, 1, 0.36, 1)";
+    sh.style.transform = "translateY(0)";
+    scrim.style.opacity = "";
+    snapTimer = setTimeout(() => {
+      if (!drag.active) resetSheetSwipeStyles(sh, scrim);
+    }, 190);
+  };
+
+  sh.addEventListener("touchstart", (e) => {
+    if (!e.touches || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    startGesture("touch", t.identifier, t.clientX, t.clientY, e.target);
+  }, { passive: true });
+  sh.addEventListener("touchmove", (e) => {
+    if (!drag.active || drag.via !== "touch") return;
+    const list = e.touches || [];
+    let t = null;
+    for (let i = 0; i < list.length; i++) if (list[i].identifier === drag.id) { t = list[i]; break; }
+    if (!t) return;
+    moveGesture(t.clientX, t.clientY, e);
+  }, { passive: false });
+  sh.addEventListener("touchend", () => { if (drag.via === "touch") finishGesture(false); }, { passive: true });
+  sh.addEventListener("touchcancel", () => { if (drag.via === "touch") finishGesture(true); }, { passive: true });
+
+  sh.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "touch") return;
+    if (typeof e.button === "number" && e.button !== 0) return;
+    startGesture("pointer", e.pointerId, e.clientX, e.clientY, e.target);
+  });
+  sh.addEventListener("pointermove", (e) => {
+    if (!drag.active || drag.via !== "pointer" || e.pointerId !== drag.id) return;
+    moveGesture(e.clientX, e.clientY, e);
+  });
+  sh.addEventListener("pointerup", (e) => {
+    if (drag.via === "pointer" && e.pointerId === drag.id) finishGesture(false);
+  });
+  sh.addEventListener("pointercancel", (e) => {
+    if (drag.via === "pointer" && e.pointerId === drag.id) finishGesture(true);
+  });
+  sh.addEventListener("click", (e) => {
+    if (Date.now() < suppressClickUntil) {
+      e.preventDefault?.();
+      e.stopPropagation?.();
+    }
+  }, true);
+}
+
+function openSheet(name, opts = {}, fromBack = false) {
   if (typeof closeSlashMenu === "function") closeSlashMenu();
   if(!S.sheet && S.view==='thread' && S.id) {
     S.sheetReading={server:S.sid,id:S.id,provider:S.provider,follow:S.stick};
@@ -2767,19 +3030,32 @@ function openSheet(name, opts = {}) {
   if (S.sheet === "agent" && name !== "agent") window.disposeAgentViewer?.();
   if (S.sheet === "document") window.disposeDocumentViewer?.();
   sheetGeneration++;
-  if (!S.sheet) history.pushState({ ...(history.state || {}), sheet: name }, "");
-  else history.replaceState({ ...(history.state || {}), sheet: name }, "");
-  S.sheet = name; S.redraw = null;
-  const sh = $("sheet");
-  for (const animation of sh.getAnimations()) animation.cancel();
+  if (!S.sheet) {
+    sheetStack = [];
+    sheetHistoryDepth = 1;
+    history.pushState({ ...(history.state || {}), sheet: name }, "");
+  } else {
+    if (!fromBack && NESTED_SHEETS[S.sheet]?.has(name)) {
+      sheetStack.push({ name: S.sheet, opts: S.sheetOpts || {} });
+    } else if (!fromBack && sheetStack.length && sheetStack[sheetStack.length - 1].name === name) {
+      sheetStack.pop();
+    } else if (!fromBack) {
+      sheetStack = [];
+    }
+    history.replaceState({ ...(history.state || {}), sheet: name }, "");
+  }
+  S.sheet = name; S.sheetOpts = opts; S.redraw = null;
+  const sh = $("sheet"), scrim = $("scrim");
+  if (sh.getAnimations) for (const animation of sh.getAnimations()) animation.cancel();
+  resetSheetSwipeStyles(sh, scrim);
   sh.inert = false;
-  $("scrim").style.pointerEvents = "";
+  scrim.style.pointerEvents = "";
   sh.className = "sheet" + (["diff","image","usage","agents","agent","document"].includes(name) ? " full" : name === "effort" ? " effort" : "");
   sh.style.bottom = name === "effort" ? `${$("composer").offsetHeight + 24}px` : "";
   sh.onclick = null;
   sh.onkeydown = null;
-  $("scrim").classList.toggle("dark", name === "effort");
-  $("scrim").classList.remove("hidden");
+  scrim.classList.toggle("dark", name === "effort");
+  scrim.classList.remove("hidden");
   SHEETS[name](sh, opts);
   if (S.sheet === name) sh.classList.remove("hidden");
 }
@@ -2791,7 +3067,8 @@ function closeSheet(fromPop) {
   }
   if (S.sheet === "agent") window.disposeAgentViewer?.();
   if (S.sheet === "document") window.disposeDocumentViewer?.();
-  S.sheet = null; S.redraw = null;
+  S.sheet = null; S.sheetOpts = null; S.redraw = null;
+  sheetStack = [];
   const reading=S.sheetReading;S.sheetReading=null;
   if(reading && reading.server===S.sid && reading.id===S.id && reading.provider===S.provider) {
     S.stick=reading.follow && feed.scrollHeight-feed.clientHeight-feed.scrollTop<=4;
@@ -2799,15 +3076,62 @@ function closeSheet(fromPop) {
   }
   const generation = ++sheetGeneration, sh = $("sheet"), scrim = $("scrim");
   sh.inert = true; scrim.style.pointerEvents = "none";
-  const hide = () => { if (generation === sheetGeneration) { sh.classList.add("hidden"); scrim.classList.add("hidden"); } };
+  const hide = () => { if (generation === sheetGeneration) { resetSheetSwipeStyles(sh, scrim); sh.classList.add("hidden"); scrim.classList.add("hidden"); } };
   if (reducedMotion.matches || document.hidden) hide();
   else {
-    const transform = getComputedStyle(sh).transform;
-    for (const animation of sh.getAnimations()) animation.cancel();
-    sh.animate([{ transform, opacity: 1 }, { transform: sh.classList.contains("full") ? "translateX(32px)" : "translateY(20px)", opacity: 0 }], { duration: 130, easing: "ease-in", fill: "forwards" }).finished.then(hide, () => {});
+    const dragged = sh.style.transform && sh.style.transform !== "none" ? sh.style.transform : "";
+    const transform = dragged || getComputedStyle(sh).transform;
+    const endTransform = sh.classList.contains("full") ? "translateX(32px)" : dragged ? `translateY(${Math.max(sh.offsetHeight || 360, 200)}px)` : "translateY(20px)";
+    if (sh.getAnimations) for (const animation of sh.getAnimations()) animation.cancel();
+    sh.animate([{ transform, opacity: 1 }, { transform: endTransform, opacity: 0 }], { duration: 130, easing: "ease-in", fill: "forwards" }).finished.then(hide, () => {});
   }
-  if (!fromPop && history.state && history.state.sheet) history.back();
+  if (!fromPop && sheetHistoryDepth > 0 && history.state && history.state.sheet) {
+    sheetHistoryDepth = 0;
+    history.back();
+  } else {
+    sheetHistoryDepth = 0;
+  }
 }
+window.handleAndroidBack = () => {
+  if (typeof slashState !== "undefined" && slashState.open) {
+    closeSlashMenu();
+    return true;
+  }
+  if (S.sheet) {
+    if (sheetStack.length > 0) {
+      const parent = sheetStack.pop();
+      openSheet(parent.name, parent.opts || {}, true);
+      return true;
+    }
+    const hadSheetHistory = sheetHistoryDepth > 0;
+    closeSheet(true);
+    if (hadSheetHistory) history.replaceState(currentViewEntry(), "");
+    return true;
+  }
+  if (S.view !== "home") {
+    const cur = currentViewEntry();
+    let prev = null;
+    while (navStack.length > 0) {
+      const candidate = navStack.pop();
+      if (!sameNavEntry(candidate, cur)) { prev = candidate; break; }
+    }
+    if (S.view === "thread") leaveThread();
+    if (prev && prev.view === "project") {
+      if (prev.group && typeof window.openNativeGroup === "function") window.openNativeGroup(prev.group.server, prev.group.id, false);
+      else if (prev.cwd) openProject(prev.cwd, false);
+      else { show("home"); renderHome(); }
+    } else if (prev && prev.view === "thread" && prev.sid && prev.id) {
+      openThread(prev.sid, prev.id, false);
+    } else {
+      show("home");
+      renderHome();
+    }
+    history.replaceState(currentViewEntry(), "");
+    return true;
+  }
+  return false;
+};
+bindSheetSwipe($("sheet"), $("scrim"));
 $("scrim").onclick = () => closeSheet();
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.sheet) closeSheet(); });
 const mi = (act, icon, name, d = "", side = "", cls = "") => `<button class="mi ${cls}" data-act="${act}">${icon || ""}<span class="txt">${name}${d ? `<span class="d">${d}</span>` : ""}</span>${side}</button>`;
@@ -2997,7 +3321,7 @@ const SHEETS = {
   rename(sh) {
     const source={server:S.sid,id:S.id,provider:S.provider};
     const t=findThread(source.server,source.id) || {};
-    const title=t.displayTitle || S.meta?.title || t.title || '';
+    const title=cleanThreadText(t.displayTitle) || cleanThreadText(S.meta?.title) || cleanThreadText(t.title) || '';
     sh.innerHTML=`<div class="grip"></div><h2>Rename Chat</h2><div class="field"><label for="chat-title">Title</label><input id="chat-title" value="${esc(title)}" autocomplete="off"></div><p class="rename-error" role="status"></p><div class="sheet-actions"><button class="btn" data-rename-cancel>Cancel</button><span class="grow"></span><button class="btn primary" data-rename-save>Save</button></div>`;
     const field=sh.querySelector('input'),save=sh.querySelector('[data-rename-save]');
     const submit=async()=>{
@@ -3063,7 +3387,7 @@ const SHEETS = {
     const m = S.meta || {};
     const mm = ((conn().models && conn().models.models) || []).find((x) => x.slug === m.model || x.resolved === m.model);
     const hasDefaultEffort = S.provider === "antigravity" || S.provider === "grok";
-    const efforts = hasDefaultEffort ? providerEfforts(mm, S.provider) : (mm ? mm.efforts : ["low", "medium", "high", "xhigh"]);
+    const efforts = hasDefaultEffort ? providerEfforts(mm, S.provider) : sortEffortsAscending(mm ? mm.efforts : ["low", "medium", "high", "xhigh"]);
     if(!efforts?.length){sh.innerHTML='<div class="grip"></div><h2>Intelligence</h2><p class="hint">Set automatically for this model.</p>';return;}
     const currentEffort = hasDefaultEffort ? (m.effort || "") : m.effort;
     let idx = Math.max(0, efforts.indexOf(currentEffort));
@@ -3142,8 +3466,22 @@ const SHEETS = {
   },
 
   macs(sh) {
+    const notifyItems = [
+      { key: "completed", title: "Turn Completed", desc: "Notify When An Agent Finishes A Turn" },
+      { key: "attention", title: "Questions And Approvals", desc: "Notify When An Agent Needs Input Or Permission" },
+      { key: "failed", title: "Turn Failed", desc: "Notify When A Turn Fails" },
+    ];
+    const readPrefs = () => (typeof loadNotificationPrefs === "function" ? loadNotificationPrefs() : { completed: true, attention: true, failed: true });
     const draw = () => {
-      const notif = Native ? (() => { try { return Native.notificationsEnabled(); } catch { return false; } })() : false;
+      const notif = Native ? (() => { try { return Native.notificationsEnabled(); } catch { return false; } })() : true;
+      const prefs = readPrefs();
+      const notifyControls = `<h3>Notifications</h3>` +
+        (Native ? `<div class="toggle"><div><div class="toggle-title">Push Notifications</div><div class="toggle-desc">Enable Background Alerts On This Phone</div></div><button type="button" role="switch" aria-checked="${notif}" class="switch${notif ? " on" : ""}" data-x="notif" aria-label="Push Notifications"></button></div>` : "") +
+        notifyItems.map((item) => {
+          const on = prefs[item.key] !== false;
+          const dim = Native && !notif ? " muted" : "";
+          return `<div class="toggle${dim}"><div><div class="toggle-title">${item.title}</div><div class="toggle-desc">${item.desc}</div></div><button type="button" role="switch" aria-checked="${on}" class="switch${on ? " on" : ""}" data-notify-pref="${item.key}" aria-label="${item.title}"></button></div>`;
+        }).join("");
 
       sh.innerHTML = `<div class="grip"></div><h2>Computers</h2>` +
         S.servers.map((s) => {
@@ -3153,14 +3491,14 @@ const SHEETS = {
             (!Native ? `<a class="btn" style="text-decoration:none;font-size:13px;padding:7px 10px" href="${esc(link)}">Open In App</a>` : "") +
             `<button class="chip" data-connection="${esc(s.id)}">Connection</button><button class="icon-btn" data-del="${s.id}" aria-label="Remove Mac">${I.trash}</button></div>`;
         }).join("") +
-        (Native ? `<div class="toggle"><div><div style="font-weight:650">Notifications</div><div class="hint" style="margin:0;font-size:13px;color:var(--faint)">Finished Turns And Approvals</div></div><button class="switch${notif ? " on" : ""}" data-x="notif" aria-label="Notifications"></button></div>` : "") +
+        notifyControls +
         (Native?.checkAppUpdates ? mi('app-updates',I.download,'Check For Updates','fastcontrol '+esc(Native.appVersion()),I.chev) : '') +
         `<h3>Add A Mac</h3><div class="field"><input id="sv-url" placeholder="Pairing Link Or http://100.64.0.2:8787" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="url"></div>` +
         `<div class="field"><input id="sv-token" placeholder="Token" autocomplete="off" autocapitalize="off" spellcheck="false"></div>` +
         `<div class="field"><input id="sv-name" placeholder="Name (Optional)" autocomplete="off"></div>` +
         `<div class="sheet-actions"><span class="grow"></span><button class="btn primary" data-x="add">Add Computer</button></div>`;
       const u = sh.querySelector("#sv-url");
-      u.oninput = () => {
+      if (u) u.oninput = () => {
         u.dataset.pin="";
         const m = u.value.match(/^(https?:\/\/[^/#?\s]+)\/?#t=([0-9a-f]+)/) || u.value.match(/^fastcontrol:\/\/pair\?(.*)$/);
         if (!m) return;
@@ -3184,11 +3522,22 @@ const SHEETS = {
         saveServers(); syncConns(); draw(); renderHome();
         return;
       }
+      const prefBtn = e.target.closest("[data-notify-pref]");
+      if (prefBtn) {
+        const key = prefBtn.dataset.notifyPref;
+        const current = readPrefs();
+        const next = { ...current, [key]: !(current[key] !== false) };
+        if (typeof saveNotificationPrefs === "function") saveNotificationPrefs(next);
+        draw();
+        const item = notifyItems.find((it) => it.key === key);
+        if (item) toast(`${item.title} ${next[key] ? "On" : "Off"}`);
+        return;
+      }
       const x = e.target.dataset.x;
       if (x === "notif") {
         const on = !e.target.classList.contains("on");
         try { Native.setNotifications(on); } catch {}
-        e.target.classList.toggle("on", on);
+        draw();
         toast(on ? "Notifications On" : "Notifications Off");
       }
       if (x === "add") {
@@ -3292,6 +3641,7 @@ if(Native?.checkAppUpdates) {
 }
 
 adoptPairingLink();
+loadNotificationPrefs();
 if (S.servers.length && Native?.getServers) {
   try { mergeNativeServers(S.servers, JSON.parse(Native.getServers())); } catch {}
 }
