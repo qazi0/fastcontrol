@@ -14,6 +14,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
@@ -76,6 +77,12 @@ type ipcFrame struct {
 	Response        json.RawMessage `json:"response,omitempty"`
 }
 
+const (
+	ipcInitialBackoff    = 500 * time.Millisecond
+	ipcMaxBackoff        = 5 * time.Second
+	ipcRepeatLogInterval = time.Hour
+)
+
 type IPCClient struct {
 	path string
 
@@ -84,6 +91,14 @@ type IPCClient struct {
 	clientID string
 	pending  map[string]chan *ipcFrame
 	ready    chan struct{}
+
+	// Optional test hooks; nil uses production defaults.
+	dial              func(path string) (net.Conn, error)
+	logf              func(format string, args ...any)
+	now               func() time.Time
+	initialBackoff    time.Duration
+	maxBackoff        time.Duration
+	repeatLogInterval time.Duration
 
 	// OnBroadcast receives every broadcast addressed to this client. It runs on
 	// the reader goroutine, so it must not block for long.
@@ -112,39 +127,173 @@ func uuid() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
+// ipcLogState deduplicates repeated identical connection errors across retry
+// ticks while logging state transitions, error reason changes, periodic
+// reminders, and recovery.
+type ipcLogState struct {
+	now            func() time.Time
+	logf           func(format string, args ...any)
+	repeatInterval time.Duration
+
+	lastErr       string
+	lastLogAt     time.Time
+	suppressed    int
+	everConnected bool
+}
+
+func (s *ipcLogState) onError(err error, wasConnected bool) {
+	if err == nil {
+		return
+	}
+	now := s.now()
+	msg := err.Error()
+	if wasConnected {
+		s.logf("ipc: disconnected from desktop app: %s, retrying", msg)
+		s.lastErr = msg
+		s.lastLogAt = now
+		s.suppressed = 0
+		return
+	}
+	if s.lastErr == "" {
+		s.logf("ipc: %s (desktop app not running?), retrying (identical errors suppressed)", msg)
+		s.lastErr = msg
+		s.lastLogAt = now
+		s.suppressed = 0
+		return
+	}
+	if msg == s.lastErr {
+		if s.repeatInterval > 0 && now.Sub(s.lastLogAt) >= s.repeatInterval {
+			s.logf("ipc: still unable to connect: %s (%d identical retries suppressed), retrying", msg, s.suppressed)
+			s.lastLogAt = now
+			s.suppressed = 0
+			return
+		}
+		s.suppressed++
+		return
+	}
+	if s.suppressed > 0 {
+		s.logf("ipc: %s (after %d suppressed retries of previous error), retrying", msg, s.suppressed)
+	} else {
+		s.logf("ipc: %s, retrying", msg)
+	}
+	s.lastErr = msg
+	s.lastLogAt = now
+	s.suppressed = 0
+}
+
+func (s *ipcLogState) onConnected(clientID string) {
+	switch {
+	case s.lastErr != "" && s.suppressed > 0:
+		s.logf("ipc: connected to desktop app as client %s (recovered after %d suppressed retries)", clientID, s.suppressed)
+	case s.lastErr != "":
+		s.logf("ipc: connected to desktop app as client %s (recovered)", clientID)
+	case s.everConnected:
+		s.logf("ipc: reconnected to desktop app as client %s", clientID)
+	default:
+		s.logf("ipc: connected to desktop app as client %s", clientID)
+	}
+	s.everConnected = true
+	s.lastErr = ""
+	s.lastLogAt = time.Time{}
+	s.suppressed = 0
+}
+
 // Run connects and reconnects forever.
 func (c *IPCClient) Run() {
-	backoff := 500 * time.Millisecond
+	c.run(context.Background())
+}
+
+func (c *IPCClient) run(ctx context.Context) {
+	nowFn := c.now
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	logFn := c.logf
+	if logFn == nil {
+		logFn = log.Printf
+	}
+	repeatInterval := c.repeatLogInterval
+	if repeatInterval == 0 {
+		repeatInterval = ipcRepeatLogInterval
+	}
+	initialBackoff := c.initialBackoff
+	if initialBackoff <= 0 {
+		initialBackoff = ipcInitialBackoff
+	}
+	maxBackoff := c.maxBackoff
+	if maxBackoff <= 0 {
+		maxBackoff = ipcMaxBackoff
+	}
+	if maxBackoff < initialBackoff {
+		maxBackoff = initialBackoff
+	}
+
+	logState := &ipcLogState{
+		now:            nowFn,
+		logf:           logFn,
+		repeatInterval: repeatInterval,
+	}
+	backoff := initialBackoff
 	for {
-		err := c.session()
-		if err != nil {
-			log.Printf("ipc: %v (desktop app not running?), retrying", err)
+		if ctx.Err() != nil {
+			return
+		}
+		connected, err := c.session(ctx, logState)
+		if connected {
+			backoff = initialBackoff
+		}
+		if err != nil && ctx.Err() == nil {
+			logState.onError(err, connected)
 		}
 		c.mu.Lock()
+		hadConn := connected || c.conn != nil || c.clientID != ""
 		c.conn = nil
 		c.clientID = ""
 		for id, ch := range c.pending {
 			close(ch)
 			delete(c.pending, id)
 		}
-		c.ready = make(chan struct{})
+		select {
+		case <-c.ready:
+			c.ready = make(chan struct{})
+		default:
+		}
 		c.mu.Unlock()
-		if c.OnReset != nil {
+		if hadConn && c.OnReset != nil {
 			c.OnReset()
 		}
-		time.Sleep(backoff)
-		if backoff < 5*time.Second {
+		if ctx.Err() != nil {
+			return
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		if backoff < maxBackoff {
 			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
 		}
 	}
 }
 
-func (c *IPCClient) session() error {
-	conn, err := dialDesktopIPC(c.path)
+func (c *IPCClient) session(ctx context.Context, logState *ipcLogState) (bool, error) {
+	dialFn := c.dial
+	if dialFn == nil {
+		dialFn = dialDesktopIPC
+	}
+	conn, err := dialFn(c.path)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer conn.Close()
+	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopClose()
+
 	c.mu.Lock()
 	c.conn = conn
 	c.mu.Unlock()
@@ -157,16 +306,21 @@ func (c *IPCClient) session() error {
 	params, _ := json.Marshal(map[string]string{"clientType": "fastcontrol"})
 	zero := 0
 	if err := c.write(&ipcFrame{Type: "request", RequestID: initID, Version: &zero, Method: "initialize", Params: params}); err != nil {
-		return err
+		return false, err
 	}
 
 	errc := make(chan error, 1)
 	go func() { errc <- c.readLoop(conn) }()
 
+	initTimer := time.NewTimer(5 * time.Second)
+	defer initTimer.Stop()
+
 	select {
 	case f := <-ch:
 		if f == nil || f.ResultType != "success" {
-			return errors.New("initialize failed")
+			_ = conn.Close()
+			<-errc
+			return false, errors.New("initialize failed")
 		}
 		var r struct {
 			ClientID string `json:"clientId"`
@@ -176,13 +330,19 @@ func (c *IPCClient) session() error {
 		c.clientID = r.ClientID
 		close(c.ready)
 		c.mu.Unlock()
-		log.Printf("ipc: connected to desktop app as client %s", r.ClientID)
+		logState.onConnected(r.ClientID)
 	case err := <-errc:
-		return err
-	case <-time.After(5 * time.Second):
-		return errors.New("initialize timed out")
+		return false, err
+	case <-ctx.Done():
+		_ = conn.Close()
+		<-errc
+		return false, ctx.Err()
+	case <-initTimer.C:
+		_ = conn.Close()
+		<-errc
+		return false, errors.New("initialize timed out")
 	}
-	return <-errc
+	return true, <-errc
 }
 
 func (c *IPCClient) write(f *ipcFrame) error {
