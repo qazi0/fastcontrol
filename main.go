@@ -1,4 +1,4 @@
-// fastcontrol serves coding sessions from Codex, Claude Code, and Antigravity over LAN or Tailscale.
+// fastcontrol serves coding sessions from Codex, Claude Code, Antigravity, and Grok over LAN or Tailscale.
 package main
 
 import (
@@ -125,8 +125,8 @@ func main() {
 	}
 	db := stateDBPath()
 	_, codexErr := codexBin()
-	if db == "" && claudeBinary() == "" && codexErr != nil && agyBinary() == "" && !antigravityHasDB("") {
-		log.Fatalf("Install Codex, Claude Code, Or Antigravity Before Starting fastcontrol")
+	if db == "" && claudeBinary() == "" && codexErr != nil && agyBinary() == "" && !antigravityHasDB("") && grokBinary() == "" && !grokHasSessions("") {
+		log.Fatalf("Install Codex, Claude Code, Antigravity, Or Grok Before Starting fastcontrol")
 	}
 
 	asar := *asarFlag
@@ -163,6 +163,12 @@ func main() {
 	go func() {
 		defer close(antigravityDone)
 		hub.antigravity.run(runCtx)
+	}()
+	hub.grok = newGrokManager(hub)
+	grokDone := make(chan struct{})
+	go func() {
+		defer close(grokDone)
+		hub.grok.run(runCtx)
 	}()
 	hub.refreshList()
 	go hub.RunList(runCtx)
@@ -350,9 +356,13 @@ func main() {
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer shutCancel()
 	_ = srv.Shutdown(shutCtx)
-	select {
-	case <-antigravityDone:
-	case <-time.After(3 * time.Second):
+	mgrShutCtx, mgrShutCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer mgrShutCancel()
+	for _, done := range []<-chan struct{}{antigravityDone, grokDone} {
+		select {
+		case <-done:
+		case <-mgrShutCtx.Done():
+		}
 	}
 }
 
@@ -368,6 +378,7 @@ func serveClient(ctx context.Context, hub *Hub, conn *websocket.Conn, eventsOnly
 		"codex":       hub.db != "",
 		"claude":      hub.claude != nil && hub.claude.bin != "",
 		"antigravity": hub.antigravity != nil && hub.antigravity.available(),
+		"grok":        hub.grok != nil && hub.grok.available(),
 	}
 	// Register c and enqueue hello atomically under hub.mu before any initial
 	// thread snapshot or subsequent network update can reach c.out.
