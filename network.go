@@ -70,7 +70,6 @@ func (n *relayListeners) reconcile(addresses []string) {
 	if n.hostnames != nil && (wantedLAN || wantedTS) {
 		hosts = sanitizeRelayHostnames(n.hostnames(wantedLAN, wantedTS))
 	}
-	n.lastHosts = hosts
 
 	if n.identity != nil {
 		if err := n.identity.setNames(relayCertNames(names, hosts)); err != nil {
@@ -78,6 +77,7 @@ func (n *relayListeners) reconcile(addresses []string) {
 			return
 		}
 	}
+	n.lastHosts = hosts
 	for address, listener := range n.listeners {
 		if !wanted[address] {
 			delete(n.listeners, address)

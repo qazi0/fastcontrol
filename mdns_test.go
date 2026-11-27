@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"net"
 	"slices"
 	"strings"
@@ -291,6 +292,11 @@ func TestMDNSWireProtocolAndLiveResponder(t *testing.T) {
 	if !sawGoodbye {
 		t.Fatal("Close did not send PTR TTL=0 goodbye packet")
 	}
+	// Verify no announcement packet follows the goodbye packet.
+	_ = sinkConn.SetReadDeadline(time.Now().Add(80 * time.Millisecond))
+	if n, _, err := sinkConn.ReadFromUDP(tmp); err == nil {
+		t.Fatalf("unexpected packet (%d bytes) received after goodbye", n)
+	}
 }
 
 type fakeMDNSBackend struct {
@@ -315,10 +321,10 @@ func TestMDNSAdvertiserLifecycle(t *testing.T) {
 	var starts int
 	var last *fakeMDNSBackend
 	adv := newMDNSAdvertiser(mdnsServiceConfig{Instance: "Mac", Host: "m5p", Port: 8787, Token: "secret-token-value-12345678901234567890"})
-	adv.startBackend = func(cfg mdnsServiceConfig, ips []net.IP) mdnsBackend {
+	adv.startBackend = func(cfg mdnsServiceConfig, ips []net.IP) (mdnsBackend, error) {
 		starts++
 		last = &fakeMDNSBackend{}
-		return last
+		return last, nil
 	}
 
 	adv.SetLANState(false, nil)
@@ -349,5 +355,82 @@ func TestMDNSAdvertiserLifecycle(t *testing.T) {
 	adv.SetLANState(true, []net.IP{net.IPv4(192, 168, 1, 12)})
 	if starts != 2 {
 		t.Fatal("closed advertiser restarted backend")
+	}
+}
+
+func TestMDNSAdvertiserBackoffAndLogDeduplication(t *testing.T) {
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	var attempts int
+	var logs int
+	failErr := errors.New("multicast unavailable")
+	var succeed bool
+
+	adv := newMDNSAdvertiser(mdnsServiceConfig{Instance: "Mac", Host: "m5p", Port: 8787, Token: "secret-token-value-12345678901234567890"})
+	adv.now = func() time.Time { return now }
+	adv.logf = func(string, ...any) { logs++ }
+	adv.startBackend = func(cfg mdnsServiceConfig, ips []net.IP) (mdnsBackend, error) {
+		attempts++
+		if !succeed {
+			return nil, failErr
+		}
+		return &fakeMDNSBackend{}, nil
+	}
+
+	// Simulate 5-second reconcile ticks with unchanged LAN IP while backend fails.
+	ip1 := []net.IP{net.IPv4(192, 168, 1, 10)}
+	for i := 0; i < 10; i++ {
+		adv.SetLANState(true, ip1)
+		now = now.Add(5 * time.Second)
+	}
+	if attempts != 1 || logs != 1 {
+		t.Fatalf("expected 1 start attempt and 1 log during backoff window, got attempts=%d logs=%d", attempts, logs)
+	}
+
+	// Advancing past 60s triggers a retry, still deduplicating identical error logs.
+	now = now.Add(20 * time.Second)
+	adv.SetLANState(true, ip1)
+	if attempts != 2 || logs != 1 {
+		t.Fatalf("expected retry after 60s without duplicate log, got attempts=%d logs=%d", attempts, logs)
+	}
+
+	// A different error reason logs once.
+	failErr = errors.New("permission denied")
+	now = now.Add(125 * time.Second)
+	adv.SetLANState(true, ip1)
+	if attempts != 3 || logs != 2 {
+		t.Fatalf("expected new error reason to log once, got attempts=%d logs=%d", attempts, logs)
+	}
+
+	// Changing LAN IP retries immediately without waiting for backoff.
+	ip2 := []net.IP{net.IPv4(192, 168, 1, 7)}
+	succeed = true
+	adv.SetLANState(true, ip2)
+	if attempts != 4 || adv.backend == nil {
+		t.Fatalf("expected immediate retry on IP change to succeed, attempts=%d backend=%v", attempts, adv.backend)
+	}
+	adv.Close()
+}
+
+func TestSelectMDNSMulticastInterfaces(t *testing.T) {
+	upMC := net.FlagUp | net.FlagMulticast
+	ifaces := []net.Interface{
+		{Index: 1, Name: "lo0", Flags: net.FlagUp | net.FlagLoopback | net.FlagMulticast},
+		{Index: 2, Name: "en1", Flags: upMC}, // unplugged / link-local only
+		{Index: 3, Name: "en0", Flags: upMC}, // Wi-Fi with different IP
+		{Index: 4, Name: "en7", Flags: upMC}, // USB Ethernet carrying bound IP
+		{Index: 5, Name: "utun3", Flags: upMC},
+	}
+	addrMap := map[string][]net.Addr{
+		"lo0":   {&net.IPNet{IP: net.IPv4(127, 0, 0, 1), Mask: net.CIDRMask(8, 32)}},
+		"en1":   {&net.IPNet{IP: net.IPv4(169, 254, 10, 2), Mask: net.CIDRMask(16, 32)}},
+		"en0":   {&net.IPNet{IP: net.IPv4(192, 168, 1, 101), Mask: net.CIDRMask(24, 32)}},
+		"en7":   {&net.IPNet{IP: net.IPv4(192, 168, 1, 7), Mask: net.CIDRMask(24, 32)}},
+		"utun3": {&net.IPNet{IP: net.IPv4(100, 67, 66, 88), Mask: net.CIDRMask(32, 32)}},
+	}
+	addrFn := func(ifc net.Interface) ([]net.Addr, error) { return addrMap[ifc.Name], nil }
+
+	got := selectMDNSMulticastInterfaces(ifaces, addrFn, []net.IP{net.IPv4(192, 168, 1, 7)})
+	if len(got) != 2 || got[0].Name != "en7" || got[1].Name != "en0" {
+		t.Fatalf("expected [en7 en0], got %+v", got)
 	}
 }

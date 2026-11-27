@@ -126,13 +126,24 @@ type mdnsBackend interface {
 	Close()
 }
 
+const (
+	mdnsRetryInitialDelay = 60 * time.Second
+	mdnsRetryMaxDelay     = 15 * time.Minute
+)
+
 // mdnsAdvertiser manages LAN mDNS/Bonjour service advertisement and reacts to
 // interface transitions cleanly without crashing in sandboxed environments.
 type mdnsAdvertiser struct {
 	mu           sync.Mutex
 	cfg          mdnsServiceConfig
 	backend      mdnsBackend
-	startBackend func(cfg mdnsServiceConfig, ips []net.IP) mdnsBackend
+	startBackend func(cfg mdnsServiceConfig, ips []net.IP) (mdnsBackend, error)
+	now          func() time.Time
+	logf         func(format string, args ...any)
+	retryAfter   time.Time
+	retryDelay   time.Duration
+	lastRetryIPs []net.IP
+	lastErr      string
 	closed       bool
 }
 
@@ -140,6 +151,8 @@ func newMDNSAdvertiser(cfg mdnsServiceConfig) *mdnsAdvertiser {
 	return &mdnsAdvertiser{
 		cfg:          cfg.normalized(),
 		startBackend: startPlatformMDNSBackend,
+		now:          time.Now,
+		logf:         log.Printf,
 	}
 }
 
@@ -156,13 +169,52 @@ func (a *mdnsAdvertiser) SetLANState(active bool, ips []net.IP) {
 			a.backend.Close()
 			a.backend = nil
 		}
+		a.retryAfter = time.Time{}
+		a.retryDelay = 0
+		a.lastRetryIPs = nil
 		return
 	}
 	cleaned := normalizeIPv4List(ips)
 	if a.backend == nil {
-		if a.startBackend != nil {
-			a.backend = a.startBackend(a.cfg, cleaned)
+		if a.startBackend == nil {
+			return
 		}
+		nowFn := a.now
+		if nowFn == nil {
+			nowFn = time.Now
+		}
+		now := nowFn()
+		if !a.retryAfter.IsZero() && now.Before(a.retryAfter) && equalIPv4Lists(cleaned, a.lastRetryIPs) {
+			return
+		}
+		b, err := a.startBackend(a.cfg, cleaned)
+		if err == nil && b != nil {
+			a.backend = b
+			a.retryAfter = time.Time{}
+			a.retryDelay = 0
+			a.lastRetryIPs = nil
+			a.lastErr = ""
+			return
+		}
+		if err != nil {
+			msg := err.Error()
+			if msg != a.lastErr {
+				if a.logf != nil {
+					a.logf("mdns: advertisement unavailable (%v)", err)
+				}
+				a.lastErr = msg
+			}
+		}
+		if !equalIPv4Lists(cleaned, a.lastRetryIPs) || a.retryDelay == 0 {
+			a.retryDelay = mdnsRetryInitialDelay
+		} else if a.retryDelay < mdnsRetryMaxDelay {
+			a.retryDelay *= 2
+			if a.retryDelay > mdnsRetryMaxDelay {
+				a.retryDelay = mdnsRetryMaxDelay
+			}
+		}
+		a.lastRetryIPs = cleaned
+		a.retryAfter = now.Add(a.retryDelay)
 		return
 	}
 	a.backend.UpdateIPs(cleaned)
@@ -213,21 +265,16 @@ func equalIPv4Lists(a, b []net.IP) bool {
 	return true
 }
 
-func startPlatformMDNSBackend(cfg mdnsServiceConfig, ips []net.IP) mdnsBackend {
+func startPlatformMDNSBackend(cfg mdnsServiceConfig, ips []net.IP) (mdnsBackend, error) {
 	if runtime.GOOS == "darwin" {
 		if bin, err := exec.LookPath("/usr/bin/dns-sd"); err == nil {
-			return newCommandMDNSBackend(bin, cfg.dnsSDArgs(), "dns-sd")
+			return newCommandMDNSBackend(bin, cfg.dnsSDArgs(), "dns-sd"), nil
 		}
 		if bin, err := exec.LookPath("dns-sd"); err == nil {
-			return newCommandMDNSBackend(bin, cfg.dnsSDArgs(), "dns-sd")
+			return newCommandMDNSBackend(bin, cfg.dnsSDArgs(), "dns-sd"), nil
 		}
 	}
-	responder, err := startPureMDNSResponder(cfg, ips)
-	if err != nil {
-		log.Printf("mdns: advertisement unavailable (%v)", err)
-		return nil
-	}
-	return responder
+	return startPureMDNSResponder(cfg, ips)
 }
 
 // commandMDNSBackend supervises a native service publisher such as macOS dns-sd.
@@ -298,35 +345,77 @@ type pureMDNSResponder struct {
 	conn         net.PacketConn
 	multicastDst *net.UDPAddr
 
-	mu       sync.Mutex
-	ips      []net.IP
-	closed   bool
-	announce chan struct{}
-	stop     chan struct{}
-	wg       sync.WaitGroup
+	mu           sync.Mutex
+	writeMu      sync.Mutex
+	ips          []net.IP
+	closed       bool
+	announce     chan struct{}
+	stop         chan struct{}
+	announceDone chan struct{}
+	readDone     chan struct{}
 }
 
 func startPureMDNSResponder(cfg mdnsServiceConfig, ips []net.IP) (*pureMDNSResponder, error) {
 	group := &net.UDPAddr{IP: mdnsMulticastIPv4, Port: mdnsMulticastPort}
-	conn, err := openMDNSMulticastConn(group)
+	conn, err := openMDNSMulticastConn(group, ips)
 	if err != nil {
 		return nil, err
 	}
 	return newPureMDNSResponderWithConn(cfg, ips, conn, group), nil
 }
 
-func openMDNSMulticastConn(group *net.UDPAddr) (*net.UDPConn, error) {
-	// Prefer an active multicast-capable physical LAN interface when available.
+func selectMDNSMulticastInterfaces(ifaces []net.Interface, addrFn func(net.Interface) ([]net.Addr, error), ips []net.IP) []net.Interface {
+	wanted := map[string]bool{}
+	for _, ip := range ips {
+		if v4 := ip.To4(); v4 != nil {
+			wanted[v4.String()] = true
+		}
+	}
+	var exact []net.Interface
+	var fallback []net.Interface
+	for _, ifc := range ifaces {
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 || ifc.Flags&net.FlagMulticast == 0 {
+			continue
+		}
+		addrs, err := addrFn(ifc)
+		if err != nil {
+			continue
+		}
+		matchedWanted := false
+		hasUsableLAN := false
+		for _, a := range addrs {
+			ipn, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			v4 := ipn.IP.To4()
+			if v4 == nil {
+				continue
+			}
+			if wanted[v4.String()] {
+				matchedWanted = true
+				break
+			}
+			if !v4.IsLoopback() && !v4.IsLinkLocalUnicast() && !v4.IsUnspecified() && !tailscaleCGNAT.Contains(v4) {
+				hasUsableLAN = true
+			}
+		}
+		if matchedWanted {
+			exact = append(exact, ifc)
+		} else if hasUsableLAN && physicalLANInterface(ifc.Name) {
+			fallback = append(fallback, ifc)
+		}
+	}
+	return append(exact, fallback...)
+}
+
+func openMDNSMulticastConn(group *net.UDPAddr, ips []net.IP) (*net.UDPConn, error) {
 	if ifaces, err := net.Interfaces(); err == nil {
-		for i := range ifaces {
-			ifc := &ifaces[i]
-			if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 || ifc.Flags&net.FlagMulticast == 0 {
-				continue
-			}
-			if !physicalLANInterface(ifc.Name) {
-				continue
-			}
-			if conn, err := net.ListenMulticastUDP("udp4", ifc, group); err == nil {
+		candidates := selectMDNSMulticastInterfaces(ifaces, func(ifc net.Interface) ([]net.Addr, error) {
+			return ifc.Addrs()
+		}, ips)
+		for i := range candidates {
+			if conn, err := net.ListenMulticastUDP("udp4", &candidates[i], group); err == nil {
 				return conn, nil
 			}
 		}
@@ -342,8 +431,9 @@ func newPureMDNSResponderWithConn(cfg mdnsServiceConfig, ips []net.IP, conn net.
 		ips:          normalizeIPv4List(ips),
 		announce:     make(chan struct{}, 1),
 		stop:         make(chan struct{}),
+		announceDone: make(chan struct{}),
+		readDone:     make(chan struct{}),
 	}
-	r.wg.Add(2)
 	go r.readLoop()
 	go r.announceLoop()
 	r.triggerAnnounce()
@@ -379,6 +469,20 @@ func (r *pureMDNSResponder) currentIPs() []net.IP {
 	return out
 }
 
+func (r *pureMDNSResponder) writePacket(pkt []byte, dst net.Addr) {
+	if len(pkt) == 0 || dst == nil {
+		return
+	}
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
+	select {
+	case <-r.stop:
+		return
+	default:
+	}
+	_, _ = r.conn.WriteTo(pkt, dst)
+}
+
 func (r *pureMDNSResponder) Close() {
 	r.mu.Lock()
 	if r.closed {
@@ -388,15 +492,20 @@ func (r *pureMDNSResponder) Close() {
 	r.closed = true
 	r.mu.Unlock()
 	close(r.stop)
+	// Wait for announceLoop before sending goodbye so no announcement can
+	// overtake or follow the TTL=0 withdrawal packet.
+	<-r.announceDone
+	r.writeMu.Lock()
 	if pkt := r.buildGoodbyePacket(); len(pkt) > 0 && r.multicastDst != nil {
 		_, _ = r.conn.WriteTo(pkt, r.multicastDst)
 	}
+	r.writeMu.Unlock()
 	_ = r.conn.Close()
-	r.wg.Wait()
+	<-r.readDone
 }
 
 func (r *pureMDNSResponder) announceLoop() {
-	defer r.wg.Done()
+	defer close(r.announceDone)
 	var repeatTimer *time.Timer
 	var repeatCh <-chan time.Time
 	stopRepeat := func() {
@@ -421,9 +530,7 @@ func (r *pureMDNSResponder) announceLoop() {
 			if r.multicastDst == nil {
 				continue
 			}
-			if pkt := r.buildAnnouncementPacket(r.currentIPs()); len(pkt) > 0 {
-				_, _ = r.conn.WriteTo(pkt, r.multicastDst)
-			}
+			r.writePacket(r.buildAnnouncementPacket(r.currentIPs()), r.multicastDst)
 			repeatTimer = time.NewTimer(time.Second)
 			repeatCh = repeatTimer.C
 		case <-repeatCh:
@@ -432,15 +539,13 @@ func (r *pureMDNSResponder) announceLoop() {
 			if r.multicastDst == nil {
 				continue
 			}
-			if pkt := r.buildAnnouncementPacket(r.currentIPs()); len(pkt) > 0 {
-				_, _ = r.conn.WriteTo(pkt, r.multicastDst)
-			}
+			r.writePacket(r.buildAnnouncementPacket(r.currentIPs()), r.multicastDst)
 		}
 	}
 }
 
 func (r *pureMDNSResponder) readLoop() {
-	defer r.wg.Done()
+	defer close(r.readDone)
 	buf := make([]byte, 4096)
 	for {
 		n, src, err := r.conn.ReadFrom(buf)
@@ -461,9 +566,9 @@ func (r *pureMDNSResponder) readLoop() {
 			continue
 		}
 		if (legacyUnicast || sendUnicast) && src != nil {
-			_, _ = r.conn.WriteTo(resp, src)
+			r.writePacket(resp, src)
 		} else if r.multicastDst != nil {
-			_, _ = r.conn.WriteTo(resp, r.multicastDst)
+			r.writePacket(resp, r.multicastDst)
 		}
 	}
 }
