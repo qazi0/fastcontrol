@@ -325,16 +325,7 @@ func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EPERM)
-	}
-	if runtime.GOOS == "windows" {
-		_ = p.Release()
-		return true
-	}
-	err = p.Signal(syscall.Signal(0))
-	return err == nil || errors.Is(err, syscall.EPERM) || errors.Is(err, os.ErrPermission)
+	return platformProcessAlive(pid)
 }
 
 func signalExternalPID(pid int) error {

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -413,24 +414,28 @@ func TestMDNSAdvertiserBackoffAndLogDeduplication(t *testing.T) {
 
 func TestSelectMDNSMulticastInterfaces(t *testing.T) {
 	upMC := net.FlagUp | net.FlagMulticast
+	wifiName, usbName, unpluggedName := "en0", "en7", "en1"
+	if runtime.GOOS == "windows" {
+		wifiName, usbName, unpluggedName = "Wi-Fi", "Ethernet 2", "Ethernet"
+	}
 	ifaces := []net.Interface{
 		{Index: 1, Name: "lo0", Flags: net.FlagUp | net.FlagLoopback | net.FlagMulticast},
-		{Index: 2, Name: "en1", Flags: upMC}, // unplugged / link-local only
-		{Index: 3, Name: "en0", Flags: upMC}, // Wi-Fi with different IP
-		{Index: 4, Name: "en7", Flags: upMC}, // USB Ethernet carrying bound IP
+		{Index: 2, Name: unpluggedName, Flags: upMC}, // unplugged / link-local only
+		{Index: 3, Name: wifiName, Flags: upMC},      // Wi-Fi with different IP
+		{Index: 4, Name: usbName, Flags: upMC},       // USB Ethernet carrying bound IP
 		{Index: 5, Name: "utun3", Flags: upMC},
 	}
 	addrMap := map[string][]net.Addr{
-		"lo0":   {&net.IPNet{IP: net.IPv4(127, 0, 0, 1), Mask: net.CIDRMask(8, 32)}},
-		"en1":   {&net.IPNet{IP: net.IPv4(169, 254, 10, 2), Mask: net.CIDRMask(16, 32)}},
-		"en0":   {&net.IPNet{IP: net.IPv4(192, 168, 1, 101), Mask: net.CIDRMask(24, 32)}},
-		"en7":   {&net.IPNet{IP: net.IPv4(192, 168, 1, 7), Mask: net.CIDRMask(24, 32)}},
-		"utun3": {&net.IPNet{IP: net.IPv4(100, 67, 66, 88), Mask: net.CIDRMask(32, 32)}},
+		"lo0":         {&net.IPNet{IP: net.IPv4(127, 0, 0, 1), Mask: net.CIDRMask(8, 32)}},
+		unpluggedName: {&net.IPNet{IP: net.IPv4(169, 254, 10, 2), Mask: net.CIDRMask(16, 32)}},
+		wifiName:      {&net.IPNet{IP: net.IPv4(192, 168, 1, 101), Mask: net.CIDRMask(24, 32)}},
+		usbName:       {&net.IPNet{IP: net.IPv4(192, 168, 1, 7), Mask: net.CIDRMask(24, 32)}},
+		"utun3":       {&net.IPNet{IP: net.IPv4(100, 67, 66, 88), Mask: net.CIDRMask(32, 32)}},
 	}
 	addrFn := func(ifc net.Interface) ([]net.Addr, error) { return addrMap[ifc.Name], nil }
 
 	got := selectMDNSMulticastInterfaces(ifaces, addrFn, []net.IP{net.IPv4(192, 168, 1, 7)})
-	if len(got) != 2 || got[0].Name != "en7" || got[1].Name != "en0" {
-		t.Fatalf("expected [en7 en0], got %+v", got)
+	if len(got) != 2 || got[0].Name != usbName || got[1].Name != wifiName {
+		t.Fatalf("expected [%s %s], got %+v", usbName, wifiName, got)
 	}
 }

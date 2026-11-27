@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -211,7 +212,16 @@ func TestSQLiteMissingFileAndSpecialPath(t *testing.T) {
 		t.Fatal("expected error for missing sqlite database")
 	}
 
-	special := filepath.Join(dir, "state #1 ? with spaces.sqlite")
+	encoded := sqliteFileURI("/tmp/state #1 ? %20 with spaces.sqlite", sqliteReadOnlyQuery)
+	if !strings.Contains(encoded, "%23") || !strings.Contains(encoded, "%3F") || !strings.Contains(encoded, "%2520") || !strings.Contains(encoded, "%20") {
+		t.Fatalf("expected escaped URI components, got %q", encoded)
+	}
+
+	name := "state #1 ? with spaces.sqlite"
+	if runtime.GOOS == "windows" {
+		name = "state #1 %20 with spaces.sqlite"
+	}
+	special := filepath.Join(dir, name)
 	writer := openTestSQLiteWriter(t, special)
 	defer writer.Close()
 	if _, err := writer.Exec(`CREATE TABLE s (k TEXT); INSERT INTO s VALUES ('hello');`); err != nil {

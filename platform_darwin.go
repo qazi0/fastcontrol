@@ -14,6 +14,14 @@ func prepareProcess(cmd *exec.Cmd)                 { cmd.SysProcAttr = &syscall.
 func interruptProcess(p *os.Process)               { _ = syscall.Kill(-p.Pid, syscall.SIGINT) }
 func terminateProcess(p *os.Process)               { _ = syscall.Kill(-p.Pid, syscall.SIGTERM) }
 func killProcess(p *os.Process)                    { _ = syscall.Kill(-p.Pid, syscall.SIGKILL) }
+func platformProcessAlive(pid int) bool {
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EPERM)
+	}
+	err = p.Signal(syscall.Signal(0))
+	return err == nil || errors.Is(err, syscall.EPERM) || errors.Is(err, os.ErrPermission)
+}
 func dialDesktopIPC(path string) (net.Conn, error) { return net.Dial("unix", path) }
 func platformIPCPath() string                      { return "" }
 func desktopBundlePath() string                    { return "/Applications/ChatGPT.app/Contents/Resources/app.asar" }
