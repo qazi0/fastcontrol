@@ -32,6 +32,7 @@ func usageFixtureManager(t *testing.T) *UsageManager {
 	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
 	t.Setenv("ANTIGRAVITY_HOME", "")
+	t.Setenv("GROK_HOME", filepath.Join(home, ".grok"))
 	manager := newUsageManager(home)
 	manager.quota = func(_ string, p *ProviderUsage) {}
 	return manager

@@ -156,8 +156,8 @@ func TestAntigravityLocalUsageDesktopAndCLIWithDedupAndCaching(t *testing.T) {
 	)
 
 	report := manager.collect(now)
-	if len(report.Providers) != 3 || report.Providers[2].Provider != "antigravity" {
-		t.Fatalf("expected 3 providers with antigravity third: %+v", report.Providers)
+	if len(report.Providers) != len(usageProviders) || report.Providers[2].Provider != "antigravity" {
+		t.Fatalf("expected %d providers with antigravity third: %+v", len(usageProviders), report.Providers)
 	}
 	p := report.Providers[2]
 

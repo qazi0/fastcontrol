@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -14,18 +16,30 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 )
 
-const antigravityQuotaTimeout = 10 * time.Second
+const (
+	antigravityQuotaTimeout = 10 * time.Second
+	grokQuotaTimeout        = 10 * time.Second
+	grokQuotaClientName     = "fastcontrol"
+	grokQuotaClientVersion  = "0.2.18"
+	grokQuotaMaxLineBytes   = 4 << 20
+)
+
+var errGrokNotSignedIn = errors.New("Grok CLI Not Signed In")
 
 type limitedBuffer struct {
+	mu  sync.Mutex
 	buf bytes.Buffer
 	max int
 }
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.max > 0 {
 		remaining := b.max - b.buf.Len()
 		if remaining > 0 {
@@ -40,6 +54,8 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 }
 
 func (b *limitedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	return b.buf.String()
 }
 
@@ -125,6 +141,8 @@ func fetchProviderQuota(home string, p *ProviderUsage) {
 		}
 	case "antigravity":
 		err = fetchAntigravityQuota(ctx, home, p)
+	case "grok":
+		err = fetchGrokQuota(ctx, home, p)
 	default:
 		err = errors.New("Unknown Provider")
 	}
@@ -442,4 +460,473 @@ func parseAntigravityQuotaTSV(output string) []UsageWindow {
 		})
 	}
 	return windows
+}
+
+func isGrokUsageExecutable(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	st, err := os.Stat(path)
+	if err != nil || st.IsDir() {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	return st.Mode()&0111 != 0
+}
+
+func findGrokUsageBinary(home string) string {
+	names := []string{"grok"}
+	if runtime.GOOS == "windows" {
+		names = []string{"grok.exe", "grok.cmd", "grok.bat", "grok"}
+	}
+	for _, name := range names {
+		if path, err := exec.LookPath(name); err == nil && isGrokUsageExecutable(path) {
+			return path
+		}
+	}
+	var candidates []string
+	addDir := func(dir string) {
+		if strings.TrimSpace(dir) == "" {
+			return
+		}
+		if runtime.GOOS == "windows" {
+			candidates = append(candidates,
+				filepath.Join(dir, "grok.exe"),
+				filepath.Join(dir, "grok.cmd"),
+				filepath.Join(dir, "grok.bat"),
+				filepath.Join(dir, "grok"),
+			)
+		} else {
+			candidates = append(candidates, filepath.Join(dir, "grok"))
+		}
+	}
+	if home != "" {
+		addDir(filepath.Join(home, ".local", "bin"))
+		addDir(filepath.Join(home, ".grok", "bin"))
+	}
+	if envHome := strings.TrimSpace(os.Getenv("GROK_HOME")); envHome != "" {
+		addDir(filepath.Join(envHome, "bin"))
+	}
+	if runtime.GOOS != "windows" {
+		candidates = append(candidates, "/opt/homebrew/bin/grok", "/usr/local/bin/grok")
+	}
+	for _, path := range candidates {
+		if isGrokUsageExecutable(path) {
+			return path
+		}
+	}
+	return ""
+}
+
+func hasGrokAuthFile(grokHome string) bool {
+	if strings.TrimSpace(grokHome) == "" {
+		return false
+	}
+	path := filepath.Join(grokHome, "auth.json")
+	st, err := os.Stat(path)
+	if err != nil || !st.Mode().IsRegular() || st.Size() == 0 {
+		return false
+	}
+	if st.Size() > 1<<20 {
+		return true
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	trimmed := strings.TrimSpace(string(data))
+	return trimmed != "" && trimmed != "{}" && trimmed != "null"
+}
+
+func looksLikeGrokAuthError(text string) bool {
+	s := strings.ToLower(text)
+	for _, needle := range []string{
+		"sign in",
+		"signed in",
+		"not logged in",
+		"log in",
+		"login",
+		"unauthenticated",
+		"unauthorized",
+		"authentication",
+		"cached_token",
+		"no auth",
+		"auth.json",
+		"expired",
+		"credentials",
+		"oauth",
+	} {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func withGrokEnvVar(base []string, key, value string) []string {
+	out := make([]string, 0, len(base)+1)
+	replaced := false
+	for _, entry := range base {
+		k, _, ok := strings.Cut(entry, "=")
+		if ok && strings.EqualFold(k, key) {
+			if !replaced {
+				out = append(out, key+"="+value)
+				replaced = true
+			}
+			continue
+		}
+		out = append(out, entry)
+	}
+	if !replaced {
+		out = append(out, key+"="+value)
+	}
+	return out
+}
+
+type grokQuotaRPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+type grokQuotaRPCEnvelope struct {
+	JSONRPC string             `json:"jsonrpc"`
+	ID      json.RawMessage    `json:"id"`
+	Method  string             `json:"method"`
+	Result  json.RawMessage    `json:"result"`
+	Error   *grokQuotaRPCError `json:"error"`
+}
+
+func grokRPCIDMatches(raw json.RawMessage, want int) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return false
+	}
+	var num int
+	if json.Unmarshal(trimmed, &num) == nil {
+		return num == want
+	}
+	var s string
+	if json.Unmarshal(trimmed, &s) == nil {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
+			return parsed == want
+		}
+	}
+	return false
+}
+
+func readBoundedRPCLine(reader *bufio.Reader, limit int) ([]byte, error) {
+	var line []byte
+	oversized := false
+	for {
+		part, err := reader.ReadSlice('\n')
+		if len(line)+len(part) > limit {
+			oversized = true
+			line = nil
+		}
+		if !oversized {
+			line = append(line, part...)
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		if oversized {
+			return nil, err
+		}
+		return line, err
+	}
+}
+
+func runGrokBillingRPC(ctx context.Context, bin, grokHome string) (map[string]any, string, error) {
+	cmd := exec.Command(bin, "agent", "--no-leader", "stdio")
+	return runGrokBillingCmd(ctx, cmd, grokHome)
+}
+
+func runGrokBillingCmd(ctx context.Context, cmd *exec.Cmd, grokHome string) (map[string]any, string, error) {
+	prepareProcess(cmd)
+	if strings.TrimSpace(grokHome) != "" {
+		baseEnv := cmd.Env
+		if len(baseEnv) == 0 {
+			baseEnv = os.Environ()
+		}
+		cmd.Env = withGrokEnvVar(baseEnv, "GROK_HOME", grokHome)
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, "", err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		_ = stdin.Close()
+		return nil, "", err
+	}
+	stderr := &limitedBuffer{max: 64 << 10}
+	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		return nil, "", err
+	}
+
+	stopWatch := make(chan struct{})
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		select {
+		case <-ctx.Done():
+			if cmd.Process != nil {
+				killProcess(cmd.Process)
+			}
+		case <-stopWatch:
+		}
+	}()
+	var cleanupOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			close(stopWatch)
+			<-watchDone
+			_ = stdin.Close()
+			_ = stdout.Close()
+			waitCh := make(chan error, 1)
+			go func() { waitCh <- cmd.Wait() }()
+			select {
+			case <-waitCh:
+				return
+			case <-time.After(250 * time.Millisecond):
+			}
+			if cmd.Process != nil {
+				terminateProcess(cmd.Process)
+			}
+			select {
+			case <-waitCh:
+				return
+			case <-time.After(250 * time.Millisecond):
+			}
+			if cmd.Process != nil {
+				killProcess(cmd.Process)
+			}
+			<-waitCh
+		})
+	}
+	defer cleanup()
+
+	reader := bufio.NewReaderSize(stdout, 64<<10)
+	sendAndRead := func(id int, method string, params any) (json.RawMessage, *grokQuotaRPCError, error) {
+		payload, err := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      id,
+			"method":  method,
+			"params":  params,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		payload = append(payload, '\n')
+		if _, err := stdin.Write(payload); err != nil {
+			if ctx.Err() != nil {
+				return nil, nil, ctx.Err()
+			}
+			cleanup()
+			if looksLikeGrokAuthError(stderr.String()) {
+				return nil, nil, errGrokNotSignedIn
+			}
+			return nil, nil, err
+		}
+		for {
+			line, readErr := readBoundedRPCLine(reader, grokQuotaMaxLineBytes)
+			trimmed := bytes.TrimSpace(line)
+			if len(trimmed) > 0 {
+				var env grokQuotaRPCEnvelope
+				if json.Unmarshal(trimmed, &env) == nil && env.Method == "" && grokRPCIDMatches(env.ID, id) {
+					return env.Result, env.Error, nil
+				}
+			}
+			if readErr != nil {
+				if ctx.Err() != nil {
+					return nil, nil, ctx.Err()
+				}
+				cleanup()
+				if looksLikeGrokAuthError(stderr.String()) {
+					return nil, nil, errGrokNotSignedIn
+				}
+				if errors.Is(readErr, io.EOF) {
+					return nil, nil, errors.New("Grok Billing Response Ended Early")
+				}
+				return nil, nil, readErr
+			}
+		}
+	}
+
+	_, rpcErr, err := sendAndRead(1, "initialize", map[string]any{
+		"protocolVersion": 1,
+		"clientInfo": map[string]any{
+			"name":    grokQuotaClientName,
+			"version": grokQuotaClientVersion,
+		},
+		"clientCapabilities": map[string]any{},
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	if rpcErr != nil {
+		if looksLikeGrokAuthError(rpcErr.Message) {
+			return nil, "", errGrokNotSignedIn
+		}
+		return nil, "", errors.New(rpcErr.Message)
+	}
+
+	authRaw, rpcErr, err := sendAndRead(2, "authenticate", map[string]any{
+		"methodId": "cached_token",
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	if rpcErr != nil {
+		return nil, "", errGrokNotSignedIn
+	}
+	authTier := ""
+	if len(authRaw) > 0 {
+		var authResult map[string]any
+		if json.Unmarshal(authRaw, &authResult) == nil {
+			meta := mapValue(authResult["_meta"])
+			authTier = firstNonEmptyUsageString(str(meta, "subscription_tier"), str(meta, "subscriptionTier"))
+		}
+	}
+
+	billingRaw, rpcErr, err := sendAndRead(3, "_x.ai/billing", map[string]any{})
+	if err != nil {
+		return nil, "", err
+	}
+	if rpcErr != nil {
+		if looksLikeGrokAuthError(rpcErr.Message) {
+			return nil, "", errGrokNotSignedIn
+		}
+		return nil, "", errors.New(rpcErr.Message)
+	}
+	var billing map[string]any
+	if len(billingRaw) == 0 || json.Unmarshal(billingRaw, &billing) != nil {
+		return nil, "", errors.New("Provider Returned an Invalid Usage Response")
+	}
+	return billing, authTier, nil
+}
+
+func fetchGrokQuota(ctx context.Context, home string, p *ProviderUsage) error {
+	return fetchGrokQuotaWith(ctx, home, usageRoot(home, "grok"), p, findGrokUsageBinary, runGrokBillingRPC)
+}
+
+func fetchGrokQuotaWith(
+	ctx context.Context,
+	home, grokHome string,
+	p *ProviderUsage,
+	findBin func(string) string,
+	runRPC func(context.Context, string, string) (map[string]any, string, error),
+) error {
+	bin := findBin(home)
+	if bin == "" {
+		return errors.New("Grok CLI Not Installed")
+	}
+	if !hasGrokAuthFile(grokHome) {
+		return errGrokNotSignedIn
+	}
+	qctx, cancel := context.WithTimeout(ctx, grokQuotaTimeout)
+	defer cancel()
+	data, authTier, err := runRPC(qctx, bin, grokHome)
+	if err != nil {
+		if errors.Is(qctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+			return errors.New("Timed Out Reading Grok Subscription Limits")
+		}
+		if errors.Is(err, errGrokNotSignedIn) {
+			return errGrokNotSignedIn
+		}
+		return errors.New("Could Not Read Grok Subscription Limits")
+	}
+	return applyGrokQuota(p, data, authTier)
+}
+
+func parseRFC3339Unix(text string) int64 {
+	s := strings.TrimSpace(text)
+	if s == "" {
+		return 0
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, s); err == nil && ts.Unix() > 0 {
+		return ts.Unix()
+	}
+	return 0
+}
+
+func grokQuotaPeriodLabel(periodType string, startUnix, endUnix int64) (string, int64) {
+	upper := strings.ToUpper(strings.TrimSpace(periodType))
+	switch {
+	case strings.Contains(upper, "WEEKLY") || strings.Contains(upper, "WEEK"):
+		return "Weekly", 10080
+	case strings.Contains(upper, "MONTHLY") || strings.Contains(upper, "MONTH"):
+		return "Monthly", 43200
+	case strings.Contains(upper, "DAILY") || strings.Contains(upper, "DAY"):
+		return "Daily", 1440
+	case strings.Contains(upper, "HOURLY") || strings.Contains(upper, "HOUR"):
+		return "Hourly", 60
+	}
+	if startUnix > 0 && endUnix > startUnix {
+		minutes := (endUnix - startUnix) / 60
+		switch {
+		case minutes >= 38880:
+			return "Monthly", minutes
+		case minutes >= 8640 && minutes <= 11520:
+			return "Weekly", minutes
+		case minutes >= 1200 && minutes <= 1680:
+			return "Daily", minutes
+		case minutes > 0:
+			if minutes%60 == 0 {
+				return strconv.FormatInt(minutes/60, 10) + "-Hour", minutes
+			}
+			return strconv.FormatInt(minutes, 10) + "-Minute", minutes
+		}
+	}
+	return "Weekly", 10080
+}
+
+func applyGrokQuota(p *ProviderUsage, data map[string]any, fallbackPlan string) error {
+	if len(data) == 0 {
+		return errors.New("This Account Did Not Report Subscription Limit Windows")
+	}
+	if _, hasConfig := data["config"]; !hasConfig {
+		if inner := mapValue(data["result"]); len(inner) > 0 {
+			data = inner
+		}
+	}
+	p.Plan = firstNonEmptyUsageString(
+		str(data, "subscription_tier"),
+		str(data, "subscriptionTier"),
+		fallbackPlan,
+	)
+	config := mapValue(data["config"])
+	used, ok := quotaNumber(config["creditUsagePercent"])
+	if !ok {
+		return errors.New("This Account Did Not Report Subscription Limit Windows")
+	}
+	used = math.Max(0, math.Min(100, used))
+	remaining := math.Max(0, math.Min(100, math.Round((100-used)*10000)/10000))
+	period := mapValue(config["currentPeriod"])
+	startUnix := parseRFC3339Unix(str(period, "start"))
+	endUnix := parseRFC3339Unix(str(period, "end"))
+	resetAt := endUnix
+	if resetAt == 0 {
+		resetAt = parseRFC3339Unix(str(config, "billingPeriodEnd"))
+	}
+	label, minutes := grokQuotaPeriodLabel(str(period, "type"), startUnix, endUnix)
+	p.Windows = append(p.Windows, UsageWindow{
+		Label:     label,
+		Used:      used,
+		Remaining: remaining,
+		ResetAt:   resetAt,
+		Minutes:   minutes,
+	})
+	if prepaid := mapValue(config["prepaidBalance"]); len(prepaid) > 0 {
+		if val, ok := quotaNumber(prepaid["val"]); ok && val > 0 {
+			p.Credits = &val
+		}
+	}
+	p.QuotaSource = "Subscription"
+	return nil
 }

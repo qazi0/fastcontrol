@@ -47,8 +47,8 @@ func TestUsageProgressDoesNotWaitForTheOtherProvider(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		report := readLiveUsage(t, m)
-		if !report.Providers[0].QuotaLoading && !report.Providers[0].LocalLoading && !report.Providers[2].QuotaLoading {
-			if len(report.Providers[0].Windows) != 1 || len(report.Providers[2].Windows) != 1 || !report.Providers[1].QuotaLoading || !report.Refreshing {
+		if !report.Providers[0].QuotaLoading && !report.Providers[0].LocalLoading && !report.Providers[2].QuotaLoading && !report.Providers[3].QuotaLoading {
+			if len(report.Providers[0].Windows) != 1 || len(report.Providers[2].Windows) != 1 || len(report.Providers[3].Windows) != 1 || !report.Providers[1].QuotaLoading || !report.Refreshing {
 				t.Fatal("independent provider progress was lost")
 			}
 			break
@@ -58,7 +58,7 @@ func TestUsageProgressDoesNotWaitForTheOtherProvider(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if calls.Load() != 3 {
+	if calls.Load() != 4 {
 		t.Fatal("overlapping readers started duplicate collection")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -90,7 +90,7 @@ func TestUsageProgressDoesNotWaitForTheOtherProvider(t *testing.T) {
 
 func TestContextUsageDoesNotStartLocalOrOtherProviderWork(t *testing.T) {
 	m := usageFixtureManager(t)
-	var codex, claude, antigravity atomic.Int32
+	var codex, claude, antigravity, grok atomic.Int32
 	started, release := make(chan struct{}), make(chan struct{})
 	m.quota = func(_ string, p *ProviderUsage) {
 		switch p.Provider {
@@ -102,6 +102,8 @@ func TestContextUsageDoesNotStartLocalOrOtherProviderWork(t *testing.T) {
 			claude.Add(1)
 		case "antigravity":
 			antigravity.Add(1)
+		case "grok":
+			grok.Add(1)
 		}
 		p.QuotaAt = time.Now().Unix()
 		p.Windows = []UsageWindow{{Label: "Weekly", Used: 12, Remaining: 88}}
@@ -114,7 +116,7 @@ func TestContextUsageDoesNotStartLocalOrOtherProviderWork(t *testing.T) {
 	m.mu.Lock()
 	localStarted := m.job != nil || len(m.cached) > 0
 	m.mu.Unlock()
-	if localStarted || claude.Load() != 0 || antigravity.Load() != 0 {
+	if localStarted || claude.Load() != 0 || antigravity.Load() != 0 || grok.Load() != 0 {
 		t.Fatal("context requested unrelated work")
 	}
 	close(release)
@@ -135,7 +137,7 @@ func TestContextUsageDoesNotStartLocalOrOtherProviderWork(t *testing.T) {
 	if _, err := m.get(context.Background(), false); err != nil {
 		t.Fatal(err)
 	}
-	if codex.Load() != 1 || claude.Load() != 1 || antigravity.Load() != 1 {
+	if codex.Load() != 1 || claude.Load() != 1 || antigravity.Load() != 1 || grok.Load() != 1 {
 		t.Fatal("full usage did not reuse the context quota")
 	}
 }

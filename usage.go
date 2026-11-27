@@ -70,6 +70,8 @@ type usageRow struct {
 	Key, Model, Tier string
 	At               time.Time
 	Tokens           usageTokens
+	Cost             float64
+	HasCost          bool
 }
 type usageFile struct {
 	Size     int64
@@ -79,7 +81,7 @@ type usageFile struct {
 	Provider string
 }
 
-var usageProviders = []string{"codex", "claude", "antigravity"}
+var usageProviders = []string{"codex", "claude", "antigravity", "grok"}
 
 func isUsageProvider(provider string) bool {
 	for _, p := range usageProviders {
@@ -93,6 +95,7 @@ func isUsageProvider(provider string) bool {
 type UsageManager struct {
 	home             string
 	antigravityRoots []string // optional override for Antigravity app-data roots (tests)
+	grokHome         string   // optional override for Grok home directory (tests)
 	mu               sync.Mutex
 	cached           []byte
 	cachedAt         time.Time
@@ -133,14 +136,27 @@ func (m *UsageManager) serve(w http.ResponseWriter, r *http.Request) {
 }
 func usageRoot(home, provider string) string {
 	variable, fallback := "CODEX_HOME", ".codex"
-	if provider == "claude" {
+	switch provider {
+	case "claude":
 		variable = "CLAUDE_CONFIG_DIR"
 		fallback = ".claude"
+	case "grok":
+		variable = "GROK_HOME"
+		fallback = ".grok"
 	}
 	if value := strings.TrimSpace(os.Getenv(variable)); value != "" {
-		return value
+		return filepath.Clean(value)
+	}
+	if strings.TrimSpace(home) == "" {
+		return ""
 	}
 	return filepath.Join(home, fallback)
+}
+func grokUsageHome(home, override string) string {
+	if value := strings.TrimSpace(override); value != "" {
+		return filepath.Clean(value)
+	}
+	return usageRoot(home, "grok")
 }
 func antigravityUsageRoots(home string, override []string) []string {
 	var raw []string
@@ -190,7 +206,7 @@ func (m *UsageManager) ingestUsageFile(path, provider string, st os.FileInfo, si
 		}
 		key := provider + ":" + row.Key
 		prior, exists := rows[key]
-		if !exists || row.Tokens.Input+row.Tokens.Output > prior.Tokens.Input+prior.Tokens.Output || (row.Tokens == prior.Tokens && row.At.After(prior.At)) {
+		if !exists || row.Tokens.Input+row.Tokens.Output > prior.Tokens.Input+prior.Tokens.Output || (row.Tokens == prior.Tokens && (row.At.After(prior.At) || (row.At.Equal(prior.At) && row.Cost > prior.Cost))) {
 			rows[key] = row
 			rowProvider[key] = provider
 		}
@@ -245,7 +261,54 @@ func (m *UsageManager) collectLocal(now time.Time) UsageReport {
 			locals[provider] = local
 			continue
 		}
+		if provider == "grok" {
+			if root := grokUsageHome(m.home, m.grokHome); root != "" {
+				sessionsDir := filepath.Join(root, "sessions")
+				cwdEntries, err := os.ReadDir(sessionsDir)
+				if err != nil {
+					if !os.IsNotExist(err) {
+						local.LocalError = "Some Local Logs Could Not Be Read"
+					}
+				} else {
+					for _, cwdEntry := range cwdEntries {
+						if !cwdEntry.IsDir() {
+							continue
+						}
+						cwdDir := filepath.Join(sessionsDir, cwdEntry.Name())
+						sessionEntries, err := os.ReadDir(cwdDir)
+						if err != nil {
+							if !os.IsNotExist(err) {
+								local.LocalError = "Some Local Logs Could Not Be Read"
+							}
+							continue
+						}
+						for _, sessionEntry := range sessionEntries {
+							if !sessionEntry.IsDir() {
+								continue
+							}
+							path := filepath.Join(cwdDir, sessionEntry.Name(), "usage.json")
+							st, err := os.Stat(path)
+							if err != nil {
+								if !os.IsNotExist(err) {
+									local.LocalError = "Some Local Logs Could Not Be Read"
+								}
+								continue
+							}
+							if err := m.ingestUsageFile(path, provider, st, since, now, seenFiles, rows, rowProvider, &local); err != nil {
+								local.LocalError = "Some Local Logs Could Not Be Read"
+							}
+						}
+					}
+				}
+			}
+			locals[provider] = local
+			continue
+		}
 		root := usageRoot(m.home, provider)
+		if root == "" {
+			locals[provider] = local
+			continue
+		}
 		folders := []string{"sessions", "archived_sessions"}
 		if provider == "claude" {
 			folders = []string{"projects"}
@@ -328,9 +391,16 @@ func (u *UsageTotals) add(row usageRow, provider string) {
 	u.Output += t.Output
 	u.Tokens += t.Input + t.Output
 	u.Requests++
-	if cost, ok := estimateUsageCost(provider, row.Model, row.Tier, t); ok {
-		u.cost += cost
+	if row.HasCost {
+		u.cost += row.Cost
 		u.priced++
+	} else if provider != "grok" {
+		if cost, ok := estimateUsageCost(provider, row.Model, row.Tier, t); ok {
+			u.cost += cost
+			u.priced++
+		} else {
+			u.Unpriced += t.Input + t.Output
+		}
 	} else {
 		u.Unpriced += t.Input + t.Output
 	}
@@ -423,7 +493,325 @@ func boundedUsageLine(reader *bufio.Reader) ([]byte, bool, error) {
 		return line, oversized, err
 	}
 }
+
+const (
+	grokCostTicksPerUSD  = 1e10
+	grokUsageMaxFileSize = 16 << 20
+)
+
+type grokModelUsageEntry struct {
+	InputTokens              float64 `json:"inputTokens"`
+	CachedReadTokens         float64 `json:"cachedReadTokens"`
+	CacheReadInputTokens     float64 `json:"cacheReadInputTokens"`
+	CacheCreationTokens      float64 `json:"cacheCreationTokens"`
+	CacheCreationInputTokens float64 `json:"cacheCreationInputTokens"`
+	OutputTokens             float64 `json:"outputTokens"`
+	ReasoningTokens          float64 `json:"reasoningTokens"`
+	TotalTokens              float64 `json:"totalTokens"`
+	CostUsdTicks             float64 `json:"costUsdTicks"`
+	CostUSD                  float64 `json:"costUSD"`
+	CostUsd                  float64 `json:"costUsd"`
+	ModelCalls               float64 `json:"modelCalls"`
+}
+
+type grokUsageSummary struct {
+	InputTokens              float64                        `json:"inputTokens"`
+	CachedReadTokens         float64                        `json:"cachedReadTokens"`
+	CacheReadInputTokens     float64                        `json:"cacheReadInputTokens"`
+	CacheCreationTokens      float64                        `json:"cacheCreationTokens"`
+	CacheCreationInputTokens float64                        `json:"cacheCreationInputTokens"`
+	OutputTokens             float64                        `json:"outputTokens"`
+	ReasoningTokens          float64                        `json:"reasoningTokens"`
+	TotalTokens              float64                        `json:"totalTokens"`
+	CostUsdTicks             float64                        `json:"costUsdTicks"`
+	CostUSD                  float64                        `json:"costUSD"`
+	CostUsd                  float64                        `json:"costUsd"`
+	ModelCalls               float64                        `json:"modelCalls"`
+	TurnCount                float64                        `json:"turnCount"`
+	ModelID                  string                         `json:"modelId"`
+	PrimaryModelID           string                         `json:"primaryModelId"`
+	ModelUsage               map[string]grokModelUsageEntry `json:"modelUsage"`
+}
+
+type grokUsageTurn struct {
+	TurnNumber               *int64                         `json:"turnNumber"`
+	TurnID                   string                         `json:"turnId"`
+	EndedAt                  json.RawMessage                `json:"endedAt"`
+	InputTokens              float64                        `json:"inputTokens"`
+	CachedReadTokens         float64                        `json:"cachedReadTokens"`
+	CacheReadInputTokens     float64                        `json:"cacheReadInputTokens"`
+	CacheCreationTokens      float64                        `json:"cacheCreationTokens"`
+	CacheCreationInputTokens float64                        `json:"cacheCreationInputTokens"`
+	OutputTokens             float64                        `json:"outputTokens"`
+	ReasoningTokens          float64                        `json:"reasoningTokens"`
+	TotalTokens              float64                        `json:"totalTokens"`
+	CostUsdTicks             float64                        `json:"costUsdTicks"`
+	CostUSD                  float64                        `json:"costUSD"`
+	CostUsd                  float64                        `json:"costUsd"`
+	ModelCalls               float64                        `json:"modelCalls"`
+	ModelID                  string                         `json:"modelId"`
+	PrimaryModelID           string                         `json:"primaryModelId"`
+	ModelUsage               map[string]grokModelUsageEntry `json:"modelUsage"`
+}
+
+type grokUsageDocument struct {
+	SessionID string            `json:"sessionId"`
+	UpdatedAt json.RawMessage   `json:"updatedAt"`
+	Session   *grokUsageSummary `json:"session"`
+	Turns     []grokUsageTurn   `json:"turns"`
+}
+
+func absInt64(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+func firstNonEmptyUsageString(values ...string) string {
+	for _, v := range values {
+		if trimmed := strings.TrimSpace(v); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func parseGrokTimestamp(raw json.RawMessage) time.Time {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return time.Time{}
+	}
+	var s string
+	if json.Unmarshal(trimmed, &s) == nil {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return time.Time{}
+		}
+		if ts, err := time.Parse(time.RFC3339Nano, s); err == nil && !ts.IsZero() && ts.Unix() > 0 {
+			return ts
+		}
+		return time.Time{}
+	}
+	var n float64
+	if json.Unmarshal(trimmed, &n) == nil && !math.IsNaN(n) && !math.IsInf(n, 0) && n > 0 {
+		if n >= 1e12 {
+			return time.UnixMilli(int64(n))
+		}
+		return time.Unix(int64(n), 0)
+	}
+	return time.Time{}
+}
+
+func parseGrokCost(ticks, usd, usdAlt float64) (float64, bool) {
+	if !math.IsNaN(ticks) && !math.IsInf(ticks, 0) && ticks > 0 && ticks <= 9e15 {
+		return ticks / grokCostTicksPerUSD, true
+	}
+	if !math.IsNaN(usd) && !math.IsInf(usd, 0) && usd > 0 && usd <= 1e6 {
+		return usd, true
+	}
+	if !math.IsNaN(usdAlt) && !math.IsInf(usdAlt, 0) && usdAlt > 0 && usdAlt <= 1e6 {
+		return usdAlt, true
+	}
+	return 0, false
+}
+
+func parseGrokUsageTokens(input, cachedRead, cacheReadAlt, cacheCreate, cacheCreateAlt, output, reasoning, total float64) usageTokens {
+	rawIn := clampTokenFloat(input)
+	usedAltCache := false
+	cached := clampTokenFloat(cachedRead)
+	if cached == 0 && cacheReadAlt > 0 {
+		cached = clampTokenFloat(cacheReadAlt)
+		usedAltCache = cached > 0
+	}
+	write := clampTokenFloat(cacheCreate)
+	if write == 0 && cacheCreateAlt > 0 {
+		write = clampTokenFloat(cacheCreateAlt)
+		usedAltCache = usedAltCache || write > 0
+	}
+	out := clampTokenFloat(output)
+	reason := clampTokenFloat(reasoning)
+	tot := clampTokenFloat(total)
+
+	fullIn := rawIn
+	if cached+write > 0 {
+		if tot > 0 {
+			diffUncached := absInt64((rawIn + cached + write + out) - tot)
+			diffFull := absInt64((rawIn + out) - tot)
+			if diffUncached < diffFull {
+				fullIn = rawIn + cached + write
+			}
+		} else if usedAltCache || rawIn < cached+write {
+			fullIn = rawIn + cached + write
+		}
+	}
+	if fullIn == 0 && out == 0 && tot > 0 {
+		fullIn = tot
+	}
+	cached = min(cached, fullIn)
+	write = min(write, fullIn-cached)
+	return usageTokens{
+		Input:     fullIn,
+		Cached:    cached,
+		Write:     write,
+		Output:    out,
+		Reasoning: reason,
+	}
+}
+
+func appendGrokUsageRows(
+	dst *[]usageRow,
+	keyPrefix string,
+	at time.Time,
+	explicitModel, fallbackModel string,
+	t usageTokens,
+	cost float64,
+	hasCost bool,
+	modelUsage map[string]grokModelUsageEntry,
+) {
+	if at.IsZero() {
+		return
+	}
+	if len(modelUsage) == 1 {
+		for rawModel, entry := range modelUsage {
+			model := firstNonEmptyUsageString(explicitModel, rawModel, fallbackModel)
+			if t.Input+t.Output == 0 {
+				t = parseGrokUsageTokens(
+					entry.InputTokens,
+					entry.CachedReadTokens, entry.CacheReadInputTokens,
+					entry.CacheCreationTokens, entry.CacheCreationInputTokens,
+					entry.OutputTokens, entry.ReasoningTokens, entry.TotalTokens,
+				)
+			}
+			if !hasCost {
+				cost, hasCost = parseGrokCost(entry.CostUsdTicks, entry.CostUSD, entry.CostUsd)
+			}
+			if t.Input+t.Output > 0 {
+				*dst = append(*dst, usageRow{Key: keyPrefix, At: at, Model: model, Tokens: t, Cost: cost, HasCost: hasCost})
+			}
+			return
+		}
+	}
+	if len(modelUsage) > 1 {
+		keys := make([]string, 0, len(modelUsage))
+		for k := range modelUsage {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		cands := make([]usageRow, 0, len(keys))
+		anyModelCost := false
+		for _, rawModel := range keys {
+			entry := modelUsage[rawModel]
+			mt := parseGrokUsageTokens(
+				entry.InputTokens,
+				entry.CachedReadTokens, entry.CacheReadInputTokens,
+				entry.CacheCreationTokens, entry.CacheCreationInputTokens,
+				entry.OutputTokens, entry.ReasoningTokens, entry.TotalTokens,
+			)
+			if mt.Input+mt.Output == 0 {
+				continue
+			}
+			mCost, mHasCost := parseGrokCost(entry.CostUsdTicks, entry.CostUSD, entry.CostUsd)
+			if mHasCost {
+				anyModelCost = true
+			}
+			model := strings.TrimSpace(rawModel)
+			cands = append(cands, usageRow{
+				Key:     keyPrefix + ":" + model,
+				At:      at,
+				Model:   model,
+				Tokens:  mt,
+				Cost:    mCost,
+				HasCost: mHasCost,
+			})
+		}
+		if len(cands) > 0 && (anyModelCost || !hasCost) {
+			*dst = append(*dst, cands...)
+			return
+		}
+	}
+	if t.Input+t.Output > 0 {
+		*dst = append(*dst, usageRow{
+			Key:     keyPrefix,
+			At:      at,
+			Model:   firstNonEmptyUsageString(explicitModel, fallbackModel),
+			Tokens:  t,
+			Cost:    cost,
+			HasCost: hasCost,
+		})
+	}
+}
+
+func parseGrokUsageFile(path string) ([]usageRow, int, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	if st.Size() > grokUsageMaxFileSize {
+		return nil, 1, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	var doc grokUsageDocument
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, 1, nil
+	}
+	sessionID := strings.TrimSpace(doc.SessionID)
+	if sessionID == "" {
+		sessionID = filepath.Base(filepath.Dir(path))
+	}
+	updatedAt := parseGrokTimestamp(doc.UpdatedAt)
+	sessionModel := ""
+	if doc.Session != nil {
+		sessionModel = firstNonEmptyUsageString(doc.Session.ModelID, doc.Session.PrimaryModelID)
+	}
+	result := []usageRow{}
+	if len(doc.Turns) > 0 {
+		for idx, turn := range doc.Turns {
+			at := parseGrokTimestamp(turn.EndedAt)
+			if at.IsZero() {
+				at = updatedAt
+			}
+			var key string
+			switch {
+			case turn.TurnNumber != nil:
+				key = fmt.Sprintf("turn:%s:%d", sessionID, *turn.TurnNumber)
+			case strings.TrimSpace(turn.TurnID) != "":
+				key = fmt.Sprintf("turn:%s:%s", sessionID, strings.TrimSpace(turn.TurnID))
+			default:
+				key = fmt.Sprintf("turn:%s:idx:%d:%d", sessionID, idx, at.UnixNano())
+			}
+			turnModel := firstNonEmptyUsageString(turn.ModelID, turn.PrimaryModelID)
+			tokens := parseGrokUsageTokens(
+				turn.InputTokens,
+				turn.CachedReadTokens, turn.CacheReadInputTokens,
+				turn.CacheCreationTokens, turn.CacheCreationInputTokens,
+				turn.OutputTokens, turn.ReasoningTokens, turn.TotalTokens,
+			)
+			cost, hasCost := parseGrokCost(turn.CostUsdTicks, turn.CostUSD, turn.CostUsd)
+			appendGrokUsageRows(&result, key, at, turnModel, sessionModel, tokens, cost, hasCost, turn.ModelUsage)
+		}
+		return result, 0, nil
+	}
+	if doc.Session != nil {
+		tokens := parseGrokUsageTokens(
+			doc.Session.InputTokens,
+			doc.Session.CachedReadTokens, doc.Session.CacheReadInputTokens,
+			doc.Session.CacheCreationTokens, doc.Session.CacheCreationInputTokens,
+			doc.Session.OutputTokens, doc.Session.ReasoningTokens, doc.Session.TotalTokens,
+		)
+		cost, hasCost := parseGrokCost(doc.Session.CostUsdTicks, doc.Session.CostUSD, doc.Session.CostUsd)
+		appendGrokUsageRows(&result, "session:"+sessionID, updatedAt, sessionModel, "", tokens, cost, hasCost, doc.Session.ModelUsage)
+	}
+	return result, 0, nil
+}
+
 func parseUsageFile(path, provider string) ([]usageRow, int, error) {
+	if provider == "grok" {
+		return parseGrokUsageFile(path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, 0, err
