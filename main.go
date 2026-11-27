@@ -343,11 +343,14 @@ func main() {
 		url += "&pin=" + pin
 		app += "&pin=" + pin
 	}
+	if fullApp, err := (pairingInfo{Host: hostName(), URLs: hub.addresses(), Pin: pin}).link(token); err == nil && fullApp != "" {
+		app = fullApp
+	}
 	fmt.Printf("\nOpen on your phone:\n  %s\n\nPair the Android app:\n  %s\n\n", url, app)
 	if !*noQR {
-		qrURL := url
-		if *secure {
-			qrURL = app
+		qrURL := app
+		if qrURL == "" {
+			qrURL = url
 		}
 		qrterminal.GenerateHalfBlock(qrURL, qrterminal.L, os.Stdout)
 	}

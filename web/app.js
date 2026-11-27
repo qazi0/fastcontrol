@@ -18,6 +18,7 @@ const I = {
   down: svg('<path d="M6 9l6 6 6-6"/>', "sm chev"),
   folder: svg('<path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>', "folder"),
   term: svg('<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M7 9l3 3-3 3M12 15h5"/>', "sm"),
+  qr: svg('<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM19 14h2v2h-2zM14 19h2v2h-2zM18 18h3v3h-3z"/>', "sm"),
   think: svg('<path d="M12 3a6 6 0 00-3.5 10.9V17h7v-3.1A6 6 0 0012 3zM9.5 21h5"/>', "sm"),
   edit: svg('<path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4"/>', "sm"),
   globe: svg('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/>', "sm"),
@@ -860,7 +861,7 @@ function renderHome() {
   const list = $("home-list");
   const threads = allThreads();
   if (!S.servers.length) {
-    list.innerHTML = `<div class="empty"><b>Pair a Computer</b>Run fastcontrol on your computer and open the link it prints, or tap Add Computer.</div>`;
+    list.innerHTML = `<div class="empty"><b>Pair A Computer</b>Run fastcontrol on your computer, then scan its pairing QR code or tap Add Computer.${Native?.scanPairingQr ? `<div class="empty-actions"><button type="button" class="btn primary scan-qr-btn" data-scan-qr>${I.qr}<span>Scan QR Code</span></button></div>` : ""}</div>`;
     return;
   }
   const q = S.query;
@@ -904,6 +905,10 @@ function renderHome() {
   list.innerHTML = h;
 }
 $("home-list").addEventListener("click", (e) => {
+  if (e.target.closest("[data-scan-qr]")) {
+    try { Native?.scanPairingQr?.(); } catch {}
+    return;
+  }
   const native=e.target.closest('[data-native-group]');
   if(native){if(typeof pushNavSnapshot==="function")pushNavSnapshot();openNativeGroup(native.dataset.server,native.dataset.nativeGroup,true);return;}
   const r = e.target.closest("[data-id]");
@@ -3493,7 +3498,9 @@ const SHEETS = {
         }).join("") +
         notifyControls +
         (Native?.checkAppUpdates ? mi('app-updates',I.download,'Check For Updates','fastcontrol '+esc(Native.appVersion()),I.chev) : '') +
-        `<h3>Add A Mac</h3><div class="field"><input id="sv-url" placeholder="Pairing Link Or http://100.64.0.2:8787" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="url"></div>` +
+        `<h3>Add A Computer</h3>` +
+        (Native?.scanPairingQr ? `<div class="field"><button type="button" class="btn primary scan-qr-btn scan-qr-block" data-x="scan-qr">${I.qr}<span>Scan QR Code</span></button></div>` : "") +
+        `<div class="field"><input id="sv-url" placeholder="Pairing Link Or http://100.64.0.2:8787" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="url"></div>` +
         `<div class="field"><input id="sv-token" placeholder="Token" autocomplete="off" autocapitalize="off" spellcheck="false"></div>` +
         `<div class="field"><input id="sv-name" placeholder="Name (Optional)" autocomplete="off"></div>` +
         `<div class="sheet-actions"><span class="grow"></span><button class="btn primary" data-x="add">Add Computer</button></div>`;
@@ -3533,9 +3540,14 @@ const SHEETS = {
         if (item) toast(`${item.title} ${next[key] ? "On" : "Off"}`);
         return;
       }
-      const x = e.target.dataset.x;
+      const xBtn = e.target.closest("[data-x]");
+      const x = xBtn?.dataset.x;
+      if (x === "scan-qr") {
+        try { Native?.scanPairingQr?.(); } catch {}
+        return;
+      }
       if (x === "notif") {
-        const on = !e.target.classList.contains("on");
+        const on = !xBtn.classList.contains("on");
         try { Native.setNotifications(on); } catch {}
         draw();
         toast(on ? "Notifications On" : "Notifications Off");
@@ -3550,11 +3562,11 @@ const SHEETS = {
         url = url.replace(/\/+$/, "");
         if (url.startsWith("http://") && !/:\d+$/.test(url)) url += ":8787";
         if(pin && (!Native?.prepareRelayPairing || !Native.prepareRelayPairing(url,token,pin))){toast('Open this secure pairing link in the latest Android app');return;}
-        e.target.disabled = true; e.target.textContent = "Checking";
+        xBtn.disabled = true; xBtn.textContent = "Checking";
         let ok = false, msg = "";
         try { const r = await fetch(url + "/auth?t=" + encodeURIComponent(token)); ok = r.ok; msg = r.status === 401 ? "Wrong Token" : "Relay Error " + r.status; }
         catch { msg = "Cannot Reach " + url; }
-        e.target.disabled = false; e.target.textContent = "Add Computer";
+        xBtn.disabled = false; xBtn.textContent = "Add Computer";
         if (!ok) { Native?.clearRelayPairing?.();toast(msg); return; }
         const s = addServer({ url, token, name, custom: !!name, pin });
         Native?.clearRelayPairing?.();
@@ -3566,6 +3578,33 @@ const SHEETS = {
 };
 
 // ------------------------------------------------------- Android intents --
+
+window.onQrScanResult = function (result) {
+  if (!result || typeof result !== "object") return;
+  if (!result.ok) {
+    if (!result.cancelled && result.message) toast(nice(result.message));
+    return;
+  }
+  const url = String(result.url || "").trim();
+  const token = String(result.token || "").trim();
+  if (!url || !token) {
+    toast("Invalid Pairing QR Code");
+    return;
+  }
+  try {
+    const name = String(result.name || "").trim();
+    const pin = String(result.pin || "").trim();
+    const alts = Array.isArray(result.alts) ? result.alts : [];
+    const s = addServer({ url, token, name, custom: !!name, pin, alts });
+    S.machine = s.id;
+    store.set("machine", s.id);
+    if (S.sheet === "macs") closeSheet();
+    renderHome();
+    toast("Paired With " + (s.name || hostOf(s.url)));
+  } catch (err) {
+    toast(nice(err?.message || "Invalid Pairing QR Code"));
+  }
+};
 
 window.onAndroidIntent = function () {
   if (!Native) return;
