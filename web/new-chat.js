@@ -17,27 +17,46 @@ function newChatModelChoices(connection) {
   return [{slug:"",name:label && label !== "Default" ? `Default (${label})` : "Default",description:""}, ...models.filter(model => model.slug !== "default").map(model => ({...model,name:sessionModelLabel(model)}))];
 }
 function newChatModes(connection, provider) {
-  if (provider !== "antigravity") return [];
-  if (typeof antigravityPermsFor === "function") return antigravityPermsFor(null, connection?.models);
-  const modes = Array.isArray(connection?.models?.modes) ? connection.models.modes : [];
-  const modeIds = new Set(modes.map(x => typeof x === "string" ? x : x?.id).filter(Boolean));
-  const allowFull = Boolean(connection?.models?.allowFullAccess || modeIds.has("full-access"));
-  const baseModes = [
-    { id: "default", name: "Default", d: "Asks Before Edits And Commands" },
-    { id: "accept-edits", name: "Accept Edits", d: "Approves File Edits Automatically" },
-    { id: "auto", name: "Auto", d: "Runs Approved Actions Automatically", warn: true },
-    { id: "plan", name: "Plan", d: "Plans Without Making Edits" },
-  ];
-  if (allowFull) baseModes.push({ id: "full-access", name: "Full Access", d: "Skips All Permission Prompts", warn: true });
-  return baseModes.map(mode => {
-    const live = modes.find(x => x && typeof x === "object" && x.id === mode.id);
-    return live?.description ? { ...mode, d: live.description } : mode;
-  });
+  if (provider === "antigravity") {
+    if (typeof antigravityPermsFor === "function") return antigravityPermsFor(null, connection?.models);
+    const modes = Array.isArray(connection?.models?.modes) ? connection.models.modes : [];
+    const modeIds = new Set(modes.map(x => typeof x === "string" ? x : x?.id).filter(Boolean));
+    const allowFull = Boolean(connection?.models?.allowFullAccess || modeIds.has("full-access"));
+    const baseModes = [
+      { id: "default", name: "Default", d: "Asks Before Edits And Commands" },
+      { id: "accept-edits", name: "Accept Edits", d: "Approves File Edits Automatically" },
+      { id: "auto", name: "Auto", d: "Runs Approved Actions Automatically", warn: true },
+      { id: "plan", name: "Plan", d: "Plans Without Making Edits" },
+    ];
+    if (allowFull) baseModes.push({ id: "full-access", name: "Full Access", d: "Skips All Permission Prompts", warn: true });
+    return baseModes.map(mode => {
+      const live = modes.find(x => x && typeof x === "object" && x.id === mode.id);
+      return live?.description ? { ...mode, d: live.description } : mode;
+    });
+  }
+  if (provider === "grok") {
+    if (typeof grokPermsFor === "function") return grokPermsFor(null, connection?.models);
+    const modes = Array.isArray(connection?.models?.modes) ? connection.models.modes : [];
+    const modeIds = new Set(modes.map(x => typeof x === "string" ? x : x?.id).filter(Boolean));
+    const allowFull = Boolean(connection?.models?.allowFullAccess || modeIds.has("bypassPermissions"));
+    const baseModes = [
+      { id: "default", name: "Default", d: "Asks Before Edits And Commands" },
+      { id: "acceptEdits", name: "Accept Edits", d: "Approves File Edits Automatically" },
+      { id: "auto", name: "Auto", d: "Runs Approved Actions Automatically", warn: true },
+      { id: "plan", name: "Plan", d: "Plans Without Making Edits" },
+    ];
+    if (allowFull) baseModes.push({ id: "bypassPermissions", name: "Full Access", d: "Skips All Permission Prompts", warn: true });
+    return baseModes.map(mode => {
+      const live = modes.find(x => x && typeof x === "object" && x.id === mode.id);
+      return live?.description ? { ...mode, d: live.description } : mode;
+    });
+  }
+  return [];
 }
 
 SHEETS.new = (sh, opts = {}) => {
   const provider = S.provider;
-  const agentTitle = provider === "claude" ? "Claude" : provider === "antigravity" ? "Antigravity" : "Codex";
+  const agentTitle = provider === "claude" ? "Claude" : provider === "antigravity" ? "Antigravity" : provider === "grok" ? "Grok" : "Codex";
   const d = S.newDraft || (S.newDraft = {cwd:"",text:"",model:"",effort:"",mode:"",sid:""});
   if(d.model === "default")d.model="";
   if (opts.cwd) d.cwd = opts.cwd;
@@ -67,7 +86,7 @@ SHEETS.new = (sh, opts = {}) => {
     const projects = (c.projects || projectsOf(c.threads,false)).slice(0,30);
     const models = c.models?.models || [], choices = newChatModelChoices(c), model = newChatModel(c,d);
     const selected = choices.find(choice => choice.slug === d.model);
-    const efforts = model?.efforts || (provider === "antigravity" && models.length ? ["low","medium","high","xhigh"] : []), levels = ["",...efforts];
+    const efforts = model?.efforts || (provider === "antigravity" && models.length ? ["low","medium","high","xhigh"] : provider === "grok" && models.length ? ["minimal","low","medium","high","xhigh"] : []), levels = ["",...efforts];
     if (d.effort && model && !efforts.includes(d.effort)) d.effort = "";
     const level = Math.max(0,levels.indexOf(d.effort));
     const label = value => value ? effortName(value) : "Default";
@@ -142,7 +161,7 @@ SHEETS.new = (sh, opts = {}) => {
       images:target.list.filter(file => file.kind !== "file").map(file => file.path),
       files:target.list.filter(file => file.kind === "file").map(file => file.path)
     };
-    if (provider === "antigravity") payload.permissionMode = d.mode || c?.models?.default?.mode || "default";
+    if (provider === "antigravity" || provider === "grok") payload.permissionMode = d.mode || c?.models?.default?.mode || "default";
     const result = await c.call(payload,60000);
     d.starting = false;
     if (!result.ok) {toast(nice(result.msg));if(S.newDraft===d && S.sheet==='new' && S.provider===provider)S.redraw?.();return;}

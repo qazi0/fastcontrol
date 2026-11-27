@@ -47,16 +47,16 @@ const I = {
 };
 
 // Agent logo paths from Simple Icons (CC0); trademarks remain with their owners.
-const AGENT_LOGOS = {"openai": "M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z", "claude": "m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z", "antigravity": "M12 2.5C9.4 7.4 6.2 13.8 3.6 20.2c-.3.8.5 1.5 1.3 1.1 2.7-1.4 4.8-2.2 7.1-2.2s4.4.8 7.1 2.2c.8.4 1.6-.3 1.3-1.1C17.8 13.8 14.6 7.4 12 2.5zm0 5.1l2.7 7.2Q12 13.7 9.3 14.8L12 7.6z"};
-const PROVIDERS = ["codex", "claude", "antigravity"];
+const AGENT_LOGOS = {"openai": "M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z", "claude": "m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z", "antigravity": "M12 2.5C9.4 7.4 6.2 13.8 3.6 20.2c-.3.8.5 1.5 1.3 1.1 2.7-1.4 4.8-2.2 7.1-2.2s4.4.8 7.1 2.2c.8.4 1.6-.3 1.3-1.1C17.8 13.8 14.6 7.4 12 2.5zm0 5.1l2.7 7.2Q12 13.7 9.3 14.8L12 7.6z", "grok": "M19.2 10.2A8.4 8.4 0 1 1 13.8 4.8L13 7.4A5.7 5.7 0 1 0 16.6 11L19.2 10.2ZM2.5 19.6L19.6 2.5 21.5 4.4 4.4 21.5Z"};
+const PROVIDERS = ["codex", "claude", "antigravity", "grok"];
 function providerName(provider = S.provider) {
-  return provider === "claude" ? "Claude Code" : provider === "antigravity" ? "Antigravity" : "Codex";
+  return provider === "claude" ? "Claude Code" : provider === "antigravity" ? "Antigravity" : provider === "grok" ? "Grok" : "Codex";
 }
 function providerShortName(provider = S.provider) {
-  return provider === "claude" ? "Claude" : provider === "antigravity" ? "Antigravity" : "Codex";
+  return provider === "claude" ? "Claude" : provider === "antigravity" ? "Antigravity" : provider === "grok" ? "Grok" : "Codex";
 }
 function providerLogoKey(provider = S.provider) {
-  return provider === "claude" ? "claude" : provider === "antigravity" ? "antigravity" : "openai";
+  return provider === "claude" ? "claude" : provider === "antigravity" ? "antigravity" : provider === "grok" ? "grok" : "openai";
 }
 function providerLogoSVG(provider = S.provider, cls = "agent-ico") {
   return `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${AGENT_LOGOS[providerLogoKey(provider)]}"/></svg>`;
@@ -290,7 +290,7 @@ class Conn {
     this.dead = false;
     this.candidates = []; this.lastSeen = server.lastSeen || 0; this.heartbeatSupported = false;this.recoveryPeers=[];
     this.byProvider = {};
-    this.capabilities = { codex: true, claude: false, antigravity: false };
+    this.capabilities = { codex: true, claude: false, antigravity: false, grok: false };
     this.threads = store.get("threads:" + server.id + ":" + S.provider, []);
     this.connect(true);
   }
@@ -428,10 +428,11 @@ class Conn {
         let dirty=false;
         if(m.platform && this.s.platform!==m.platform){this.s.platform=m.platform;dirty=true;}
         this.desktop = m.desktop;
-        const caps = m.providers && typeof m.providers === "object" ? m.providers : { codex: true, claude: false, antigravity: false };
-        this.capabilities = { codex: caps.codex !== false, claude: !!caps.claude, antigravity: !!caps.antigravity };
+        const caps = m.providers && typeof m.providers === "object" ? m.providers : { codex: true, claude: false, antigravity: false, grok: false };
+        this.capabilities = { codex: caps.codex !== false, claude: !!caps.claude, antigravity: !!caps.antigravity, grok: !!caps.grok };
         if (typeof syncProviderButtons === "function") syncProviderButtons();
         if (S.sheet === "providers") S.redraw?.();
+        if (S.view === "thread" && S.sid === this.s.id && S.meta && typeof renderMeta === "function") renderMeta();
         if (Array.isArray(m.addrs)) {
           const merged = mergeRelayAddresses(this.s, m.addrs);
           if (JSON.stringify(merged) !== JSON.stringify(this.s.alts || [])) { this.s.alts = merged; dirty=true; }
@@ -1691,8 +1692,16 @@ function contextMetrics(m) {
 }
 function wakeActionLabel(m, provider = S.provider) {
   if (provider === "claude") return m?.mode === "external" ? "Take Over" : "Resume";
-  if (provider === "antigravity") return m?.mode === "external" ? "Take Over" : "Resume In Antigravity";
+  if (provider === "antigravity") return "Reconnect";
+  if (provider === "grok") return m?.mode === "external" ? "Take Over" : "Reconnect";
   return "Open On Computer";
+}
+function canWake(m, provider = S.provider) {
+  if (!m || m.readOnly) return false;
+  const c = conn();
+  if (provider === "antigravity") return !!c?.capabilities?.antigravity;
+  if (provider === "grok") return !!c?.capabilities?.grok;
+  return true;
 }
 let renderedMeta = "";
 function renderMeta() {
@@ -1701,7 +1710,7 @@ function renderMeta() {
   window.refreshThreadAgents?.();
   renderStatus();renderCards();
   if (typeof renderSlashMenu === "function" && slashState?.open) renderSlashMenu();
-  const key=JSON.stringify([S.sid,S.id,S.provider,m,conn()?.state,serverName(S.sid)]);
+  const key=JSON.stringify([S.sid,S.id,S.provider,m,conn()?.state,conn()?.capabilities?.[S.provider],serverName(S.sid)]);
   if(key===renderedMeta && $('t-ring').childNodes.length)return;
   renderedMeta=key;
   renderThreadHeader();
@@ -1710,7 +1719,7 @@ function renderMeta() {
   const f = known ? Math.max(0, Math.min(1, used / max)) : 0, c = 2 * Math.PI * 17;
   ring.classList.toggle("hot", f > 0.8);
   ring.title = known ? `Context ${Math.round(f * 100)}% Used` : "Context Usage Unavailable";
-  const ringProvider = S.provider === "claude" ? "Claude Code" : S.provider === "antigravity" ? "Antigravity" : "Codex (OpenAI)";
+  const ringProvider = S.provider === "claude" ? "Claude Code" : S.provider === "antigravity" ? "Antigravity" : S.provider === "grok" ? "Grok (xAI)" : "Codex (OpenAI)";
   ring.setAttribute("aria-label", ringProvider + ", " + ring.title + ", Show Details");
   ring.innerHTML = `<svg viewBox="0 0 40 40"><g transform="rotate(-90 20 20)"><circle class="bg" cx="20" cy="20" r="17"/>${known ? `<circle class="fg" cx="20" cy="20" r="17" stroke-dasharray="${(f * c).toFixed(1)} ${c.toFixed(1)}"/>` : ""}</g><g class="agent-logo" transform="translate(10 10) scale(.833333)"><path d="${AGENT_LOGOS[providerLogoKey(S.provider)]}"/></g></svg>`;
   const b = $("banner");
@@ -1722,15 +1731,22 @@ function renderMeta() {
   } else if(m.readOnly) {
     b.innerHTML='<span>Read Only Subagent</span>';b.classList.remove('hidden');
   } else if (m.mode !== "live" && !(S.provider === "codex" && m.running && !m.readOnly)) {
-    const wakeText = wakeActionLabel(m, S.provider);
-    b.innerHTML = `<span>${m.mode==='external'?'Managed On Computer':'Saved Chat'}</span><button class="btn" id="wake">${esc(wakeText)}</button>`;
-    b.classList.remove("hidden");
-    $("wake").onclick = async (e) => {
-      e.target.disabled = true; e.target.textContent = S.provider === "antigravity" || S.provider === "claude" ? "Resuming" : "Opening";
-      const a = await conn().call({ op: "wake", id: S.id }, 20000);
-      if (!a.ok) toast(nice(a.msg));
-      e.target.disabled = false; e.target.textContent = wakeText;
-    };
+    const label = m.mode === "external" ? "Managed On Computer" : "Saved Chat";
+    if (canWake(m, S.provider)) {
+      const wakeText = wakeActionLabel(m, S.provider);
+      b.innerHTML = `<span>${label}</span><button class="btn" id="wake">${esc(wakeText)}</button>`;
+      b.classList.remove("hidden");
+      $("wake").onclick = async (e) => {
+        e.target.disabled = true;
+        e.target.textContent = S.provider === "antigravity" || (S.provider === "grok" && m.mode !== "external") ? "Reconnecting" : S.provider === "claude" || S.provider === "grok" ? "Resuming" : "Opening";
+        const a = await conn().call({ op: "wake", id: S.id }, 20000);
+        if (!a.ok) toast(nice(a.msg));
+        e.target.disabled = false; e.target.textContent = wakeText;
+      };
+    } else {
+      b.innerHTML = `<span>${label}</span>`;
+      b.classList.remove("hidden");
+    }
   } else b.classList.add("hidden");
   const earlier = $("earlier");
   if (earlier && !m.hasOlder) earlier.remove();
@@ -1770,11 +1786,15 @@ function titleCaseLabel(value) {
 }
 function optionDecision(opt) {
   const kind = String(opt?.kind || "").toLowerCase();
+  const id = String(opt?.id || "").toLowerCase();
   if (kind.includes("reject") || kind.includes("deny") || kind === "decline" || kind === "cancel") return "decline";
   if (kind.includes("always") || kind.includes("session")) return "acceptForSession";
+  if (kind) return "accept";
+  if (id.includes("reject") || id.includes("deny") || id.includes("decline") || id.includes("cancel") || id === "no") return "decline";
+  if (id.includes("always") || id.includes("session") || id.includes("bypass") || id.includes("yolo")) return "acceptForSession";
   return "accept";
 }
-function permissionButtonsHTML(q) {
+function permissionButtonsHTML(q, isPlan = false) {
   if (Array.isArray(q.options) && q.options.length) {
     const allow = [], deny = [];
     for (const opt of q.options) {
@@ -1789,6 +1809,9 @@ function permissionButtonsHTML(q) {
     if (allow.length && deny.length) parts.push('<span class="grow"></span>');
     parts.push(...deny.map((item) => `<button class="btn danger" data-req="${esc(q.id)}" data-d="${esc(item.decision)}" data-opt="${esc(item.id)}">${esc(item.label)}</button>`));
     if (parts.length) return `<div class="btns">${parts.join("")}</div>`;
+  }
+  if (isPlan) {
+    return `<div class="btns"><button class="btn primary" data-req="${esc(q.id)}" data-d="accept">Approve Plan</button><span class="grow"></span><button class="btn danger" data-req="${esc(q.id)}" data-d="decline">Decline</button></div>`;
   }
   return `<div class="btns"><button class="btn primary" data-req="${esc(q.id)}" data-d="accept">Approve</button><button class="btn" data-req="${esc(q.id)}" data-d="acceptForSession">Always</button><span class="grow"></span><button class="btn danger" data-req="${esc(q.id)}" data-d="decline">Decline</button></div>`;
 }
@@ -1824,7 +1847,8 @@ function renderCards() {
   for (const q of m.requests || []) {
     const key = "r:" + q.id;
     const hasOptions = Array.isArray(q.options) && q.options.length > 0;
-    if (q.kind === "command" || q.kind === "file" || (q.kind !== "question" && hasOptions)) {
+    const isPlan = q.kind === "plan" || q.method === "x.ai/exit_plan_mode" || q.method === "_x.ai/exit_plan_mode";
+    if (q.kind === "command" || q.kind === "file" || isPlan || (q.kind !== "question" && hasOptions)) {
       const [cmd, ...why] = (q.body || "").split("\n\n");
       // A file request refers to the newest edit in the turn; show its diff.
       const edit = q.kind === "file" ? [...((S.turns[S.turns.length - 1] || {}).items || [])].reverse().find((i) => i && i.k === "file") : null;
@@ -1833,11 +1857,13 @@ function renderCards() {
         ? `${cmd ? `<pre>${esc(cmd)}</pre>` : ""}${why.length ? `<div class="why">${esc(why.join("\n\n"))}</div>` : ""}`
         : q.kind === "file"
           ? `${q.body ? `<div class="why">${esc(q.body)}</div>` : ""}${edit ? `<pre>${diffLines(edit.body || "")}</pre>` : ""}`
-          : (q.body ? `<pre>${esc(q.body)}</pre>` : "");
-      const body = detail + permissionButtonsHTML(q);
-      const defaultTitle = q.kind === "command" ? "Run Command" : q.kind === "file" ? "Apply Changes" + (files ? " To " + files : "") : "Permission Required";
+          : isPlan
+            ? (q.body ? `<div class="plan-preview md">${md(q.body)}</div>` : "")
+            : (q.body ? `<pre>${esc(q.body)}</pre>` : "");
+      const body = detail + permissionButtonsHTML(q, isPlan);
+      const defaultTitle = q.kind === "command" ? "Run Command" : q.kind === "file" ? "Apply Changes" + (files ? " To " + files : "") : isPlan ? "Review Plan" : "Permission Required";
       const title = q.kind === "command" || q.kind === "file" ? (hasOptions && q.title ? q.title : defaultTitle) : (q.title || defaultTitle);
-      const sub = q.kind === "command" ? firstLine(cmd) : q.kind === "file" ? files : firstLine(q.body || title);
+      const sub = q.kind === "command" ? firstLine(cmd) : q.kind === "file" ? files : isPlan ? (q.title || "Review Plan") : firstLine(q.body || title);
       h += cardHTML(key, title, sub, body);
     } else if (q.kind === "question") {
       const body = (q.questions || []).map((x, index) => {
@@ -1846,7 +1872,7 @@ function renderCards() {
         const multi = !!x.multiSelect && options.length > 0;
         const showInput = !!(x.freeText || x.other || !options.length);
         return `<section class="qq" data-q="${esc(x.id)}" data-question-key="${esc(qKey)}"${multi ? ' data-multi="1"' : ""} aria-label="${esc(x.header || "Question " + (index + 1))}">${x.header ? `<div class="q-h">${esc(x.header)}</div>` : ""}<div class="q md">${md(x.question || "")}</div>` +
-          (options.length ? `<div class="opts">${options.map((o, i) => optionHTML(o, x.descriptions?.[i], "data-pick", multi)).join("")}</div>` : "") +
+          (options.length ? `<div class="opts">${options.map((o, i) => { const optLabel = typeof o === "string" ? o : (o?.label || o?.name || String(o ?? "")); const optDesc = (typeof o === "object" && o?.description) || x.descriptions?.[i]; return optionHTML(optLabel, optDesc, "data-pick", multi); }).join("")}</div>` : "") +
           (showInput ? answerFieldHTML(qKey, x.secret) : "") + "</section>";
       }).join("") +
         `<div class="btns"><button class="btn primary" data-answer="${esc(q.id)}">Send Answer</button></div>`;
@@ -2008,11 +2034,27 @@ const ANTIGRAVITY_PERMS = [
   { id: "plan", icon: I.lock, name: "Plan", short: "Plan", d: "Plans Without Making Edits", set: { permissionMode: "plan" } },
   { id: "full-access", icon: I.rocket, name: "Full Access", short: "Full Access", d: "Skips All Permission Prompts", set: { permissionMode: "full-access" }, warn: true, optIn: true },
 ];
+const GROK_PERMS = [
+  { id: "default", icon: I.shield, name: "Default", short: "Default", d: "Asks Before Edits And Commands", set: { permissionMode: "default" } },
+  { id: "acceptEdits", icon: I.edit, name: "Accept Edits", short: "Accept Edits", d: "Approves File Edits Automatically", set: { permissionMode: "acceptEdits" } },
+  { id: "auto", icon: I.shieldok, name: "Auto", short: "Auto", d: "Runs Approved Actions Automatically", set: { permissionMode: "auto" }, warn: true },
+  { id: "plan", icon: I.lock, name: "Plan", short: "Plan", d: "Plans Without Making Edits", set: { permissionMode: "plan" } },
+  { id: "bypassPermissions", icon: I.rocket, name: "Full Access", short: "Full Access", d: "Skips All Permission Prompts", set: { permissionMode: "bypassPermissions" }, warn: true, optIn: true },
+];
 function antigravityPermsFor(meta = S.meta, modelsResp = conn()?.models) {
   const modes = Array.isArray(meta?.modes) ? meta.modes : Array.isArray(modelsResp?.modes) ? modelsResp.modes : null;
   const modeIds = modes ? new Set(modes.map((x) => (typeof x === "string" ? x : x?.id)).filter(Boolean)) : null;
   const allowFull = Boolean(meta?.allowFullAccess || modelsResp?.allowFullAccess || modeIds?.has("full-access") || meta?.permissionMode === "full-access");
   return ANTIGRAVITY_PERMS.filter((p) => !p.optIn || allowFull).map((p) => {
+    const live = modes?.find((x) => x && typeof x === "object" && x.id === p.id);
+    return live?.description ? { ...p, d: live.description } : p;
+  });
+}
+function grokPermsFor(meta = S.meta, modelsResp = conn()?.models) {
+  const modes = Array.isArray(meta?.modes) ? meta.modes : Array.isArray(modelsResp?.modes) ? modelsResp.modes : null;
+  const modeIds = modes ? new Set(modes.map((x) => (typeof x === "string" ? x : x?.id)).filter(Boolean)) : null;
+  const allowFull = Boolean(meta?.allowFullAccess || modelsResp?.allowFullAccess || modeIds?.has("bypassPermissions") || meta?.permissionMode === "bypassPermissions");
+  return GROK_PERMS.filter((p) => !p.optIn || allowFull).map((p) => {
     const live = modes?.find((x) => x && typeof x === "object" && x.id === p.id);
     return live?.description ? { ...p, d: live.description } : p;
   });
@@ -2023,6 +2065,11 @@ function permOf(m) {
     const list = antigravityPermsFor(m);
     const mode = m?.permissionMode || "default";
     return list.find((p) => p.id === mode) || ANTIGRAVITY_PERMS.find((p) => p.id === mode) || list[0];
+  }
+  if (S.provider === "grok") {
+    const list = grokPermsFor(m);
+    const mode = m?.permissionMode || "default";
+    return list.find((p) => p.id === mode) || GROK_PERMS.find((p) => p.id === mode) || list[0];
   }
   if (!m || !m.approval) return null;
   if (m.approval === "never" && m.sandbox === "dangerFullAccess") return PERMS[3];
@@ -2035,6 +2082,9 @@ function shortModel(slug) {
   const raw = String(slug || "");
   if (/^gpt-oss\b/i.test(raw)) {
     return raw.replace(/-/g, " ").replace(/\b(gpt|oss)\b/gi, (s) => s.toUpperCase()).replace(/\b(\d+)b\b/gi, "$1B").replace(/\b[a-z]/g, (c) => c.toUpperCase());
+  }
+  if (/^grok-/i.test(raw)) {
+    return raw.replace(/-build-(fast|mini|pro)\b/gi, "-$1").replace(/\b(\d+)-(\d+)(?=-|$)/g, "$1.$2").replace(/-/g, " ").replace(/\b[a-z]/g, (c) => c.toUpperCase());
   }
   return raw.replace(/^(gpt-|claude-)/i, "").replace(/(\d+)-(\d+)(?:-\d{8})?$/, "$1.$2").replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
@@ -2053,6 +2103,10 @@ function cap(s) { return String(s).replace(/(^|[\s-])\w/g, (c) => c.toUpperCase(
 function providerEfforts(mm, provider = S.provider) {
   if (provider === "antigravity") {
     const baseEfforts = mm ? (mm.efforts || []) : ["low", "medium", "high", "xhigh"];
+    return baseEfforts.length ? ["", ...baseEfforts.filter(Boolean)] : [];
+  }
+  if (provider === "grok") {
+    const baseEfforts = mm ? (mm.efforts || []) : ["minimal", "low", "medium", "high", "xhigh"];
     return baseEfforts.length ? ["", ...baseEfforts.filter(Boolean)] : [];
   }
   return mm ? (mm.efforts || []) : ["low", "medium", "high", "xhigh", "max", "ultra"];
@@ -2151,7 +2205,7 @@ function renderComposer() {
   const pc = $("perm-chip");
   pc.innerHTML = p ? p.icon : I.shield;
   pc.className = "tool-chip icon" + (p && (p.warn || p.id === "full" || p.id === "bypassPermissions") ? " warn" : "");
-  pc.setAttribute("aria-label", (S.provider === "antigravity" ? "Execution Mode: " : "Permissions: ") + (p ? p.name : "Unknown"));
+  pc.setAttribute("aria-label", (S.provider === "antigravity" || S.provider === "grok" ? "Execution Mode: " : "Permissions: ") + (p ? p.name : "Unknown"));
   const models = conn()?.models?.models || [];
   const mm = models.find((x) => x.slug === m.model || x.resolved === m.model);
   const modelText = m.model ? modelDisplayName(m.model, models) : "Model";
@@ -2159,10 +2213,11 @@ function renderComposer() {
   mc.innerHTML = `<b>${esc(modelText)}</b>${I.down}`;
   mc.title = modelText;
   const efforts = providerEfforts(mm, S.provider);
-  const effortVal = S.provider === "antigravity" ? (m.effort || "") : m.effort;
+  const hasDefaultEffort = S.provider === "antigravity" || S.provider === "grok";
+  const effortVal = hasDefaultEffort ? (m.effort || "") : m.effort;
   const lvl = Math.max(0, efforts.indexOf(effortVal));
   $("effort-btn").innerHTML = gauge(efforts.length > 1 ? lvl / (efforts.length - 1) : 1);
-  $("effort-btn").setAttribute("aria-label", "Intelligence: " + (m.effort ? effortName(m.effort) : S.provider === "antigravity" ? "Default" : "Unknown"));
+  $("effort-btn").setAttribute("aria-label", "Intelligence: " + (m.effort ? effortName(m.effort) : hasDefaultEffort ? "Default" : "Unknown"));
   if (!mm && conn() && !conn().models) conn().send({ op: "models" });
 }
 function autosize() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, innerHeight * 0.38) + "px"; }
@@ -2894,7 +2949,7 @@ const SHEETS = {
       (!m.readOnly ? mi("rename", I.edit, "Rename Chat") + mi("fork", I.copy, "Fork Chat") : "") +
       mi("diff", I.diff, "View Latest Changes") +
       mi("compact", I.squash, "Compact Context", known ? `${Math.round((used || 0) / max * 100)}% Used` : "") +
-      (m.mode !== "live" ? mi("wake", I.mac, wakeActionLabel(m, S.provider)) : "") +
+      (m.mode !== "live" && canWake(m, S.provider) ? mi("wake", I.mac, wakeActionLabel(m, S.provider)) : "") +
       mi("copy", I.copy, "Copy Thread ID") +
       (Native ? mi("share", I.share, "Share Last Reply") : "") +
       mi("archive", I.box, t ? "Archive Thread" : "Unarchive Thread", "", "", "danger");
@@ -2927,7 +2982,7 @@ const SHEETS = {
         const last = [...S.turns].reverse().flatMap((t) => [...(t.items || [])].reverse()).find((i) => i && i.k === "assistant" && i.text);
         if (last) try { Native.share(last.text); } catch {}
       }
-      if (act === "wake") { toast(S.provider === "antigravity" ? "Resuming In Antigravity" : S.provider === "claude" ? "Resuming Chat" : "Opening On Computer"); const a = await c.call({ op: "wake", id: S.id }, 20000); if (!a.ok) toast(nice(a.msg)); }
+      if (act === "wake") { toast(S.provider === "antigravity" ? "Reconnecting" : S.provider === "grok" ? (m.mode === "external" ? "Taking Over Chat" : "Reconnecting") : S.provider === "claude" ? "Resuming Chat" : "Opening On Computer"); const a = await c.call({ op: "wake", id: S.id }, 20000); if (!a.ok) toast(nice(a.msg)); }
       if (act === "compact") { const a = await c.call({ op: "compact", id: S.id }, 60000); toast(a.ok ? "Compacting" : nice(a.msg)); }
       if (act === "archive") {
         const op = t ? "archive" : "unarchive", id = S.id;
@@ -2961,8 +3016,8 @@ const SHEETS = {
 
   perms(sh) {
     const cur = permOf(S.meta);
-    const list = S.provider === "claude" ? CLAUDE_PERMS : S.provider === "antigravity" ? antigravityPermsFor(S.meta) : PERMS;
-    const title = S.provider === "antigravity" ? "Execution Mode" : "Permissions";
+    const list = S.provider === "claude" ? CLAUDE_PERMS : S.provider === "antigravity" ? antigravityPermsFor(S.meta) : S.provider === "grok" ? grokPermsFor(S.meta) : PERMS;
+    const title = S.provider === "antigravity" || S.provider === "grok" ? "Execution Mode" : "Permissions";
     sh.innerHTML = `<div class="grip"></div><h2>${title}</h2>` +
       list.map((p) => mi(p.id, p.icon, p.name, p.d, cur && cur.id === p.id ? I.check : "", p.warn || p.id === "full" || p.id === "bypassPermissions" ? "warn" : "")).join("") +
       (cur && cur.id === "custom" ? mi("custom", I.gear, "Custom", esc(cur.d), I.check) : "");
@@ -3007,9 +3062,10 @@ const SHEETS = {
   effort(sh) {
     const m = S.meta || {};
     const mm = ((conn().models && conn().models.models) || []).find((x) => x.slug === m.model || x.resolved === m.model);
-    const efforts = S.provider === "antigravity" ? providerEfforts(mm, "antigravity") : (mm ? mm.efforts : ["low", "medium", "high", "xhigh"]);
+    const hasDefaultEffort = S.provider === "antigravity" || S.provider === "grok";
+    const efforts = hasDefaultEffort ? providerEfforts(mm, S.provider) : (mm ? mm.efforts : ["low", "medium", "high", "xhigh"]);
     if(!efforts?.length){sh.innerHTML='<div class="grip"></div><h2>Intelligence</h2><p class="hint">Set automatically for this model.</p>';return;}
-    const currentEffort = S.provider === "antigravity" ? (m.effort || "") : m.effort;
+    const currentEffort = hasDefaultEffort ? (m.effort || "") : m.effort;
     let idx = Math.max(0, efforts.indexOf(currentEffort));
     const start = idx;
     sh.innerHTML = `<div class="eo-label"><b id="eo-level"></b> Intelligence</div>` +
@@ -3172,13 +3228,14 @@ window.onAndroidIntent = function () {
     toast("Paired With " + (s.name || s.url));
     if (S.view === "home") renderHome();
   } else if (it.type === "thread" && it.thread) {
-    if (S.view === "thread" && S.sid === it.server && S.id === it.thread && S.provider === (it.provider || "codex")) {
+    const provider = PROVIDERS.includes(it.provider) ? it.provider : "codex";
+    if (S.view === "thread" && S.sid === it.server && S.id === it.thread && S.provider === provider) {
       window.restoreVoiceSession(); return;
     }
     if (Native.getVoiceSession) {
       try {
         const capture=JSON.parse(Native.getVoiceSession());
-        if (capture.id && capture.thread===it.thread && capture.server===it.server && capture.provider===(it.provider || "codex")) { window.restoreVoiceSession();return; }
+        if (capture.id && capture.thread===it.thread && capture.server===it.server && capture.provider===provider) { window.restoreVoiceSession();return; }
         if (capture.id && Native.cancelVoiceSession && !(capture.phase==='error' && capture.retryable)) {
           cancelledVoices.add(capture.id);
           while (cancelledVoices.size>32) cancelledVoices.delete(cancelledVoices.values().next().value);
@@ -3191,11 +3248,11 @@ window.onAndroidIntent = function () {
         }
       } catch {}
     }
-    selectProvider(it.provider || "codex",false);
+    selectProvider(provider,false);
     // Reuse an open sheet's history entry; going back first would race the push.
     const reuse = !!S.sheet;
     if (reuse) closeSheet(true);
-    if (reuse) { history.replaceState({ view: "thread", sid: it.server, id: it.thread, provider: it.provider || "codex" }, ""); openThread(it.server, it.thread, false); }
+    if (reuse) { history.replaceState({ view: "thread", sid: it.server, id: it.thread, provider }, ""); openThread(it.server, it.thread, false); }
     else openThread(it.server, it.thread, true);
   }
 };

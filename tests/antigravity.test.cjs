@@ -76,7 +76,7 @@ test("HTML, CSS, service worker, and guardrails support 3-provider Antigravity l
   assert.match(htmlSource, /data-provider="antigravity"/);
   assert.match(htmlSource, /id="slash-menu"/);
   assert.match(htmlSource, /Usage And Limits/);
-  assert.match(swSource, /const CACHE = "fastcontrol-v19";/);
+  assert.match(swSource, /const CACHE = "fastcontrol-v20";/);
   assert.match(cssSource, /\.slash-menu\s*\{\s*position:\s*absolute;/);
   assert.match(cssSource, /\.usage-providers\s*\{\s*display:\s*grid;\s*grid-template-columns:\s*minmax\(0,\s*1fr\);/);
   assert.match(cssSource, /grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/);
@@ -233,10 +233,10 @@ test("Conn.onMessage defaults capabilities with antigravity: false and honors he
   vm.runInContext(appSource.slice(start, end) + ";globalThis.Conn=Conn;", ctx);
 
   const c = new ctx.Conn({ id: "m1", url: "http://127.0.0.1:8787", alts: [], token: "tok" });
-  assert.deepEqual(JSON.parse(JSON.stringify(c.capabilities)), { codex: true, claude: false, antigravity: false });
+  assert.deepEqual(JSON.parse(JSON.stringify(c.capabilities)), { codex: true, claude: false, antigravity: false, grok: false });
   sockets[0].open();
   sockets[0].message({ t: "hello", desktop: true, providers: { codex: true, claude: true, antigravity: true }, addrs: [] });
-  assert.deepEqual(JSON.parse(JSON.stringify(c.capabilities)), { codex: true, claude: true, antigravity: true });
+  assert.deepEqual(JSON.parse(JSON.stringify(c.capabilities)), { codex: true, claude: true, antigravity: true, grok: false });
   assert.equal(syncCalls, 1);
   assert.equal(redrawCalls, 1);
 });
@@ -253,6 +253,7 @@ test("Antigravity modes, opt-in Full Access gating, catalog model display, steer
   ];
   const connection = {
     state: "on",
+    capabilities: { codex: true, claude: true, antigravity: true, grok: false },
     models: { models, default: { model: "gemini-4-neon", effort: "high", mode: "default" } },
     send() {},
     call: async () => ({ ok: true }),
@@ -339,8 +340,8 @@ test("Antigravity modes, opt-in Full Access gating, catalog model display, steer
   assert.equal(els["t-ring"].title, "Context 12% Used");
   assert.match(els["t-ring"].getAttribute("aria-label"), /^Antigravity, Context 12% Used/);
   assert.ok(els["t-ring"].innerHTML.includes(ctx.AGENT_LOGOS.antigravity));
-  // Banner offers Resume In Antigravity for non-live idle/saved sessions.
-  assert.match(els.banner.innerHTML, /Resume In Antigravity/);
+  // Banner offers Reconnect for non-live degraded/saved sessions when ACP capability is available.
+  assert.match(els.banner.innerHTML, /Reconnect/);
   // Composer supports live steering while running, full display model name, warn badge on auto, and Default effort.
   assert.equal(els.send.getAttribute("aria-label"), "Steer");
   assert.equal(els.input.placeholder, "Steer");
