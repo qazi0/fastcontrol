@@ -3,11 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,7 +135,8 @@ func (h *grokTestHarness) writeSession(
 	extraSummary map[string]any,
 ) string {
 	h.t.Helper()
-	encoded := url.PathEscape(cwd)
+	sum := sha256.Sum256([]byte(cwd))
+	encoded := fmt.Sprintf("cwd-%x", sum[:8])
 	sessDir := filepath.Join(h.grokHome, "sessions", encoded, id)
 	if err := os.MkdirAll(sessDir, 0o700); err != nil {
 		h.t.Fatalf("mkdir session: %v", err)
