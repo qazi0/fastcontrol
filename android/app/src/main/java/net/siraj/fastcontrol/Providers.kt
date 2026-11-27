@@ -5,14 +5,16 @@ object Providers {
     const val CODEX = "codex"
     const val CLAUDE = "claude"
     const val ANTIGRAVITY = "antigravity"
+    const val GROK = "grok"
 
     /**
-     * Normalizes an incoming provider identifier to one of the three supported providers.
+     * Normalizes an incoming provider identifier to one of the four supported providers.
      * Unknown or blank values fall back safely to `"codex"`.
      */
     fun normalize(raw: String?): String = when (raw?.trim()?.lowercase()) {
         CLAUDE -> CLAUDE
         ANTIGRAVITY -> ANTIGRAVITY
+        GROK -> GROK
         CODEX -> CODEX
         else -> CODEX
     }
@@ -21,6 +23,7 @@ object Providers {
     fun displayName(raw: String?): String = when (normalize(raw)) {
         CLAUDE -> "Claude Code"
         ANTIGRAVITY -> "Antigravity"
+        GROK -> "Grok"
         else -> "Codex"
     }
 
