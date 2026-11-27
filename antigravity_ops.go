@@ -1341,7 +1341,7 @@ func (m *AntigravityManager) ensureRun(ctx context.Context, id string) (*antigra
 	run.mu.Lock()
 	run.loading = false
 	if len(run.diskTurns) == 0 && len(run.replayTurns) > 0 {
-		run.diskTurns = cloneTurns(run.replayTurns)
+		run.diskTurns = cleanAntigravityTurnsUserText(cloneTurns(run.replayTurns))
 		for k, d := range run.replayDiffs {
 			run.diskDiffs[k] = d
 		}

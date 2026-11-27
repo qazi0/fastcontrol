@@ -3424,3 +3424,104 @@ func TestAntigravityTurboModeDefaultModelsAndLiveAutoApprove(t *testing.T) {
 		t.Fatalf("expected handleNew with turbo mode to dial DangerouslySkipPermissions=true, got %v", gotSkips)
 	}
 }
+
+func TestAntigravityLiveAndReplayUserMessageChunkStripsXMLEnvelopes(t *testing.T) {
+	h := newAgyTestHarness(t)
+	h.mgr.allowFullAccess = true
+
+	const replayID = "replay-xml-session"
+	h.mgr.dialACP = func(ctx context.Context, cfg acpClientConfig) (*acpClient, *acpInitResult, error) {
+		srv, cli := newMockACPServer(t, cfg)
+		srv.on("initialize", func(msg mockACPRPCMessage) {
+			_ = srv.sendResult(msg.ID, mockInitResultPayload())
+		})
+		srv.on("session/load", func(msg mockACPRPCMessage) {
+			// System-only wakeup turn during replay must be omitted completely.
+			_ = srv.sendNotify("session/update", map[string]any{
+				"sessionId": replayID,
+				"update": map[string]any{
+					"sessionUpdate": "user_message_chunk",
+					"content": map[string]any{
+						"type": "text",
+						"text": "The following is a <SYSTEM_MESSAGE> not actually sent by the user.\n\n<SYSTEM_MESSAGE>\n[Message] timer fired\n</SYSTEM_MESSAGE>",
+					},
+				},
+			})
+			// Multi-chunk wrapped user turn during replay must be cleaned to plain text.
+			_ = srv.sendNotify("session/update", map[string]any{
+				"sessionId": replayID,
+				"update": map[string]any{
+					"sessionUpdate": "user_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "<USER_REQUEST>\nReplay "},
+				},
+			})
+			_ = srv.sendNotify("session/update", map[string]any{
+				"sessionId": replayID,
+				"update": map[string]any{
+					"sessionUpdate": "user_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "prompt\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nmeta\n</ADDITIONAL_METADATA>"},
+				},
+			})
+			_ = srv.sendNotify("session/update", map[string]any{
+				"sessionId": replayID,
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "Replay answer"},
+				},
+			})
+			_ = srv.sendResult(msg.ID, mockStandardSessionState(replayID, "gemini-4-neon", "high", "default"))
+		})
+		srv.start()
+		t.Cleanup(srv.close)
+		initRes, err := cli.Initialize(ctx)
+		if err != nil {
+			_ = cli.Close()
+			return nil, nil, err
+		}
+		return cli, initRes, nil
+	}
+
+	h.mgr.mu.Lock()
+	h.mgr.records[replayID] = antigravityRecord{ID: replayID, Cwd: h.home, AppDataDir: acpDefaultAppDataDir}
+	h.mgr.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	run, err := h.mgr.ensureRun(ctx, replayID)
+	if err != nil {
+		t.Fatalf("ensureRun replay error: %v", err)
+	}
+	_, turns := run.snapshot()
+	if len(turns) != 1 {
+		t.Fatalf("expected 1 cleaned replay turn (system wakeup omitted), got %d: %+v", len(turns), turns)
+	}
+	if len(turns[0].Items) < 2 || turns[0].Items[0].K != "user" || turns[0].Items[0].Text != "Replay prompt" {
+		t.Fatalf("unexpected cleaned replay turn items: %+v", turns[0].Items)
+	}
+
+	// Live multi-chunk wrapped user_message_chunk must produce clean user text without XML.
+	run.onUpdate(acpSessionUpdate{SessionID: replayID, Kind: "user_message_chunk", Text: "BEGIN CHAT\n<USER_REQUEST>\nLive "})
+	run.onUpdate(acpSessionUpdate{SessionID: replayID, Kind: "user_message_chunk", Text: "prompt\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nlocal time\n</ADDITIONAL_METADATA>\nEND CHAT"})
+	// Live system-only wakeup after an assistant chunk must not append a user bubble.
+	run.onUpdate(acpSessionUpdate{SessionID: replayID, Kind: "agent_message_chunk", Text: "Live answer"})
+	run.onUpdate(acpSessionUpdate{SessionID: replayID, Kind: "user_message_chunk", Text: "<SYSTEM_MESSAGE>\nwakeup\n</SYSTEM_MESSAGE>"})
+	// Wrapped optimistic echo must be consumed without creating a duplicate user item.
+	run.mu.Lock()
+	run.optimisticUsers = append(run.optimisticUsers, "Optimistic prompt")
+	run.mu.Unlock()
+	run.onUpdate(acpSessionUpdate{SessionID: replayID, Kind: "user_message_chunk", Text: "<USER_REQUEST>\nOptimistic prompt\n</USER_REQUEST>\n<ADDITIONAL_METADATA>x</ADDITIONAL_METADATA>"})
+
+	_, turns = run.snapshot()
+	if len(turns) != 2 {
+		t.Fatalf("expected 2 turns (1 replay + 1 live), got %d: %+v", len(turns), turns)
+	}
+	var liveUsers []string
+	for _, it := range turns[1].Items {
+		if it.K == "user" {
+			liveUsers = append(liveUsers, it.Text)
+		}
+	}
+	if len(liveUsers) != 1 || liveUsers[0] != "Live prompt" {
+		t.Fatalf("unexpected live user items: %v (full turn: %+v)", liveUsers, turns[1].Items)
+	}
+}

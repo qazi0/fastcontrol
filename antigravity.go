@@ -2479,6 +2479,7 @@ type antigravityRun struct {
 	streamMsgIdx     int
 	streamThoughtIdx int
 	streamUserIdx    int
+	streamUserRaw    string
 	optimisticUsers  []string
 	title            string
 	model            string
@@ -2737,6 +2738,7 @@ func (r *antigravityRun) syncExternalDiskState(v *antigravityTranscript, externa
 				r.streamMsgIdx = -1
 				r.streamThoughtIdx = -1
 				r.streamUserIdx = -1
+				r.streamUserRaw = ""
 				r.lastPublished = map[string][]byte{}
 				for _, t := range newDisk {
 					r.lastPublished[t.Key] = mustJSON(t)
@@ -2952,6 +2954,7 @@ func (r *antigravityRun) ensureLiveTurnLocked(nowMs int64) *Turn {
 	r.streamMsgIdx = -1
 	r.streamThoughtIdx = -1
 	r.streamUserIdx = -1
+	r.streamUserRaw = ""
 	return &r.liveTurns[len(r.liveTurns)-1]
 }
 
@@ -3095,20 +3098,37 @@ func (r *antigravityRun) onUpdate(u acpSessionUpdate) {
 			if r.loading {
 				r.appendReplayChunkLocked("user", text, nowMs)
 			} else if !r.consumeOptimisticUserLocked(text) {
-				turn := r.ensureLiveTurnLocked(nowMs)
-				r.streamThoughtIdx = -1
-				r.streamMsgIdx = -1
-				if r.streamUserIdx >= 0 && r.streamUserIdx < len(turn.Items) && turn.Items[r.streamUserIdx].K == "user" {
-					turn.Items[r.streamUserIdx].Text += text
+				raw := r.streamUserRaw + text
+				cleaned := cleanAntigravityUserText(raw)
+				if r.streamUserIdx < 0 && cleaned != "" && r.consumeOptimisticUserLocked(cleaned) {
+					r.streamUserRaw = ""
+				} else if cleaned == "" {
+					r.streamUserRaw = raw
+					if r.streamUserIdx >= 0 && len(r.liveTurns) > 0 {
+						turn := &r.liveTurns[len(r.liveTurns)-1]
+						if r.streamUserIdx == len(turn.Items)-1 && turn.Items[r.streamUserIdx].K == "user" {
+							turn.Items = turn.Items[:r.streamUserIdx]
+							r.streamUserIdx = -1
+							shouldPublish = true
+						}
+					}
 				} else {
-					turn.Items = append(turn.Items, Item{
-						ID:   fmt.Sprintf("%s:user:%d", turn.Key, len(turn.Items)),
-						K:    "user",
-						Text: text,
-					})
-					r.streamUserIdx = len(turn.Items) - 1
+					turn := r.ensureLiveTurnLocked(nowMs)
+					r.streamUserRaw = raw
+					r.streamThoughtIdx = -1
+					r.streamMsgIdx = -1
+					if r.streamUserIdx >= 0 && r.streamUserIdx < len(turn.Items) && turn.Items[r.streamUserIdx].K == "user" {
+						turn.Items[r.streamUserIdx].Text = cleaned
+					} else {
+						turn.Items = append(turn.Items, Item{
+							ID:   fmt.Sprintf("%s:user:%d", turn.Key, len(turn.Items)),
+							K:    "user",
+							Text: cleaned,
+						})
+						r.streamUserIdx = len(turn.Items) - 1
+					}
+					shouldPublish = true
 				}
-				shouldPublish = true
 			}
 		}
 
@@ -3124,6 +3144,7 @@ func (r *antigravityRun) onUpdate(u acpSessionUpdate) {
 				turn := r.ensureLiveTurnLocked(nowMs)
 				r.streamMsgIdx = -1
 				r.streamUserIdx = -1
+				r.streamUserRaw = ""
 				if r.streamThoughtIdx >= 0 && r.streamThoughtIdx < len(turn.Items) && turn.Items[r.streamThoughtIdx].K == "reasoning" {
 					turn.Items[r.streamThoughtIdx].Text += text
 				} else {
@@ -3150,6 +3171,7 @@ func (r *antigravityRun) onUpdate(u acpSessionUpdate) {
 				turn := r.ensureLiveTurnLocked(nowMs)
 				r.streamThoughtIdx = -1
 				r.streamUserIdx = -1
+				r.streamUserRaw = ""
 				if r.streamMsgIdx >= 0 && r.streamMsgIdx < len(turn.Items) && turn.Items[r.streamMsgIdx].K == "assistant" {
 					turn.Items[r.streamMsgIdx].Text += text
 				} else {
@@ -3260,11 +3282,38 @@ func (r *antigravityRun) applyReplayToolCallLocked(tc acpToolCallInfo, nowMs int
 	r.upsertToolCallLocked(turn, tc, true)
 }
 
+func cleanAntigravityTurnsUserText(turns []Turn) []Turn {
+	if len(turns) == 0 {
+		return []Turn{}
+	}
+	out := make([]Turn, 0, len(turns))
+	for _, t := range turns {
+		items := make([]Item, 0, len(t.Items))
+		for _, it := range t.Items {
+			if it.K == "user" {
+				cleaned := cleanAntigravityUserText(it.Text)
+				if cleaned == "" && len(it.Images) == 0 && len(it.Audio) == 0 {
+					continue
+				}
+				it.Text = cleaned
+			}
+			items = append(items, it)
+		}
+		if len(items) == 0 {
+			continue
+		}
+		t.Items = items
+		out = append(out, t)
+	}
+	return out
+}
+
 func (r *antigravityRun) applyLiveToolCallLocked(tc acpToolCallInfo, nowMs int64) {
 	turn := r.ensureLiveTurnLocked(nowMs)
 	r.streamThoughtIdx = -1
 	r.streamMsgIdx = -1
 	r.streamUserIdx = -1
+	r.streamUserRaw = ""
 	r.upsertToolCallLocked(turn, tc, false)
 }
 
@@ -3793,6 +3842,7 @@ func (r *antigravityRun) startPrompt(text string, images []string, blocks []acpC
 	r.streamMsgIdx = -1
 	r.streamThoughtIdx = -1
 	r.streamUserIdx = -1
+	r.streamUserRaw = ""
 	userItem := Item{
 		ID:     fmt.Sprintf("%s:user:%d", turn.Key, len(turn.Items)),
 		K:      "user",
@@ -3895,6 +3945,7 @@ func (r *antigravityRun) finishPrompt(turnKey string, startedAt int64, res *acpP
 		r.streamMsgIdx = -1
 		r.streamThoughtIdx = -1
 		r.streamUserIdx = -1
+		r.streamUserRaw = ""
 		r.optimisticUsers = nil
 		eventTitle = antigravityFirstNonEmpty(r.manager.state.Title(r.id), r.title, "Antigravity")
 		cwd = r.cwd
