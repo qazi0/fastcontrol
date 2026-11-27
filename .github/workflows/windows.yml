@@ -52,6 +52,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build and Inspect Release Artifacts
         run: ./scripts/build-windows.ps1 -Architecture ${{ matrix.arch }}
+      - name: Verify Installer on Windows PowerShell 5.1 (iex)
+        shell: powershell
+        run: |
+          $env:FASTCONTROL_PACKAGE_DIR = (Resolve-Path dist).Path
+          $env:FASTCONTROL_SKIP_SPEECH = '1'
+          (Get-Content ./install.ps1 -Raw) | Invoke-Expression
+          $relay = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.fastcontrol\fastcontrol.exe'
+          if (-not (Test-Path $relay)) { throw 'Installed Relay Missing After Windows PowerShell 5.1 Run' }
+          Stop-ScheduledTask -TaskName fastcontrol -ErrorAction SilentlyContinue
+          Unregister-ScheduledTask -TaskName fastcontrol -Confirm:$false -ErrorAction SilentlyContinue
       - name: Verify Installer and Local Speech Setup
         run: |
           ./install.ps1 -PackageDirectory dist -SkipSpeech
