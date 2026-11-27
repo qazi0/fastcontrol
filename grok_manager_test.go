@@ -703,6 +703,221 @@ func TestGrokManagerModelsCacheAndLiveMerge(t *testing.T) {
 	}
 }
 
+func TestGrokManagerModelsEffortsSortedAscendingAcrossAllSources(t *testing.T) {
+	// 1. Live ACP _x.ai/models/list returning descending efforts ["xhigh", "high", "medium", "low"]
+	//    and mixed/duplicate efforts including "minimal" must emit strictly ascending Model.Efforts.
+	h := newGrokTestHarness(t, true)
+	descendingListState := map[string]any{
+		"currentModelId": "grok-4.7",
+		"availableModels": []map[string]any{
+			{
+				"modelId":     "grok-4.7",
+				"name":        "Grok 4.7",
+				"description": "Frontier model",
+				"_meta": map[string]any{
+					"totalContextTokens":      256000,
+					"supportsReasoningEffort": true,
+					"reasoningEffort":         "high",
+					"reasoningEfforts": []map[string]any{
+						{"id": "xhigh", "value": "xhigh", "label": "Extra High", "default": false},
+						{"id": "high", "value": "high", "label": "High", "default": true},
+						{"id": "medium", "value": "medium", "label": "Medium", "default": false},
+						{"id": "low", "value": "low", "label": "Low", "default": false},
+					},
+				},
+			},
+			{
+				"modelId": "grok-4.7-mixed",
+				"name":    "Grok 4.7 Mixed",
+				"_meta": map[string]any{
+					"totalContextTokens":      256000,
+					"supportsReasoningEffort": true,
+					"reasoningEfforts": []map[string]any{
+						{"id": "XHIGH", "value": " XHIGH "},
+						{"id": "high", "value": "high", "default": true},
+						{"id": "medium", "value": "medium"},
+						{"id": "low", "value": "LOW"},
+						{"id": "minimal", "value": "minimal"},
+						{"id": "dup", "value": "high"},
+					},
+				},
+			},
+		},
+	}
+
+	h.mgr.dialACP = func(ctx context.Context, cfg grokACPClientConfig) (*grokACPClient, *grokInitResult, error) {
+		srv, cli := newMockGrokACPServer(t, cfg)
+		setupStandardMockGrokServer(t, srv)
+		srv.on("initialize", func(msg mockACPRPCMessage) {
+			initPayload := mockGrokInitResultPayload()
+			initPayload["_meta"].(map[string]any)["modelState"] = descendingListState
+			_ = srv.sendResult(msg.ID, initPayload)
+		})
+		srv.on(grokExtModelsList, func(msg mockACPRPCMessage) {
+			_ = srv.sendResult(msg.ID, map[string]any{
+				"result": descendingListState,
+			})
+		})
+		srv.start()
+		t.Cleanup(srv.close)
+		initRes, err := cli.Initialize(ctx)
+		if err != nil {
+			_ = cli.Close()
+			return nil, nil, err
+		}
+		return cli, initRes, nil
+	}
+
+	h.send(h.client, map[string]any{"op": "models"})
+	frame := waitFrame(t, h.client, 3*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "models" && str(m, "provider") == "grok"
+	})
+	models := arrayValue(frame["models"])
+	if len(models) != 2 {
+		t.Fatalf("expected 2 models from live ACP list, got %d: %+v", len(models), models)
+	}
+	eff0 := stringArray(mapValue(models[0])["efforts"])
+	want0 := []string{"low", "medium", "high", "xhigh"}
+	if strings.Join(eff0, ",") != strings.Join(want0, ",") {
+		t.Fatalf("grok-4.7 ACP efforts = %v, want %v", eff0, want0)
+	}
+	eff1 := stringArray(mapValue(models[1])["efforts"])
+	want1 := []string{"minimal", "low", "medium", "high", "xhigh"}
+	if strings.Join(eff1, ",") != strings.Join(want1, ",") {
+		t.Fatalf("grok-4.7-mixed ACP efforts = %v, want %v", eff1, want1)
+	}
+
+	// 2. InitResult().ModelState fallback when _x.ai/models/list fails must also emit ascending efforts.
+	hInit := newGrokTestHarness(t, true)
+	hInit.mgr.dialACP = func(ctx context.Context, cfg grokACPClientConfig) (*grokACPClient, *grokInitResult, error) {
+		srv, cli := newMockGrokACPServer(t, cfg)
+		setupStandardMockGrokServer(t, srv)
+		srv.on("initialize", func(msg mockACPRPCMessage) {
+			initPayload := mockGrokInitResultPayload()
+			initPayload["_meta"].(map[string]any)["modelState"] = descendingListState
+			_ = srv.sendResult(msg.ID, initPayload)
+		})
+		srv.on(grokExtModelsList, func(msg mockACPRPCMessage) {
+			_ = srv.sendError(msg.ID, -32601, "method not found")
+		})
+		srv.start()
+		t.Cleanup(srv.close)
+		initRes, err := cli.Initialize(ctx)
+		if err != nil {
+			_ = cli.Close()
+			return nil, nil, err
+		}
+		return cli, initRes, nil
+	}
+
+	hInit.send(hInit.client, map[string]any{"op": "models"})
+	initFrame := waitFrame(t, hInit.client, 3*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "models" && str(m, "provider") == "grok"
+	})
+	initModels := arrayValue(initFrame["models"])
+	if len(initModels) != 2 {
+		t.Fatalf("expected 2 models from InitResult fallback, got %d: %+v", len(initModels), initModels)
+	}
+	if got := stringArray(mapValue(initModels[0])["efforts"]); strings.Join(got, ",") != strings.Join(want0, ",") {
+		t.Fatalf("InitResult fallback grok-4.7 efforts = %v, want %v", got, want0)
+	}
+
+	// 3. ACP configOptions update with descending reasoning_effort options must sort in catalog immediately and emit ascending efforts.
+	hCfg := newGrokTestHarness(t, true)
+	hCfg.mgr.updateCatalogFromConfigOptions([]acpConfigOption{
+		{
+			ID:           "model",
+			CurrentValue: "grok-4.7",
+			Options: []acpConfigOptionChoice{
+				{Value: "grok-4.7", Name: "Grok 4.7"},
+			},
+		},
+		{
+			ID:           "reasoning_effort",
+			CurrentValue: "high",
+			Options: []acpConfigOptionChoice{
+				{Value: "xhigh", Name: "Extra High"},
+				{Value: "high", Name: "High"},
+				{Value: "medium", Name: "Medium"},
+				{Value: "low", Name: "Low"},
+			},
+		},
+	})
+	if snap := hCfg.mgr.catalogSnapshot(); len(snap.Models) != 1 || strings.Join(snap.Models[0].Efforts, ",") != strings.Join(want0, ",") {
+		t.Fatalf("catalogSnapshot after updateCatalogFromConfigOptions = %+v, want efforts %v", snap.Models, want0)
+	}
+	hCfg.send(hCfg.client, map[string]any{"op": "models"})
+	cfgFrame := waitFrame(t, hCfg.client, 3*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "models" && str(m, "provider") == "grok"
+	})
+	cfgModels := arrayValue(cfgFrame["models"])
+	if len(cfgModels) != 1 {
+		t.Fatalf("expected 1 model from configOptions catalog, got %d: %+v", len(cfgModels), cfgModels)
+	}
+	if got := stringArray(mapValue(cfgModels[0])["efforts"]); strings.Join(got, ",") != strings.Join(want0, ",") {
+		t.Fatalf("configOptions grok-4.7 efforts = %v, want %v", got, want0)
+	}
+
+	// 3b. Direct grokModelsFromInfos and mergeGrokModels sort descending and mixed lists strictly ascending.
+	directModels, _ := grokModelsFromInfos([]grokModelInfo{
+		{
+			ModelID:                "grok-4.7",
+			Name:                   "Grok 4.7",
+			DefaultReasoningEffort: "HIGH",
+			ReasoningEfforts: []grokReasoningEffortOption{
+				{Value: "xhigh"},
+				{Value: "high", Default: true},
+				{Value: "medium"},
+				{Value: "low"},
+			},
+		},
+	})
+	if len(directModels) != 1 || directModels[0].DefaultEffort != "high" || strings.Join(directModels[0].Efforts, ",") != strings.Join(want0, ",") {
+		t.Fatalf("grokModelsFromInfos = %+v, want efforts %v", directModels, want0)
+	}
+	mergedDirect := mergeGrokModels(
+		[]Model{{Slug: "grok-4.7", Name: "Grok 4.7"}},
+		[]Model{{Slug: "grok-4.7", Name: "Grok 4.7", Efforts: []string{"xhigh", "high", "medium", "low", "minimal"}}},
+	)
+	if len(mergedDirect) != 1 || strings.Join(mergedDirect[0].Efforts, ",") != strings.Join(want1, ",") {
+		t.Fatalf("mergeGrokModels fallback efforts = %+v, want %v", mergedDirect, want1)
+	}
+
+	// 4. Unsigned host reading live map-shaped models_cache.json with descending efforts emits ascending efforts.
+	hCache := newGrokTestHarness(t, false)
+	liveCache := `{
+		"models": {
+			"grok-4.7": {
+				"info": {
+					"id": "grok-4.7",
+					"name": "Grok 4.7",
+					"reasoning_effort": "high",
+					"reasoning_efforts": [
+						{"value": "xhigh"},
+						{"value": "high", "default": true},
+						{"value": "medium"},
+						{"value": "low"}
+					]
+				}
+			}
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(hCache.grokHome, "models_cache.json"), []byte(liveCache), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hCache.send(hCache.client, map[string]any{"op": "models"})
+	cacheFrame := waitFrame(t, hCache.client, 3*time.Second, func(m map[string]any) bool {
+		return str(m, "t") == "models" && str(m, "provider") == "grok"
+	})
+	cacheModels := arrayValue(cacheFrame["models"])
+	if len(cacheModels) != 1 {
+		t.Fatalf("expected 1 cached model, got %d: %+v", len(cacheModels), cacheModels)
+	}
+	if got := stringArray(mapValue(cacheModels[0])["efforts"]); strings.Join(got, ",") != strings.Join(want0, ",") {
+		t.Fatalf("cached map-format grok-4.7 efforts = %v, want %v", got, want0)
+	}
+}
+
 func TestGrokManagerOpenWarmColdExternalAndGenerationSwitching(t *testing.T) {
 	h := newGrokTestHarness(t, true)
 	cwd := t.TempDir()

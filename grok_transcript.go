@@ -1028,51 +1028,175 @@ func grokReadModelsCache(grokHome string) ([]Model, grokDefaults, error) {
 	return models, defaults, nil
 }
 
+func grokEffortRank(effort string) int {
+	switch effort {
+	case "minimal":
+		return 0
+	case "low":
+		return 1
+	case "medium":
+		return 2
+	case "high":
+		return 3
+	case "xhigh":
+		return 4
+	case "max":
+		return 5
+	default:
+		return 100
+	}
+}
+
+// sortGrokEfforts normalizes (trimmed lowercase), deduplicates, and sorts Grok
+// reasoning effort values strictly ascending by intelligence level while
+// preserving any unknown future labels in their original order after known ones.
+func sortGrokEfforts(efforts []string) []string {
+	if len(efforts) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(efforts))
+	seen := make(map[string]bool, len(efforts))
+	for _, raw := range efforts {
+		val := strings.ToLower(strings.TrimSpace(raw))
+		if val == "" || seen[val] {
+			continue
+		}
+		seen[val] = true
+		out = append(out, val)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return grokEffortRank(out[i]) < grokEffortRank(out[j])
+	})
+	return out
+}
+
+type grokRawModelItem struct {
+	key string
+	raw json.RawMessage
+}
+
+func parseGrokRawModelList(raw json.RawMessage) ([]grokRawModelItem, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, nil
+	}
+	switch trimmed[0] {
+	case '[':
+		var arr []json.RawMessage
+		if err := json.Unmarshal(trimmed, &arr); err != nil {
+			return nil, err
+		}
+		items := make([]grokRawModelItem, 0, len(arr))
+		for _, elem := range arr {
+			items = append(items, grokRawModelItem{raw: elem})
+		}
+		return items, nil
+	case '{':
+		dec := json.NewDecoder(bytes.NewReader(trimmed))
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		delim, ok := tok.(json.Delim)
+		if !ok || delim != '{' {
+			return nil, errors.New("expected JSON object for Grok models")
+		}
+		var items []grokRawModelItem
+		for dec.More() {
+			kTok, err := dec.Token()
+			if err != nil {
+				return nil, err
+			}
+			key, ok := kTok.(string)
+			if !ok {
+				return nil, errors.New("expected string key in Grok models map")
+			}
+			var val json.RawMessage
+			if err := dec.Decode(&val); err != nil {
+				return nil, err
+			}
+			items = append(items, grokRawModelItem{key: key, raw: val})
+		}
+		if _, err := dec.Token(); err != nil {
+			return nil, err
+		}
+		return items, nil
+	default:
+		return nil, errors.New("unsupported Grok models container")
+	}
+}
+
 func parseGrokModelsCacheJSON(raw []byte) ([]Model, map[string]int64, error) {
-	var rawList []json.RawMessage
+	var rawItems []grokRawModelItem
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
 		return []Model{}, map[string]int64{}, nil
 	}
 	if trimmed[0] == '[' {
-		if err := json.Unmarshal(trimmed, &rawList); err != nil {
+		items, err := parseGrokRawModelList(trimmed)
+		if err != nil {
 			return nil, nil, err
 		}
+		rawItems = items
 	} else {
 		var envelope struct {
-			Models          []json.RawMessage `json:"models"`
-			AvailableModels []json.RawMessage `json:"availableModels"`
-			Data            []json.RawMessage `json:"data"`
+			Models          json.RawMessage `json:"models"`
+			AvailableModels json.RawMessage `json:"availableModels"`
+			Data            json.RawMessage `json:"data"`
 		}
 		if err := json.Unmarshal(trimmed, &envelope); err != nil {
 			return nil, nil, err
 		}
-		rawList = envelope.Models
-		if len(rawList) == 0 {
-			rawList = envelope.AvailableModels
-		}
-		if len(rawList) == 0 {
-			rawList = envelope.Data
+		for _, field := range []json.RawMessage{envelope.Models, envelope.AvailableModels, envelope.Data} {
+			if len(bytes.TrimSpace(field)) == 0 || bytes.Equal(bytes.TrimSpace(field), []byte("null")) {
+				continue
+			}
+			items, err := parseGrokRawModelList(field)
+			if err != nil {
+				return nil, nil, err
+			}
+			if len(items) > 0 {
+				rawItems = items
+				break
+			}
 		}
 	}
 
-	models := make([]Model, 0, len(rawList))
-	ctxWindows := make(map[string]int64, len(rawList))
+	models := make([]Model, 0, len(rawItems))
+	ctxWindows := make(map[string]int64, len(rawItems))
 	seen := map[string]bool{}
 
-	for _, itemRaw := range rawList {
-		var m map[string]any
-		if json.Unmarshal(itemRaw, &m) != nil || len(m) == 0 {
+	for _, entry := range rawItems {
+		var outer map[string]any
+		if json.Unmarshal(entry.raw, &outer) != nil || len(outer) == 0 {
 			continue
 		}
-		if disabled, _ := m["disabled"].(bool); disabled {
+		if disabled, _ := outer["disabled"].(bool); disabled {
 			continue
+		}
+		if hidden, _ := outer["hidden"].(bool); hidden {
+			continue
+		}
+		m := outer
+		if infoMap, ok := outer["info"].(map[string]any); ok && len(infoMap) > 0 {
+			m = infoMap
+			if disabled, _ := m["disabled"].(bool); disabled {
+				continue
+			}
+			if hidden, _ := m["hidden"].(bool); hidden {
+				continue
+			}
 		}
 		slug := grokStorageFirstNonEmpty(
 			strings.TrimSpace(str(m, "id")),
 			strings.TrimSpace(str(m, "model_id")),
 			strings.TrimSpace(str(m, "modelId")),
 			strings.TrimSpace(str(m, "slug")),
+			strings.TrimSpace(str(m, "model")),
+			strings.TrimSpace(entry.key),
 		)
 		if slug == "" || seen[slug] {
 			continue
@@ -1091,16 +1215,19 @@ func parseGrokModelsCacheJSON(raw []byte) ([]Model, map[string]int64, error) {
 		if len(efforts) == 0 && metaMap != nil {
 			efforts, flaggedDefault = extractGrokEfforts(metaMap)
 		}
-		defaultEffort := grokStorageFirstNonEmpty(
+		efforts = sortGrokEfforts(efforts)
+		defaultEffort := strings.ToLower(grokStorageFirstNonEmpty(
 			strings.TrimSpace(str(m, "default_reasoning_effort")),
 			strings.TrimSpace(str(m, "defaultReasoningEffort")),
 			strings.TrimSpace(str(m, "default_reasoning_level")),
 			strings.TrimSpace(str(m, "defaultEffort")),
+			strings.TrimSpace(str(m, "reasoning_effort")),
+			strings.TrimSpace(str(m, "reasoningEffort")),
 			strings.TrimSpace(str(metaMap, "default_reasoning_effort")),
 			strings.TrimSpace(str(metaMap, "defaultReasoningEffort")),
 			strings.TrimSpace(str(metaMap, "reasoningEffort")),
 			flaggedDefault,
-		)
+		))
 		if defaultEffort == "" && len(efforts) > 0 {
 			for _, candidate := range []string{"high", "medium"} {
 				for _, e := range efforts {
@@ -1177,30 +1304,28 @@ func extractGrokEfforts(m map[string]any) ([]string, string) {
 		return nil, ""
 	}
 	out := make([]string, 0, len(rawVals))
-	seen := map[string]bool{}
 	flaggedDefault := ""
 	for _, item := range rawVals {
 		var val string
 		switch x := item.(type) {
 		case string:
-			val = strings.TrimSpace(x)
+			val = strings.ToLower(strings.TrimSpace(x))
 		case map[string]any:
-			val = grokStorageFirstNonEmpty(
+			val = strings.ToLower(grokStorageFirstNonEmpty(
 				strings.TrimSpace(str(x, "effort")),
 				strings.TrimSpace(str(x, "value")),
 				strings.TrimSpace(str(x, "id")),
 				strings.TrimSpace(str(x, "name")),
-			)
+			))
 			if isDef, _ := x["default"].(bool); isDef && val != "" && flaggedDefault == "" {
 				flaggedDefault = val
 			}
 		}
-		if val != "" && !seen[val] {
-			seen[val] = true
+		if val != "" {
 			out = append(out, val)
 		}
 	}
-	return out, flaggedDefault
+	return sortGrokEfforts(out), flaggedDefault
 }
 
 // parseGrokConfigTOML extracts [models] default, default_reasoning_effort, and
@@ -1245,7 +1370,7 @@ func parseGrokConfigTOML(content string) grokDefaults {
 		case "models.default":
 			out.Model = val
 		case "models.default_reasoning_effort":
-			out.Effort = val
+			out.Effort = strings.ToLower(strings.TrimSpace(val))
 		case "ui.permission_mode":
 			out.PermissionMode = normalizeGrokPermissionMode(val)
 		case "ui.approval_mode":
