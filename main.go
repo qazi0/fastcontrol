@@ -1,4 +1,4 @@
-// fastcontrol serves coding sessions from Codex and Claude Code over LAN or Tailscale.
+// fastcontrol serves coding sessions from Codex, Claude Code, and Antigravity over LAN or Tailscale.
 package main
 
 import (
@@ -125,8 +125,8 @@ func main() {
 	}
 	db := stateDBPath()
 	_, codexErr := codexBin()
-	if db == "" && claudeBinary() == "" && codexErr != nil {
-		log.Fatalf("Install Codex Or Claude Code Before Starting fastcontrol")
+	if db == "" && claudeBinary() == "" && codexErr != nil && agyBinary() == "" && !antigravityHasDB("") {
+		log.Fatalf("Install Codex, Claude Code, Or Antigravity Before Starting fastcontrol")
 	}
 
 	asar := *asarFlag
@@ -158,6 +158,12 @@ func main() {
 	}
 	hub.claude = newClaudeManager(hub)
 	go hub.claude.run(runCtx)
+	hub.antigravity = newAntigravityManager(hub)
+	antigravityDone := make(chan struct{})
+	go func() {
+		defer close(antigravityDone)
+		hub.antigravity.run(runCtx)
+	}()
 	hub.refreshList()
 	go hub.RunList(runCtx)
 
@@ -344,6 +350,10 @@ func main() {
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer shutCancel()
 	_ = srv.Shutdown(shutCtx)
+	select {
+	case <-antigravityDone:
+	case <-time.After(3 * time.Second):
+	}
 }
 
 func serveClient(ctx context.Context, hub *Hub, conn *websocket.Conn, eventsOnly bool) {
@@ -354,7 +364,11 @@ func serveClient(ctx context.Context, hub *Hub, conn *websocket.Conn, eventsOnly
 	if hub.recovery != nil {
 		recoveryPeers = hub.recovery.public
 	}
-	providers := map[string]bool{"codex": hub.db != "", "claude": hub.claude != nil && hub.claude.bin != ""}
+	providers := map[string]bool{
+		"codex":       hub.db != "",
+		"claude":      hub.claude != nil && hub.claude.bin != "",
+		"antigravity": hub.antigravity != nil && hub.antigravity.available(),
+	}
 	// Register c and enqueue hello atomically under hub.mu before any initial
 	// thread snapshot or subsequent network update can reach c.out.
 	hub.registerClient(c, func(addrs []string) []byte {

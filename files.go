@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Paired clients can save any regular file linked in a chat, without executing it.
@@ -16,6 +17,25 @@ func serveFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := r.URL.Query().Get("path")
+	if conv := strings.TrimSpace(r.URL.Query().Get("conversation")); conv != "" {
+		appDir := strings.TrimSpace(r.URL.Query().Get("appDataDir"))
+		if appDir == "" {
+			appDir = antigravityAppDirDesktop
+		}
+		resolved, err := resolveAntigravityArtifactPath("", appDir, conv, path)
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		path = resolved
+	} else if strings.HasPrefix(strings.ToLower(strings.TrimSpace(path)), "file://") {
+		decoded, ok := parseAntigravityFileURI(path)
+		if !ok {
+			http.Error(w, "Use An Absolute File Path", 400)
+			return
+		}
+		path = decoded
+	}
 	if !filepath.IsAbs(path) {
 		http.Error(w, "Use An Absolute File Path", 400)
 		return
