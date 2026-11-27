@@ -23,17 +23,23 @@ type pairingInfo struct {
 
 func (p pairingInfo) link(token string) (string, error) {
 	var addresses []string
+	seen := map[string]bool{}
 	for _, address := range p.URLs {
 		u, err := url.Parse(address)
 		if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || (u.Scheme != "http" && u.Scheme != "https") || (p.Pin != "" && u.Scheme != "https") {
 			continue
 		}
-		addresses = append(addresses, strings.TrimRight(address, "/"))
+		clean := strings.TrimRight(address, "/")
+		if seen[clean] {
+			continue
+		}
+		seen[clean] = true
+		addresses = append(addresses, clean)
 	}
 	if len(addresses) == 0 {
 		return "", errors.New("No network listener is ready. Connect Wi-Fi or Tailscale, then try again")
 	}
-	// Prefer LAN for the scan, retaining Tailscale for use away from home.
+	// Prefer LAN for the scan, retaining .local, Tailscale and MagicDNS for failover.
 	for i, address := range addresses {
 		u, _ := url.Parse(address)
 		if ip := net.ParseIP(u.Hostname()); ip != nil && ip.IsPrivate() {

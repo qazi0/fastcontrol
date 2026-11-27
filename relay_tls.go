@@ -18,9 +18,32 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
+
+func normalizeCertNames(names []string) []string {
+	out := make([]string, 0, len(names))
+	seen := map[string]bool{}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if ip := net.ParseIP(name); ip != nil {
+			name = ip.String()
+		} else {
+			name = strings.ToLower(strings.TrimRight(name, "."))
+		}
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
+}
 
 type relayTLS struct {
 	mu          sync.Mutex
@@ -53,7 +76,7 @@ func newRelayTLS(dir string, names []string) (*tls.Config, string, error) {
 	return config, pin, err
 }
 func newRelayTLSIdentity(dir string, names []string) (*tls.Config, string, *relayTLS, error) {
-	identity := &relayTLS{dir: dir, names: append([]string(nil), names...)}
+	identity := &relayTLS{dir: dir, names: normalizeCertNames(names)}
 	cert, err := identity.getCertificate(nil)
 	if err != nil {
 		return nil, "", nil, err
@@ -65,9 +88,10 @@ func newRelayTLSIdentity(dir string, names []string) (*tls.Config, string, *rela
 	return &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: identity.getCertificate}, tlsFingerprint(leaf), identity, nil
 }
 func (r *relayTLS) setNames(names []string) error {
+	normalized := normalizeCertNames(names)
 	r.mu.Lock()
-	if !slices.Equal(r.names, names) {
-		r.names = append([]string(nil), names...)
+	if !slices.Equal(r.names, normalized) {
+		r.names = normalized
 		r.nextCheck = time.Time{}
 	}
 	r.mu.Unlock()
@@ -94,6 +118,7 @@ func privateAtomicFile(path string, data []byte) error {
 	return os.Rename(name, path)
 }
 func relayCertificate(dir string, names []string, now time.Time) (tls.Certificate, error) {
+	names = normalizeCertNames(names)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return tls.Certificate{}, err
 	}

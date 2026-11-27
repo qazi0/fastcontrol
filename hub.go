@@ -137,13 +137,28 @@ func (h *Hub) onReset() {
 }
 
 func (h *Hub) addClient(c *Client) {
+	h.registerClient(c, nil)
+}
+
+// registerClient adds c to the hub and queues the initial hello frame before
+// any thread snapshot or subsequent network broadcast. Holding h.mu across
+// registration and initial queueing guarantees hello is always frame 1 and
+// strictly serialized with Hub.setAddresses network updates.
+func (h *Hub) registerClient(c *Client, buildHello func(addrs []string) []byte) {
 	h.mu.Lock()
 	h.clients[c] = true
+	if buildHello != nil {
+		addrs := make([]string, len(h.addrs))
+		copy(addrs, h.addrs)
+		if hello := buildHello(addrs); len(hello) > 0 {
+			c.push(hello)
+		}
+	}
 	lj := h.listJSON
-	h.mu.Unlock()
 	if lj != nil && !c.eventsOnly {
 		c.push(lj)
 	}
+	h.mu.Unlock()
 }
 
 func (h *Hub) removeClient(c *Client) {
