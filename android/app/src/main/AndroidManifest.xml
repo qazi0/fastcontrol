@@ -53,7 +53,7 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Watches Codex agent threads on the user's own computers and posts alerts" />
+                android:value="Watches AI agent threads on the user's own computers and posts alerts" />
         </service>
     </application>
 </manifest>

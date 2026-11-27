@@ -3,8 +3,8 @@
 const agentLists = new Map();
 let agentView = null, agentListView = null, agentFrame = 0;
 const agentListKey = (server, parent, provider = S.provider) => JSON.stringify([server,provider,parent]);
-const agentLabel = agent => agent.provider === "claude" ? agent.agentName || agent.title || "Subagent" : base(agent.agentPath) || agent.agentName || agent.title || "Subagent";
-const agentStatus = agent => ({running:"Working",queued:"Queued",completed:"Done",failed:"Failed",stopped:"Stopped",saved:"Saved",unavailable:"Output unavailable"}[agent.agentState] || (agent.lastErr ? "Stopped" : agent.running ? "Working" : "Done"));
+const agentLabel = agent => (agent.provider === "claude" || agent.provider === "antigravity") ? agent.agentName || agent.title || "Subagent" : base(agent.agentPath) || agent.agentName || agent.title || "Subagent";
+const agentStatus = agent => ({running:"Working",queued:"Queued",completed:"Done",failed:"Failed",stopped:"Stopped",saved:"Saved",unavailable:"Output Unavailable"}[agent.agentState] || (agent.lastErr ? "Stopped" : agent.running ? "Working" : "Done"));
 
 async function readAgents(server, parent, force = false, provider = S.provider) {
   const key = agentListKey(server, parent, provider), c = conns.get(server);
@@ -52,7 +52,8 @@ async function refreshAgentList(opts, force = false) { paintAgentList(opts, awai
 SHEETS.agents = (sh, opts) => {
   opts.provider ||= S.provider;
   agentListView = opts;
-  sh.innerHTML = `<header class="diff-head"><button class="icon-btn" data-agent-back aria-label="Back">${svg('<path d="M15 5l-7 7 7 7"/>')}</button><h2>${opts.provider === "claude" ? "Background work" : "Subagents"}</h2><button class="icon-btn" data-agent-refresh aria-label="Refresh Subagents">${svg('<path d="M20 8a8 8 0 10.2 7M20 3v5h-5"/>')}</button></header><main id="agent-list" class="scroll agent-list">${loadingHTML("Loading Subagents")}</main>`;
+  const heading = opts.provider === "claude" ? "Background Work" : opts.provider === "antigravity" ? "Antigravity Subagents" : "Subagents";
+  sh.innerHTML = `<header class="diff-head"><button class="icon-btn" data-agent-back aria-label="Back">${svg('<path d="M15 5l-7 7 7 7"/>')}</button><h2>${heading}</h2><button class="icon-btn" data-agent-refresh aria-label="Refresh Subagents">${svg('<path d="M20 8a8 8 0 10.2 7M20 3v5h-5"/>')}</button></header><main id="agent-list" class="scroll agent-list">${loadingHTML("Loading Subagents")}</main>`;
   sh.onclick = event => {
     if (event.target.closest("[data-agent-back]")) { if (opts.backAgent) openSheet("agent",opts.backAgent); else closeSheet(); return; }
     if (event.target.closest("[data-agent-refresh]")) { refreshAgentList(opts,true); return; }
@@ -108,7 +109,8 @@ function paintAgentViewer(more = false, animate = true) {
   root.dataset.cwd = view.meta?.cwd || "";
   const connected = conns.get(view.server)?.ok;
   const waiting = !!view.meta?.requests?.length;
-  $("agent-status").textContent = [view.meta?.model && shortModel(view.meta.model), view.meta?.effort, connected ? waiting ? "Waiting For Input In Parent Chat" : agentStatus({running:view.meta?.running,agentState:view.meta?.agentState}) : "Offline"].filter(Boolean).join(" · ");
+  const modelText = view.meta?.model ? (typeof modelDisplayName === "function" ? modelDisplayName(view.meta.model, conns.get(view.server)?.models?.models) : shortModel(view.meta.model)) : "";
+  $("agent-status").textContent = [modelText, view.meta?.effort, connected ? waiting ? "Waiting For Input In Parent Chat" : agentStatus({running:view.meta?.running,agentState:view.meta?.agentState}) : "Offline"].filter(Boolean).join(" · ");
   $("agent-working").classList.toggle("hidden", !connected || waiting || !view.meta?.running);
   view.loaded = true;
 }

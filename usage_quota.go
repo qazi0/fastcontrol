@@ -11,10 +11,37 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
+
+const antigravityQuotaTimeout = 10 * time.Second
+
+type limitedBuffer struct {
+	buf bytes.Buffer
+	max int
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.max > 0 {
+		remaining := b.max - b.buf.Len()
+		if remaining > 0 {
+			if len(p) > remaining {
+				_, _ = b.buf.Write(p[:remaining])
+			} else {
+				_, _ = b.buf.Write(p)
+			}
+		}
+	}
+	return len(p), nil
+}
+
+func (b *limitedBuffer) String() string {
+	return b.buf.String()
+}
 
 func readUsageJSON(path string) (map[string]any, error) {
 	b, err := os.ReadFile(path)
@@ -48,7 +75,8 @@ func fetchProviderQuota(home string, p *ProviderUsage) {
 	defer cancel()
 	var data map[string]any
 	var err error
-	if p.Provider == "codex" {
+	switch p.Provider {
+	case "codex":
 		var auth map[string]any
 		auth, err = readUsageJSON(filepath.Join(usageRoot(home, "codex"), "auth.json"))
 		tokens := mapValue(auth["tokens"])
@@ -66,7 +94,7 @@ func fetchProviderQuota(home string, p *ProviderUsage) {
 				applyUsagePlanLabel(home, p, str(tokens, "account_id"))
 			}
 		}
-	} else {
+	case "claude":
 		var auth map[string]any
 		auth, err = readUsageJSON(filepath.Join(usageRoot(home, "claude"), ".credentials.json"))
 		oauth := mapValue(auth["claudeAiOauth"])
@@ -95,6 +123,10 @@ func fetchProviderQuota(home string, p *ProviderUsage) {
 				applyClaudeQuota(p, data)
 			}
 		}
+	case "antigravity":
+		err = fetchAntigravityQuota(ctx, home, p)
+	default:
+		err = errors.New("Unknown Provider")
 	}
 	if err != nil {
 		p.QuotaError = err.Error()
@@ -215,4 +247,199 @@ func applyUsagePlanLabel(home string, p *ProviderUsage, account string) {
 	if value == "Pro 20X" || value == "Pro 5X" {
 		p.Plan = value
 	}
+}
+
+func findAntigravityUsageBinary(home string) string {
+	if path, err := exec.LookPath("agy"); err == nil {
+		return path
+	}
+	var candidates []string
+	if home != "" {
+		if runtime.GOOS == "windows" {
+			candidates = append(candidates,
+				filepath.Join(home, ".local", "bin", "agy.exe"),
+				filepath.Join(home, ".local", "bin", "agy.cmd"),
+				filepath.Join(home, ".local", "bin", "agy.bat"),
+				filepath.Join(home, ".local", "bin", "agy"),
+			)
+		} else {
+			candidates = append(candidates, filepath.Join(home, ".local", "bin", "agy"))
+		}
+	}
+	if runtime.GOOS != "windows" {
+		candidates = append(candidates, "/opt/homebrew/bin/agy", "/usr/local/bin/agy")
+	}
+	for _, path := range candidates {
+		if st, err := os.Stat(path); err == nil && !st.IsDir() && (runtime.GOOS == "windows" || st.Mode()&0111 != 0) {
+			return path
+		}
+	}
+	return ""
+}
+
+func runAntigravityUsageCommand(ctx context.Context, bin string) (string, string, error) {
+	cmd := exec.CommandContext(ctx, bin, "-p", "/usage")
+	cmd.Stdin = nil
+	cmd.WaitDelay = 500 * time.Millisecond
+	stdout := &limitedBuffer{max: 1 << 20}
+	stderr := &limitedBuffer{max: 1 << 20}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	err := cmd.Run()
+	return stdout.String(), stderr.String(), err
+}
+
+func looksLikeAntigravityAuthError(text string) bool {
+	s := strings.ToLower(text)
+	for _, needle := range []string{
+		"sign in",
+		"signed in",
+		"not logged in",
+		"log in",
+		"login",
+		"authenticate",
+		"authentication",
+		"unauthenticated",
+		"unauthorized",
+		"credentials",
+		"oauth",
+		"antigravity-cli",
+	} {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func fetchAntigravityQuota(ctx context.Context, home string, p *ProviderUsage) error {
+	return fetchAntigravityQuotaWith(ctx, home, p, findAntigravityUsageBinary, runAntigravityUsageCommand)
+}
+
+func fetchAntigravityQuotaWith(
+	ctx context.Context,
+	home string,
+	p *ProviderUsage,
+	findBin func(string) string,
+	runCmd func(context.Context, string) (string, string, error),
+) error {
+	bin := findBin(home)
+	if bin == "" {
+		return errors.New("Install Antigravity CLI (agy) on This Computer to Read Subscription Limits")
+	}
+	qctx, cancel := context.WithTimeout(ctx, antigravityQuotaTimeout)
+	defer cancel()
+	stdout, stderr, err := runCmd(qctx, bin)
+	if err != nil {
+		if errors.Is(qctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+			return errors.New("Timed Out Reading Antigravity Limits. Run agy on This Computer to Verify Sign-In")
+		}
+		if looksLikeAntigravityAuthError(stderr) || looksLikeAntigravityAuthError(stdout) {
+			return errors.New("Sign In to Antigravity CLI on This Computer to Read Subscription Limits")
+		}
+		return errors.New("Could Not Read Antigravity Limits. Check Antigravity CLI Sign-In and Internet Connection")
+	}
+	windows := parseAntigravityQuotaTSV(stdout)
+	if len(windows) == 0 {
+		if looksLikeAntigravityAuthError(stdout) || looksLikeAntigravityAuthError(stderr) {
+			return errors.New("Sign In to Antigravity CLI on This Computer to Read Subscription Limits")
+		}
+		return errors.New("This Account Did Not Report Subscription Limit Windows")
+	}
+	p.Windows = windows
+	return nil
+}
+
+func titleCaseWord(word string) string {
+	upper := strings.ToUpper(word)
+	switch upper {
+	case "GPT", "AI", "API", "CLI":
+		return upper
+	case "OAUTH":
+		return "OAuth"
+	}
+	runes := []rune(strings.ToLower(word))
+	if len(runes) == 0 {
+		return ""
+	}
+	runes[0] = unicode.ToUpper(runes[0])
+	return string(runes)
+}
+
+func titleCaseWords(text string) string {
+	fields := strings.Fields(text)
+	for i, field := range fields {
+		fields[i] = titleCaseWord(field)
+	}
+	return strings.Join(fields, " ")
+}
+
+func formatAntigravityQuotaGroup(group string) string {
+	fields := strings.Fields(group)
+	if len(fields) > 1 && strings.EqualFold(fields[len(fields)-1], "models") {
+		fields = fields[:len(fields)-1]
+	}
+	for i, field := range fields {
+		fields[i] = titleCaseWord(field)
+	}
+	return strings.Join(fields, " ")
+}
+
+func formatAntigravityQuotaMetric(metric string) (string, int64) {
+	lower := strings.ToLower(strings.TrimSpace(metric))
+	switch {
+	case strings.Contains(lower, "weekly") || strings.Contains(lower, "seven day") || strings.Contains(lower, "7 day") || strings.Contains(lower, "7-day"):
+		return "Weekly", 10080
+	case strings.Contains(lower, "five hour") || strings.Contains(lower, "5 hour") || strings.Contains(lower, "5-hour") || strings.Contains(lower, "5h"):
+		return "5-Hour", 300
+	}
+	cleaned := lower
+	cleaned = strings.ReplaceAll(cleaned, "limit remaining", "")
+	cleaned = strings.ReplaceAll(cleaned, "remaining", "")
+	cleaned = strings.ReplaceAll(cleaned, "limit", "")
+	return titleCaseWords(cleaned), 0
+}
+
+func parseAntigravityQuotaTSV(output string) []UsageWindow {
+	var windows []UsageWindow
+	for _, rawLine := range strings.Split(output, "\n") {
+		line := strings.TrimRight(rawLine, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		cols := strings.Split(line, "\t")
+		if len(cols) < 4 {
+			continue
+		}
+		group := strings.TrimSpace(cols[0])
+		metric := strings.TrimSpace(cols[1])
+		pctStr := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(cols[2]), "%"))
+		resetStr := strings.TrimSpace(cols[3])
+		remaining, err := strconv.ParseFloat(pctStr, 64)
+		if err != nil || math.IsNaN(remaining) || math.IsInf(remaining, 0) {
+			continue
+		}
+		remaining = math.Max(0, math.Min(100, remaining))
+		used := math.Max(0, math.Min(100, math.Round((100-remaining)*10000)/10000))
+		var resetAt int64
+		if resetStr != "" {
+			if ts, err := time.Parse(time.RFC3339Nano, resetStr); err == nil && ts.Unix() > 0 {
+				resetAt = ts.Unix()
+			}
+		}
+		groupLabel := formatAntigravityQuotaGroup(group)
+		metricLabel, minutes := formatAntigravityQuotaMetric(metric)
+		label := strings.TrimSpace(groupLabel + " " + metricLabel)
+		if label == "" {
+			label = "Usage Window"
+		}
+		windows = append(windows, UsageWindow{
+			Label:     label,
+			Remaining: remaining,
+			Used:      used,
+			ResetAt:   resetAt,
+			Minutes:   minutes,
+		})
+	}
+	return windows
 }

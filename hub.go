@@ -59,6 +59,7 @@ type Hub struct {
 	organization *OrganizationReader
 	links        *sessionLinks
 	claude       *ClaudeManager
+	antigravity  *AntigravityManager
 	headless     *HeadlessCodex
 	recovery     *recoveryManager
 	ipc          *IPCClient
@@ -173,6 +174,9 @@ func (h *Hub) removeClient(c *Client) {
 	h.mu.Unlock()
 	if h.claude != nil {
 		h.claude.removeClient(c)
+	}
+	if h.antigravity != nil {
+		h.antigravity.removeClient(c)
 	}
 	for _, s := range subs {
 		s.unsubscribe(c)
@@ -389,7 +393,15 @@ func (h *Hub) handle(c *Client, raw []byte) {
 		h.claude.handle(c, raw)
 		return
 	}
-	if route.Provider != "" && route.Provider != "codex" && route.Provider != "claude" {
+	if route.Provider == "antigravity" && route.Op != "events" {
+		if h.antigravity == nil {
+			c.push(mustJSON(map[string]any{"t": "ack", "op": route.Op, "id": route.ID, "nonce": route.Nonce, "provider": "antigravity", "ok": false, "msg": "Antigravity Is Unavailable"}))
+			return
+		}
+		h.antigravity.handle(c, raw)
+		return
+	}
+	if route.Provider != "" && route.Provider != "codex" && route.Provider != "claude" && route.Provider != "antigravity" {
 		c.push(mustJSON(map[string]any{"t": "ack", "op": route.Op, "nonce": route.Nonce, "ok": false, "msg": "Unknown Provider"}))
 		return
 	}
