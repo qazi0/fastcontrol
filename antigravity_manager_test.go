@@ -307,6 +307,14 @@ func TestAntigravityManagerAvailabilityAndHubRouting(t *testing.T) {
 	}
 }
 
+func testLocalFileURI(p string) string {
+	slashed := filepath.ToSlash(p)
+	if len(slashed) == 0 || slashed[0] != '/' {
+		slashed = "/" + slashed
+	}
+	return (&url.URL{Scheme: "file", Path: slashed}).String()
+}
+
 func TestAntigravityManagerListProjectsGroupsOrgAndThrottle(t *testing.T) {
 	h := newAgyTestHarness(t)
 	wsA := filepath.Join(h.home, "repo-alpha")
@@ -321,7 +329,7 @@ func TestAntigravityManagerListProjectsGroupsOrgAndThrottle(t *testing.T) {
 			title:         "Alpha Chat",
 			preview:       "Initial alpha preview",
 			lastMod:       "2026-11-27T14:58:00Z",
-			workspaceURIs: fmt.Sprintf("[%q]", "file://"+filepath.ToSlash(wsA)),
+			workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(wsA)),
 			status:        "CASCADE_RUN_STATUS_IDLE",
 			groupID:       "grp-manual",
 		},
@@ -330,7 +338,7 @@ func TestAntigravityManagerListProjectsGroupsOrgAndThrottle(t *testing.T) {
 			title:         "Beta Chat",
 			preview:       "Initial beta preview",
 			lastMod:       "2026-11-27T14:59:00Z",
-			workspaceURIs: fmt.Sprintf("[%q]", "file://"+filepath.ToSlash(wsB)),
+			workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(wsB)),
 			status:        "CASCADE_RUN_STATUS_IDLE",
 		},
 		{
@@ -371,7 +379,7 @@ func TestAntigravityManagerListProjectsGroupsOrgAndThrottle(t *testing.T) {
 			title:         "Alpha Chat",
 			preview:       "Initial alpha preview",
 			lastMod:       "2026-11-27T14:58:10Z", // slightly newer, same order
-			workspaceURIs: fmt.Sprintf("[%q]", "file://"+filepath.ToSlash(wsA)),
+			workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(wsA)),
 			status:        "CASCADE_RUN_STATUS_IDLE",
 			groupID:       "grp-manual",
 		},
@@ -380,7 +388,7 @@ func TestAntigravityManagerListProjectsGroupsOrgAndThrottle(t *testing.T) {
 			title:         "Beta Chat",
 			preview:       "Initial beta preview",
 			lastMod:       "2026-11-27T14:59:00Z",
-			workspaceURIs: fmt.Sprintf("[%q]", "file://"+filepath.ToSlash(wsB)),
+			workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(wsB)),
 			status:        "CASCADE_RUN_STATUS_IDLE",
 		},
 		{
@@ -519,7 +527,7 @@ func TestAntigravityManagerModelsDiscoveryProbeAndCaching(t *testing.T) {
 			id:            "idle-conv",
 			title:         "Idle Chat",
 			lastMod:       "2026-11-27T14:50:00Z",
-			workspaceURIs: fmt.Sprintf("[%q]", "file://"+filepath.ToSlash(ws)),
+			workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(ws)),
 			status:        "CASCADE_RUN_STATUS_IDLE",
 		},
 	})
@@ -1318,7 +1326,7 @@ func TestAntigravityManagerWakeAppDataDirMoreAndIdleReap(t *testing.T) {
 			id:            "conv-cli-1",
 			title:         "CLI Session",
 			lastMod:       "2026-11-27T14:55:00Z",
-			workspaceURIs: fmt.Sprintf("[%q]", "file://"+filepath.ToSlash(ws)),
+			workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(ws)),
 			status:        "CASCADE_RUN_STATUS_IDLE",
 			appDataDir:    antigravityAppDirCLI,
 		},
@@ -1531,11 +1539,7 @@ func TestAntigravityManagerSubagentsReadOnlyAndFilesServing(t *testing.T) {
 	}
 
 	// file:// URI download succeeds.
-	slashed := filepath.ToSlash(planFile)
-	if len(slashed) == 0 || slashed[0] != '/' {
-		slashed = "/" + slashed
-	}
-	fileURI := (&url.URL{Scheme: "file", Path: slashed}).String()
+	fileURI := testLocalFileURI(planFile)
 	w := httptest.NewRecorder()
 	serveFile(w, httptest.NewRequest("GET", "/file?path="+url.QueryEscape(fileURI), nil))
 	if w.Code != 200 || !bytes.Equal(w.Body.Bytes(), planBody) {
@@ -1676,7 +1680,7 @@ func TestAntigravityManagerDispatchBarrierReplayAndTrailingChunks(t *testing.T) 
 			id:            "conv-barrier",
 			title:         "Barrier Chat",
 			lastMod:       "2026-11-27T14:55:00Z",
-			workspaceURIs: fmt.Sprintf("[%q]", "file://"+filepath.ToSlash(ws)),
+			workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(ws)),
 			status:        "CASCADE_RUN_STATUS_IDLE",
 		},
 	})
@@ -1806,7 +1810,7 @@ func TestAntigravityManagerLateSubagentGuardDirectOpenAndHardening(t *testing.T)
 			id:            "parent-existing",
 			title:         "Parent Chat",
 			lastMod:       "2026-11-27T14:55:00Z",
-			workspaceURIs: fmt.Sprintf("[%q]", "file://"+filepath.ToSlash(ws)),
+			workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(ws)),
 			status:        "CASCADE_RUN_STATUS_IDLE",
 		},
 	})
@@ -1821,7 +1825,7 @@ func TestAntigravityManagerLateSubagentGuardDirectOpenAndHardening(t *testing.T)
 			id:            "parent-existing",
 			title:         "Parent Chat",
 			lastMod:       "2026-11-27T14:55:00Z",
-			workspaceURIs: fmt.Sprintf("[%q]", "file://"+filepath.ToSlash(ws)),
+			workspaceURIs: fmt.Sprintf("[%q]", testLocalFileURI(ws)),
 			status:        "CASCADE_RUN_STATUS_IDLE",
 		},
 		{

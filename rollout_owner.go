@@ -46,6 +46,12 @@ func (c *rolloutOwnerCache) refresh(files map[string]os.FileInfo) {
 	for path, info := range files {
 		old := c.entries[path]
 		if !sameRolloutFile(old.file, info) || time.Since(old.checked) > ownerEvidenceTTL() {
+			if info != nil {
+				// On Windows, os.SameFile loads file identity lazily by path;
+				// resolve it before probing so replacements during the probe
+				// cannot inherit stale owner evidence.
+				_ = os.SameFile(info, info)
+			}
 			needed[path] = info
 		}
 	}
