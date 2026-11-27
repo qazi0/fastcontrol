@@ -78,13 +78,26 @@ type usageFile struct {
 	Skipped  int
 	Provider string
 }
+
+var usageProviders = []string{"codex", "claude", "antigravity"}
+
+func isUsageProvider(provider string) bool {
+	for _, p := range usageProviders {
+		if p == provider {
+			return true
+		}
+	}
+	return false
+}
+
 type UsageManager struct {
-	home     string
-	mu       sync.Mutex
-	cached   []byte
-	cachedAt time.Time
-	job      *usageCollection
-	quotas   map[string]*usageQuotaEntry // guarded by mu; independent of local scans
+	home             string
+	antigravityRoots []string // optional override for Antigravity app-data roots (tests)
+	mu               sync.Mutex
+	cached           []byte
+	cachedAt         time.Time
+	job              *usageCollection
+	quotas           map[string]*usageQuotaEntry // guarded by mu; independent of local scans
 	// Only the single snapshot worker reads or writes this file index.
 	files map[string]usageFile
 	quota func(string, *ProviderUsage)
@@ -99,7 +112,7 @@ func (m *UsageManager) serve(w http.ResponseWriter, r *http.Request) {
 	var b []byte
 	var err error
 	provider := r.URL.Query().Get("provider")
-	if provider != "" && provider != "codex" && provider != "claude" {
+	if provider != "" && !isUsageProvider(provider) {
 		http.Error(w, "Unknown Provider", 400)
 		return
 	}
@@ -129,22 +142,114 @@ func usageRoot(home, provider string) string {
 	}
 	return filepath.Join(home, fallback)
 }
+func antigravityUsageRoots(home string, override []string) []string {
+	var raw []string
+	if len(override) > 0 {
+		raw = override
+	} else if value := strings.TrimSpace(os.Getenv("ANTIGRAVITY_HOME")); value != "" {
+		raw = filepath.SplitList(value)
+	} else {
+		raw = []string{
+			filepath.Join(home, ".gemini", "antigravity"),
+			filepath.Join(home, ".gemini", "antigravity-cli"),
+		}
+	}
+	seen := map[string]bool{}
+	roots := make([]string, 0, len(raw))
+	for _, r := range raw {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		clean := filepath.Clean(r)
+		if !seen[clean] {
+			seen[clean] = true
+			roots = append(roots, clean)
+		}
+	}
+	return roots
+}
+func (m *UsageManager) ingestUsageFile(path, provider string, st os.FileInfo, since, now time.Time, seenFiles map[string]bool, rows map[string]usageRow, rowProvider map[string]string, local *ProviderUsage) error {
+	if st.IsDir() || st.ModTime().Before(since) {
+		return nil
+	}
+	seenFiles[path] = true
+	cached, ok := m.files[path]
+	if !ok || cached.Size != st.Size() || !cached.Mod.Equal(st.ModTime()) {
+		data, skipped, err := parseUsageFile(path, provider)
+		if err != nil {
+			return err
+		}
+		cached = usageFile{Size: st.Size(), Mod: st.ModTime(), Rows: data, Skipped: skipped, Provider: provider}
+		m.files[path] = cached
+	}
+	local.Skipped += cached.Skipped
+	for _, row := range cached.Rows {
+		if row.At.Before(since) || row.At.After(now.Add(time.Minute)) {
+			continue
+		}
+		key := provider + ":" + row.Key
+		prior, exists := rows[key]
+		if !exists || row.Tokens.Input+row.Tokens.Output > prior.Tokens.Input+prior.Tokens.Output || (row.Tokens == prior.Tokens && row.At.After(prior.At)) {
+			rows[key] = row
+			rowProvider[key] = provider
+		}
+	}
+	return nil
+}
 func (m *UsageManager) collectLocal(now time.Time) UsageReport {
 	zone, _ := now.Zone()
-	report := UsageReport{Host: hostName(), Day: now.Format("2006-01-02"), Zone: zone, UpdatedAt: now.Unix(), Providers: []ProviderUsage{{Provider: "codex"}, {Provider: "claude"}}}
-	locals := map[string]ProviderUsage{"codex": {Provider: "codex"}, "claude": {Provider: "claude"}}
+	providers := make([]ProviderUsage, len(usageProviders))
+	locals := make(map[string]ProviderUsage, len(usageProviders))
+	models := make(map[string]map[string]*UsageModel, len(usageProviders))
+	for i, provider := range usageProviders {
+		providers[i] = ProviderUsage{Provider: provider}
+		locals[provider] = ProviderUsage{Provider: provider}
+		models[provider] = map[string]*UsageModel{}
+	}
+	report := UsageReport{Host: hostName(), Day: now.Format("2006-01-02"), Zone: zone, UpdatedAt: now.Unix(), Providers: providers}
 	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	since := midnight.AddDate(0, 0, -29)
 	seenFiles := map[string]bool{}
 	rows := map[string]usageRow{}
 	rowProvider := map[string]string{}
-	for _, provider := range []string{"codex", "claude"} {
+	for _, provider := range usageProviders {
+		local := locals[provider]
+		if provider == "antigravity" {
+			for _, root := range antigravityUsageRoots(m.home, m.antigravityRoots) {
+				brainDir := filepath.Join(root, "brain")
+				entries, err := os.ReadDir(brainDir)
+				if err != nil {
+					if !os.IsNotExist(err) {
+						local.LocalError = "Some Local Logs Could Not Be Read"
+					}
+					continue
+				}
+				for _, entry := range entries {
+					if !entry.IsDir() {
+						continue
+					}
+					path := filepath.Join(brainDir, entry.Name(), ".system_generated", "logs", "transcript.jsonl")
+					st, err := os.Stat(path)
+					if err != nil {
+						if !os.IsNotExist(err) {
+							local.LocalError = "Some Local Logs Could Not Be Read"
+						}
+						continue
+					}
+					if err := m.ingestUsageFile(path, provider, st, since, now, seenFiles, rows, rowProvider, &local); err != nil {
+						local.LocalError = "Some Local Logs Could Not Be Read"
+					}
+				}
+			}
+			locals[provider] = local
+			continue
+		}
 		root := usageRoot(m.home, provider)
 		folders := []string{"sessions", "archived_sessions"}
 		if provider == "claude" {
 			folders = []string{"projects"}
 		}
-		local := locals[provider]
 		for _, folder := range folders {
 			err := filepath.WalkDir(filepath.Join(root, folder), func(path string, entry os.DirEntry, err error) error {
 				if err != nil {
@@ -160,32 +265,7 @@ func (m *UsageManager) collectLocal(now time.Time) UsageReport {
 				if err != nil {
 					return err
 				}
-				if st.ModTime().Before(since) {
-					return nil
-				}
-				seenFiles[path] = true
-				cached, ok := m.files[path]
-				if !ok || cached.Size != st.Size() || !cached.Mod.Equal(st.ModTime()) {
-					data, skipped, err := parseUsageFile(path, provider)
-					if err != nil {
-						return err
-					}
-					cached = usageFile{Size: st.Size(), Mod: st.ModTime(), Rows: data, Skipped: skipped, Provider: provider}
-					m.files[path] = cached
-				}
-				local.Skipped += cached.Skipped
-				for _, row := range cached.Rows {
-					if row.At.Before(since) || row.At.After(now.Add(time.Minute)) {
-						continue
-					}
-					key := provider + ":" + row.Key
-					prior, exists := rows[key]
-					if !exists || row.Tokens.Input+row.Tokens.Output > prior.Tokens.Input+prior.Tokens.Output || (row.Tokens == prior.Tokens && row.At.After(prior.At)) {
-						rows[key] = row
-						rowProvider[key] = provider
-					}
-				}
-				return nil
+				return m.ingestUsageFile(path, provider, st, since, now, seenFiles, rows, rowProvider, &local)
 			})
 			if err != nil {
 				local.LocalError = "Some Local Logs Could Not Be Read"
@@ -198,7 +278,6 @@ func (m *UsageManager) collectLocal(now time.Time) UsageReport {
 			delete(m.files, path)
 		}
 	}
-	models := map[string]map[string]*UsageModel{"codex": {}, "claude": {}}
 	for key, row := range rows {
 		provider := rowProvider[key]
 		local := locals[provider]
@@ -263,21 +342,38 @@ func (u *UsageTotals) finish() {
 	}
 }
 
-func tokenInt(m map[string]any, key string) int64 {
-	v, _ := m[key].(float64)
+func clampTokenFloat(v float64) int64 {
 	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > 9e15 {
 		return 0
 	}
 	return int64(v)
 }
+func tokenInt(m map[string]any, key string) int64 {
+	v, _ := m[key].(float64)
+	return clampTokenFloat(v)
+}
+func parseAntigravityUsageTokens(input, cacheRead, output float64) usageTokens {
+	uncached := clampTokenFloat(input)
+	cached := clampTokenFloat(cacheRead)
+	out := clampTokenFloat(output)
+	return usageTokens{
+		Input:  uncached + cached,
+		Cached: cached,
+		Output: out,
+	}
+}
 func parseUsageTokens(m map[string]any, provider string) usageTokens {
 	t := usageTokens{Input: tokenInt(m, "input_tokens"), Output: tokenInt(m, "output_tokens"), Reasoning: tokenInt(m, "reasoning_output_tokens")}
-	if provider == "claude" {
+	switch provider {
+	case "claude":
 		t.Cached = tokenInt(m, "cache_read_input_tokens")
 		t.Write = tokenInt(m, "cache_creation_input_tokens")
 		t.Write1h = tokenInt(mapValue(m["cache_creation"]), "ephemeral_1h_input_tokens")
 		t.Input += t.Cached + t.Write
-	} else {
+	case "antigravity":
+		t.Cached = tokenInt(m, "cache_read_tokens")
+		t.Input += t.Cached
+	default:
 		t.Cached = tokenInt(m, "cached_input_tokens")
 		if t.Cached == 0 {
 			t.Cached = tokenInt(m, "cache_read_input_tokens")
@@ -288,6 +384,16 @@ func parseUsageTokens(m map[string]any, provider string) usageTokens {
 	t.Write = min(t.Write, t.Input-t.Cached)
 	t.Write1h = min(t.Write1h, t.Write)
 	return t
+}
+func antigravityUsageSession(path string) string {
+	logsDir := filepath.Dir(path)
+	sysDir := filepath.Dir(logsDir)
+	if filepath.Base(logsDir) == "logs" && filepath.Base(sysDir) == ".system_generated" {
+		if id := filepath.Base(filepath.Dir(sysDir)); id != "" && id != "." && id != string(filepath.Separator) {
+			return id
+		}
+	}
+	return filepath.Base(path)
 }
 func usageDelta(current, previous usageTokens) usageTokens {
 	return usageTokens{Input: max(0, current.Input-previous.Input), Cached: max(0, current.Cached-previous.Cached), Write: max(0, current.Write-previous.Write), Output: max(0, current.Output-previous.Output)}
@@ -329,6 +435,9 @@ func parseUsageFile(path, provider string) ([]usageRow, int, error) {
 	model := ""
 	tier := ""
 	session := filepath.Base(path)
+	if provider == "antigravity" {
+		session = antigravityUsageSession(path)
+	}
 	previous := usageTokens{}
 	havePrevious := false
 	var latestModern usageTokens
@@ -343,13 +452,42 @@ func parseUsageFile(path, provider string) ([]usageRow, int, error) {
 			if provider == "claude" {
 				kind = []byte("\"type\":\"assistant\"")
 				spaced = []byte("\"type\": \"assistant\"")
+			} else if provider == "antigravity" {
+				kind = []byte("\"type\":\"PLANNER_RESPONSE\"")
+				spaced = []byte("\"type\": \"PLANNER_RESPONSE\"")
 			}
 			if bytes.Contains(line, kind) || bytes.Contains(line, spaced) {
 				skipped++
 			}
 			line = nil
 		}
-		if len(line) > 0 && (bytes.Contains(line, []byte("token_usage_record")) || bytes.Contains(line, []byte("token_count")) || bytes.Contains(line, []byte("turn_context")) || bytes.Contains(line, []byte("session_meta")) || provider == "claude" && bytes.Contains(line, []byte("\"usage\""))) {
+		if provider == "antigravity" {
+			if len(line) > 0 && bytes.Contains(line, []byte("PLANNER_RESPONSE")) {
+				var entry struct {
+					Type            string  `json:"type"`
+					CreatedAt       string  `json:"created_at"`
+					StepIndex       *int64  `json:"step_index"`
+					Model           string  `json:"model"`
+					InputTokens     float64 `json:"input_tokens"`
+					CacheReadTokens float64 `json:"cache_read_tokens"`
+					OutputTokens    float64 `json:"output_tokens"`
+				}
+				if json.Unmarshal(line, &entry) == nil && entry.Type == "PLANNER_RESPONSE" {
+					if at, err := time.Parse(time.RFC3339Nano, entry.CreatedAt); err == nil && !at.IsZero() {
+						t := parseAntigravityUsageTokens(entry.InputTokens, entry.CacheReadTokens, entry.OutputTokens)
+						if t.Input+t.Output > 0 {
+							key := ""
+							if entry.StepIndex != nil {
+								key = fmt.Sprintf("step:%s:%d", session, *entry.StepIndex)
+							} else {
+								key = fmt.Sprintf("row:%s:%s:%d:%d:%d", session, entry.CreatedAt, t.Input, t.Cached, t.Output)
+							}
+							result = append(result, usageRow{Key: key, At: at, Model: strings.TrimSpace(entry.Model), Tokens: t})
+						}
+					}
+				}
+			}
+		} else if len(line) > 0 && (bytes.Contains(line, []byte("token_usage_record")) || bytes.Contains(line, []byte("token_count")) || bytes.Contains(line, []byte("turn_context")) || bytes.Contains(line, []byte("session_meta")) || provider == "claude" && bytes.Contains(line, []byte("\"usage\""))) {
 			var r struct {
 				Type      string         `json:"type"`
 				Timestamp string         `json:"timestamp"`

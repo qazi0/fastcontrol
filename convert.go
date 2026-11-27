@@ -84,40 +84,56 @@ type Question struct {
 	Descriptions []string `json:"descriptions,omitempty"`
 	Other        bool     `json:"other,omitempty"`
 	Secret       bool     `json:"secret,omitempty"`
+	MultiSelect  bool     `json:"multiSelect,omitempty"`
+	FreeText     bool     `json:"freeText,omitempty"`
+}
+
+type RequestOption struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	Kind  string `json:"kind,omitempty"`
 }
 
 type Request struct {
-	ID        string     `json:"id"`
-	Method    string     `json:"method"`
-	Kind      string     `json:"kind"` // command, file, question, other
-	Title     string     `json:"title"`
-	Body      string     `json:"body,omitempty"`
-	Questions []Question `json:"questions,omitempty"`
+	ID        string          `json:"id"`
+	Method    string          `json:"method"`
+	Kind      string          `json:"kind"` // command, file, question, other
+	Title     string          `json:"title"`
+	Body      string          `json:"body,omitempty"`
+	Options   []RequestOption `json:"options,omitempty"`
+	Questions []Question      `json:"questions,omitempty"`
+}
+
+type SlashCommand struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	InputHint   string `json:"inputHint,omitempty"`
 }
 
 type Meta struct {
-	Connecting     bool      `json:"connecting,omitempty"`
-	Provider       string    `json:"provider,omitempty"`
-	PermissionMode string    `json:"permissionMode,omitempty"`
-	Title          string    `json:"title"`
-	Cwd            string    `json:"cwd,omitempty"`
-	Branch         string    `json:"branch,omitempty"`
-	Model          string    `json:"model,omitempty"`
-	Effort         string    `json:"effort,omitempty"`
-	Approval       string    `json:"approval,omitempty"`
-	Reviewer       string    `json:"reviewer,omitempty"` // who reviews approval requests: user or auto_review
-	Sandbox        string    `json:"sandbox,omitempty"`
-	CtxUsed        int64     `json:"ctxUsed,omitempty"`
-	CtxMax         int64     `json:"ctxMax,omitempty"`
-	TurnAt         int64     `json:"turnAt,omitempty"`
-	Exec           bool      `json:"exec,omitempty"` // first turn is running headless via codex exec
-	HasOlder       bool      `json:"hasOlder,omitempty"`
-	Mode           string    `json:"mode"` // live (desktop owns it, full control) or tail (read-only rollout tail)
-	Running        bool      `json:"running"`
-	Runtime        string    `json:"runtime,omitempty"`
-	ReadOnly       bool      `json:"readOnly,omitempty"`
-	AgentState     string    `json:"agentState,omitempty"`
-	Requests       []Request `json:"requests,omitempty"`
+	Connecting     bool           `json:"connecting,omitempty"`
+	Provider       string         `json:"provider,omitempty"`
+	PermissionMode string         `json:"permissionMode,omitempty"`
+	Title          string         `json:"title"`
+	Cwd            string         `json:"cwd,omitempty"`
+	Branch         string         `json:"branch,omitempty"`
+	Model          string         `json:"model,omitempty"`
+	Effort         string         `json:"effort,omitempty"`
+	Approval       string         `json:"approval,omitempty"`
+	Reviewer       string         `json:"reviewer,omitempty"` // who reviews approval requests: user or auto_review
+	Sandbox        string         `json:"sandbox,omitempty"`
+	CtxUsed        int64          `json:"ctxUsed,omitempty"`
+	CtxMax         int64          `json:"ctxMax,omitempty"`
+	TurnAt         int64          `json:"turnAt,omitempty"`
+	Exec           bool           `json:"exec,omitempty"` // first turn is running headless via codex exec
+	HasOlder       bool           `json:"hasOlder,omitempty"`
+	Mode           string         `json:"mode"` // live (desktop owns it, full control) or tail (read-only rollout tail)
+	Running        bool           `json:"running"`
+	Runtime        string         `json:"runtime,omitempty"`
+	ReadOnly       bool           `json:"readOnly,omitempty"`
+	AgentState     string         `json:"agentState,omitempty"`
+	Requests       []Request      `json:"requests,omitempty"`
+	Commands       []SlashCommand `json:"commands,omitempty"`
 }
 
 const (

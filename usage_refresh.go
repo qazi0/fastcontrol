@@ -46,8 +46,8 @@ type usagePart struct {
 // Each worker owns its result until sending it. Only the coordinator merges
 // results and publishes immutable JSON. The local worker alone owns m.files.
 func (m *UsageManager) collectParts(now time.Time, refresh bool) <-chan usagePart {
-	parts := make(chan usagePart, 3)
-	for i, provider := range []string{"codex", "claude"} {
+	parts := make(chan usagePart, len(usageProviders)+1)
+	for i, provider := range usageProviders {
 		go func(i int, provider string) {
 			p, done := m.readQuota(provider, refresh)
 			if done != nil {
@@ -79,18 +79,31 @@ func mergeUsagePart(report *UsageReport, part usagePart) {
 }
 
 func validUsageProviders(report UsageReport) bool {
-	return len(report.Providers) == 2 && report.Providers[0].Provider == "codex" && report.Providers[1].Provider == "claude"
+	if len(report.Providers) != len(usageProviders) {
+		return false
+	}
+	for i, provider := range usageProviders {
+		if report.Providers[i].Provider != provider {
+			return false
+		}
+	}
+	return true
 }
 
 func emptyUsageReport(now time.Time) UsageReport {
 	zone, _ := now.Zone()
-	return UsageReport{Host: hostName(), Day: now.Format("2006-01-02"), Zone: zone, Providers: []ProviderUsage{{Provider: "codex", Windows: []UsageWindow{}}, {Provider: "claude", Windows: []UsageWindow{}}}}
+	providers := make([]ProviderUsage, len(usageProviders))
+	for i, provider := range usageProviders {
+		providers[i] = ProviderUsage{Provider: provider, Windows: []UsageWindow{}}
+	}
+	return UsageReport{Host: hostName(), Day: now.Format("2006-01-02"), Zone: zone, Providers: providers}
 }
 
 func (m *UsageManager) collect(now time.Time) UsageReport {
 	report := emptyUsageReport(now)
 	parts := m.collectParts(now, true)
-	for i := 0; i < 3; i++ {
+	totalParts := len(usageProviders) + 1
+	for i := 0; i < totalParts; i++ {
 		mergeUsagePart(&report, <-parts)
 	}
 	report.UpdatedAt = now.Unix()
@@ -128,9 +141,10 @@ func (m *UsageManager) startLocked(refresh bool) *usageCollection {
 	job := m.job
 	go func() {
 		parts := m.collectParts(now, refresh)
-		for i := 0; i < 3; i++ {
+		totalParts := len(usageProviders) + 1
+		for i := 0; i < totalParts; i++ {
 			mergeUsagePart(&report, <-parts)
-			report.Refreshing = i < 2
+			report.Refreshing = i < totalParts-1
 			report.UpdatedAt = time.Now().Unix()
 			data := mustJSON(report)
 			m.mu.Lock()
