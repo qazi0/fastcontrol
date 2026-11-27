@@ -232,11 +232,13 @@ class VoiceCaptureService : Service() {
 
     private fun notification(): Notification {
         val phase = state.optString("phase")
-        val open = Intent(this, MainActivity::class.java).setAction(MainActivity.ACTION_OPEN_THREAD)
-            .putExtra(MainActivity.EXTRA_SERVER, state.optString("server"))
-            .putExtra(MainActivity.EXTRA_THREAD, state.optString("thread"))
-            .putExtra(MainActivity.EXTRA_PROVIDER, state.optString("provider", "codex"))
-            .setData(Uri.parse("fastcontrol://voice/" + state.optString("id")))
+        val open = MainActivity.openThreadIntent(
+            context = this,
+            serverId = state.optString("server"),
+            threadId = state.optString("thread"),
+            provider = state.optString("provider"),
+            dataUri = Uri.parse("fastcontrol://voice/" + state.optString("id")),
+        )
         val content = PendingIntent.getActivity(this, 103, open, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val builder = Notification.Builder(this, CHANNEL).setSmallIcon(R.drawable.ic_stat_relay)
             .setContentTitle(if (phase == "transcribing") "Transcribing Voice" else if (phase == "preparing") "Starting Recording" else "Recording Voice")

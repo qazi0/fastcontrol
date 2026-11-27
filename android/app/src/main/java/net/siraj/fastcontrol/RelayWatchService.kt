@@ -59,7 +59,53 @@ class RelayWatchService : Service() {
             svc.main.post { svc.nudge(serverId, preferredUrl) }
         }
 
-        private fun tag(serverId: String, threadId: String, provider: String) = "$serverId/$provider/$threadId"
+        internal data class ThreadNotificationSpec(
+            val channel: String,
+            val serverId: String,
+            val threadId: String,
+            val provider: String,
+            val tag: String,
+            val title: String,
+            val text: String,
+            val subText: String,
+            val isAttention: Boolean,
+        )
+
+        internal fun tag(serverId: String, threadId: String, provider: String) =
+            "$serverId/${Providers.normalize(provider)}/$threadId"
+
+        internal fun buildNotificationSpec(
+            serverName: String,
+            serverId: String,
+            kind: String,
+            threadId: String,
+            rawProvider: String?,
+            rawTitle: String?,
+            rawText: String?,
+        ): ThreadNotificationSpec? {
+            val channel = when (kind) {
+                "completed", "failed" -> CH_TURNS
+                "attention" -> CH_ATTENTION
+                else -> return null
+            }
+            if (threadId.isEmpty()) return null
+            val provider = Providers.normalize(rawProvider)
+            val cleanTitle = rawTitle?.trim().orEmpty()
+            val cleanText = rawText?.trim().orEmpty()
+            val title = cleanTitle.ifEmpty { Providers.fallbackNotificationTitle(provider, kind) }
+            val text = cleanText.ifEmpty { Providers.fallbackNotificationText(kind, hasExplicitTitle = cleanTitle.isNotEmpty()) }
+            return ThreadNotificationSpec(
+                channel = channel,
+                serverId = serverId,
+                threadId = threadId,
+                provider = provider,
+                tag = tag(serverId, threadId, provider),
+                title = title,
+                text = text,
+                subText = Providers.notificationSubText(serverName, provider),
+                isAttention = kind == "attention",
+            )
+        }
 
         fun cancelThreadNotification(ctx: Context, serverId: String, threadId: String, provider: String) {
             ctx.getSystemService(NotificationManager::class.java)
@@ -283,50 +329,50 @@ class RelayWatchService : Service() {
         checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
     private fun onEvent(server: Server, msg: JSONObject) {
-        val kind = msg.optString("kind")
-        val channel = when (kind) {
-            "completed", "failed" -> CH_TURNS
-            "attention" -> CH_ATTENTION
-            else -> return
-        }
-        val threadId = msg.optString("id")
-        if (threadId.isEmpty()) return
-        val provider = msg.optString("provider", "codex")
-        if (UiState.isShowing(server.id, threadId, provider)) return
+        val spec = buildNotificationSpec(
+            serverName = server.name,
+            serverId = server.id,
+            kind = msg.optString("kind"),
+            threadId = msg.optString("id"),
+            rawProvider = msg.optString("provider"),
+            rawTitle = msg.optString("title"),
+            rawText = msg.optString("text"),
+        ) ?: return
+        if (UiState.isShowing(spec.serverId, spec.threadId, spec.provider)) return
         if (!canNotify()) return
 
-        val title = msg.optString("title").ifEmpty { "Codex" }
-        val text = msg.optString("text").ifEmpty {
-            when (kind) {
-                "failed" -> "Turn Failed"
-                "attention" -> "Needs Your Attention"
-                else -> "Turn Completed"
-            }
-        }
-        val tag = tag(server.id, threadId, provider)
-        val open = Intent(this, MainActivity::class.java)
-            .setAction(MainActivity.ACTION_OPEN_THREAD)
-            .putExtra(MainActivity.EXTRA_SERVER, server.id)
-            .putExtra(MainActivity.EXTRA_THREAD, threadId)
-            .putExtra(MainActivity.EXTRA_PROVIDER, provider)
+        val dataUri = android.net.Uri.Builder()
+            .scheme("fastcontrol")
+            .authority("thread")
+            .appendPath(spec.serverId)
+            .appendPath(spec.provider)
+            .appendPath(spec.threadId)
+            .build()
+        val open = MainActivity.openThreadIntent(
+            context = this,
+            serverId = spec.serverId,
+            threadId = spec.threadId,
+            provider = spec.provider,
+            dataUri = dataUri,
+        )
         val pi = PendingIntent.getActivity(
-            this, tag.hashCode(), open,
+            this, spec.tag.hashCode(), open,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-        val n = Notification.Builder(this, channel)
+        val n = Notification.Builder(this, spec.channel)
             .setSmallIcon(R.drawable.ic_stat_relay)
             .setColor(getColor(R.color.accent))
-            .setContentTitle(title)
-            .setContentText(text)
-            .setStyle(Notification.BigTextStyle().bigText(text))
-            .setSubText(server.name + " · " + if (provider == "claude") "Claude Code" else "Codex")
+            .setContentTitle(spec.title)
+            .setContentText(spec.text)
+            .setStyle(Notification.BigTextStyle().bigText(spec.text))
+            .setSubText(spec.subText)
             .setAutoCancel(true)
             .setContentIntent(pi)
             .setCategory(
-                if (kind == "attention") Notification.CATEGORY_REMINDER else Notification.CATEGORY_STATUS
+                if (spec.isAttention) Notification.CATEGORY_REMINDER else Notification.CATEGORY_STATUS
             )
             .build()
-        nm.notify(tag, THREAD_ID, n)
+        nm.notify(spec.tag, THREAD_ID, n)
     }
 
     /**

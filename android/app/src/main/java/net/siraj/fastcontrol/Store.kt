@@ -302,5 +302,7 @@ object UiState {
     @Volatile var activeProvider = ""
 
     fun isShowing(serverId: String, threadId: String, provider: String) =
-        resumed && activeServer == serverId && activeThread == threadId && activeProvider == provider
+        resumed && serverId.isNotEmpty() && threadId.isNotEmpty() &&
+            activeServer == serverId && activeThread == threadId &&
+            activeProvider == Providers.normalize(provider)
 }

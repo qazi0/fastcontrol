@@ -51,12 +51,82 @@ class MainActivity : Activity() {
         const val ACTION_OPEN_THREAD = "net.siraj.fastcontrol.OPEN_THREAD"
         const val EXTRA_SERVER = "server"
         const val EXTRA_THREAD = "thread"
- const val EXTRA_PROVIDER = "provider"
+        const val EXTRA_PROVIDER = "provider"
         private const val REQ_FILES = 1
         private const val REQ_NOTIFY = 2
         private const val REQ_MIC = 3
         private const val REQ_SAVE_IMAGE = 4
         private const val REQ_ATTACHMENTS = 5
+
+        internal fun threadIntentExtras(
+            serverId: String,
+            threadId: String,
+            provider: String?,
+        ): Map<String, String> = mapOf(
+            EXTRA_SERVER to serverId,
+            EXTRA_THREAD to threadId,
+            EXTRA_PROVIDER to Providers.normalize(provider),
+        )
+
+        internal fun openThreadIntent(
+            context: Context,
+            serverId: String,
+            threadId: String,
+            provider: String?,
+            dataUri: Uri? = null,
+        ): Intent {
+            val intent = Intent(context, MainActivity::class.java).setAction(ACTION_OPEN_THREAD)
+            for ((k, v) in threadIntentExtras(serverId, threadId, provider)) {
+                intent.putExtra(k, v)
+            }
+            if (dataUri != null) intent.setData(dataUri)
+            return intent
+        }
+
+        internal fun threadLaunchExtras(
+            action: String?,
+            serverId: String?,
+            threadId: String?,
+            provider: String?,
+        ): ThreadDeepLink? {
+            if (action != ACTION_OPEN_THREAD) return null
+            if (serverId.isNullOrEmpty() || threadId.isNullOrEmpty()) return null
+            return ThreadDeepLink(
+                serverId = serverId,
+                threadId = threadId,
+                provider = Providers.normalize(provider),
+            )
+        }
+
+        internal fun describeThreadLaunch(
+            action: String?,
+            serverId: String?,
+            threadId: String?,
+            provider: String?,
+        ): JSONObject? {
+            val link = threadLaunchExtras(action, serverId, threadId, provider) ?: return null
+            return JSONObject()
+                .put("type", "thread")
+                .put("server", link.serverId)
+                .put("thread", link.threadId)
+                .put("provider", link.provider)
+        }
+
+        internal fun buildVoiceSessionState(
+            id: String,
+            serverId: String,
+            address: String,
+            thread: String,
+            provider: String?,
+            draft: String,
+        ): JSONObject = JSONObject()
+            .put("id", id)
+            .put("server", serverId)
+            .put("base", address)
+            .put("thread", thread)
+            .put("provider", Providers.normalize(provider))
+            .put("phase", "preparing")
+            .put("draft", draft.take(65536))
     }
 
     private lateinit var container: FrameLayout
@@ -313,14 +383,13 @@ class MainActivity : Activity() {
     /** Turns a launch intent into the JSON string handed to the page by consumeLaunchIntent. */
     private fun describeIntent(intent: Intent?): String {
         intent ?: return ""
-        if (intent.action == ACTION_OPEN_THREAD) {
-            val server = intent.getStringExtra(EXTRA_SERVER) ?: return ""
-            val thread = intent.getStringExtra(EXTRA_THREAD) ?: return ""
-            return JSONObject()
-                .put("type", "thread").put("server", server).put("thread", thread)
- .put("provider", intent.getStringExtra(EXTRA_PROVIDER) ?: "codex")
-                .toString()
-        }
+        val threadJson = describeThreadLaunch(
+            action = intent.action,
+            serverId = intent.getStringExtra(EXTRA_SERVER),
+            threadId = intent.getStringExtra(EXTRA_THREAD),
+            provider = intent.getStringExtra(EXTRA_PROVIDER),
+        )
+        if (threadJson != null) return threadJson.toString()
         val data = intent.data
         if (intent.action == Intent.ACTION_VIEW && data != null &&
             data.scheme == "fastcontrol" && data.host == "pair"
@@ -753,9 +822,7 @@ class MainActivity : Activity() {
             }
             val server = Store.servers(ctx).find { it.id == serverId }
             val address = base.ifEmpty { server?.url ?: "" }.trimEnd('/')
-            val state = JSONObject().put("id", id).put("server", serverId).put("base", address)
-                .put("thread", thread).put("provider", if (provider == "claude") "claude" else "codex")
-                .put("phase", "preparing").put("draft", draft.take(65536))
+            val state = buildVoiceSessionState(id, serverId, address, thread, provider, draft)
             if (server == null || address !in server.urls.map { it.trimEnd('/') }) {
                 VoiceCaptureService.failStart(ctx, state, "Reconnect To This Computer And Try Again"); return@runOnUiThread
             }
@@ -812,11 +879,18 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun setActiveThread(serverId: String, threadId: String, provider: String) {
- UiState.activeProvider = provider
+            val normalizedProvider = if (serverId.isNotEmpty() && threadId.isNotEmpty()) {
+                Providers.normalize(provider)
+            } else if (provider.isBlank()) {
+                ""
+            } else {
+                Providers.normalize(provider)
+            }
+            UiState.activeProvider = normalizedProvider
             UiState.activeServer = serverId
             UiState.activeThread = threadId
             if (serverId.isNotEmpty() && threadId.isNotEmpty()) {
-                RelayWatchService.cancelThreadNotification(ctx, serverId, threadId, provider)
+                RelayWatchService.cancelThreadNotification(ctx, serverId, threadId, normalizedProvider)
             }
         }
 
