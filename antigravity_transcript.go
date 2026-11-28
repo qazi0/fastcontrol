@@ -30,7 +30,8 @@ const (
 	antigravityMaxLineBytes          = 4 << 20
 	antigravityFullTranscriptMaxScan = 32 << 20
 	antigravityAnnotationMaxBytes    = 64 << 10
-	antigravityStaleRunningGrace     = time.Minute
+	antigravityStaleRunningGrace     = 2 * time.Minute
+	antigravityConvStepStatusRunning = 2
 )
 
 // antigravityNow and antigravityOwners allow deterministic tests without
@@ -68,6 +69,7 @@ type antigravityRecord struct {
 	GroupID              string
 	Running              bool
 	TranscriptPath       string
+	ConvDBPath           string
 	BrainDir             string
 	AnnotationTitle      string
 }
@@ -476,6 +478,10 @@ func mergeAntigravityRecord(existing, candidate antigravityRecord) antigravityRe
 	return winner
 }
 
+func antigravityConvDBPath(geminiDir, appDataDir, convID string) string {
+	return filepath.Join(geminiDir, appDataDir, "conversations", convID+".db")
+}
+
 func antigravityResolveRecordPaths(geminiDir string, rec *antigravityRecord) {
 	if rec == nil || !antigravityValidConversationID(rec.ID) {
 		return
@@ -522,6 +528,14 @@ func antigravityResolveRecordPaths(geminiDir string, rec *antigravityRecord) {
 	}
 
 	for _, dir := range candidates {
+		cPath := antigravityConvDBPath(geminiDir, dir, rec.ID)
+		if st, err := os.Stat(cPath); err == nil && st.Mode().IsRegular() {
+			rec.ConvDBPath = cPath
+			break
+		}
+	}
+
+	for _, dir := range candidates {
 		annPath := antigravityAnnotationPath(geminiDir, dir, rec.ID)
 		if title := readAntigravityAnnotationTitle(annPath); title != "" {
 			rec.AnnotationTitle = title
@@ -540,15 +554,46 @@ func antigravityRecordIsDBRunning(rec antigravityRecord) bool {
 	return rec.Status == "CASCADE_RUN_STATUS_RUNNING" || rec.NotFullyIdle
 }
 
+func antigravityRecordIsBlankStatusCandidate(rec antigravityRecord) bool {
+	return !rec.Killed && rec.Status == "" && !rec.NotFullyIdle
+}
+
+func antigravityConvDBHasRunningStep(convDBPath string) bool {
+	if strings.TrimSpace(convDBPath) == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	found := false
+	_ = withReadOnlySQLite(ctx, convDBPath, func(ctx context.Context, db *sql.DB) error {
+		var one int
+		err := db.QueryRowContext(ctx, `select 1 from steps where status = ? limit 1`, antigravityConvStepStatusRunning).Scan(&one)
+		if err == nil && one == 1 {
+			found = true
+		}
+		return nil
+	})
+	return found
+}
+
 // antigravityApplyStaleGuard sets Running on each record while preventing
 // abandoned CASCADE_RUN_STATUS_RUNNING or not_fully_idle rows from remaining
 // stuck running when their transcript is untouched and has no live owner.
+// It also handles Antigravity summary updates that temporarily write an empty
+// status mid-turn, and probes conversations/<id>.db (held open by language_server)
+// in addition to transcript.jsonl.
 func antigravityApplyStaleGuard(records []antigravityRecord, liveCheck func(string) bool, now time.Time, owners *rolloutOwnerCache) {
 	if now.IsZero() {
 		now = time.Now()
 	}
+	type staleProbe struct {
+		idx            int
+		blankCandidate bool
+		transcriptPath string
+		convDBPath     string
+	}
 	staleFiles := map[string]os.FileInfo{}
-	staleIndices := make([]int, 0)
+	probes := make([]staleProbe, 0)
 
 	for i := range records {
 		rec := &records[i]
@@ -556,12 +601,14 @@ func antigravityApplyStaleGuard(records []antigravityRecord, liveCheck func(stri
 			rec.Running = true
 			continue
 		}
-		if !antigravityRecordIsDBRunning(*rec) {
+		dbRunning := antigravityRecordIsDBRunning(*rec)
+		blankCandidate := !dbRunning && antigravityRecordIsBlankStatusCandidate(*rec)
+		if !dbRunning && !blankCandidate {
 			rec.Running = false
 			continue
 		}
 
-		// Candidate is marked running in SQLite; verify freshness or live owner.
+		// Verify transcript freshness or live owner (on transcript or conversation DB).
 		var latestInfo os.FileInfo
 		var latestPath string
 		if rec.TranscriptPath != "" {
@@ -578,22 +625,35 @@ func antigravityApplyStaleGuard(records []antigravityRecord, liveCheck func(stri
 			}
 		}
 
-		if latestInfo != nil {
-			if now.Sub(latestInfo.ModTime()) <= antigravityStaleRunningGrace {
-				rec.Running = true
-				continue
-			}
-			if owners != nil {
-				staleFiles[latestPath] = latestInfo
-				staleIndices = append(staleIndices, i)
-			} else {
-				rec.Running = false
-			}
+		if latestInfo != nil && now.Sub(latestInfo.ModTime()) <= antigravityStaleRunningGrace {
+			rec.Running = true
 			continue
 		}
 
-		// Transcript file does not exist yet: allow brief grace from DB updated time.
-		if rec.Updated > 0 && now.Sub(time.Unix(rec.Updated, 0)) <= antigravityStaleRunningGrace {
+		var convInfo os.FileInfo
+		if rec.ConvDBPath != "" {
+			if st, err := os.Stat(rec.ConvDBPath); err == nil && st.Mode().IsRegular() {
+				convInfo = st
+			}
+		}
+
+		if owners != nil && (latestInfo != nil || convInfo != nil) {
+			p := staleProbe{idx: i, blankCandidate: blankCandidate}
+			if latestInfo != nil {
+				staleFiles[latestPath] = latestInfo
+				p.transcriptPath = latestPath
+			}
+			if convInfo != nil {
+				staleFiles[rec.ConvDBPath] = convInfo
+				p.convDBPath = rec.ConvDBPath
+			}
+			probes = append(probes, p)
+			continue
+		}
+
+		// Transcript file does not exist yet: allow brief grace from DB updated time
+		// only for explicitly DB-running rows (never legacy blank-status rows).
+		if dbRunning && rec.Updated > 0 && now.Sub(time.Unix(rec.Updated, 0)) <= antigravityStaleRunningGrace {
 			rec.Running = true
 		} else {
 			rec.Running = false
@@ -604,21 +664,15 @@ func antigravityApplyStaleGuard(records []antigravityRecord, liveCheck func(stri
 		return
 	}
 	owners.refresh(staleFiles)
-	for _, idx := range staleIndices {
-		rec := &records[idx]
-		path := rec.TranscriptPath
-		info := staleFiles[path]
-		if info == nil && rec.TranscriptPath != "" {
-			fullPath := filepath.Join(filepath.Dir(rec.TranscriptPath), "transcript_full.jsonl")
-			if fi := staleFiles[fullPath]; fi != nil {
-				path = fullPath
-				info = fi
-			}
-		}
-		if info != nil && owners.running(path, info) {
-			rec.Running = true
+	for _, p := range probes {
+		rec := &records[p.idx]
+		transcriptAlive := p.transcriptPath != "" && owners.running(p.transcriptPath, staleFiles[p.transcriptPath])
+		convAlive := p.convDBPath != "" && owners.running(p.convDBPath, staleFiles[p.convDBPath])
+		if p.blankCandidate {
+			rec.Running = (convAlive && antigravityConvDBHasRunningStep(p.convDBPath)) ||
+				(transcriptAlive && p.convDBPath == "")
 		} else {
-			rec.Running = false
+			rec.Running = transcriptAlive || convAlive
 		}
 	}
 }

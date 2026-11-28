@@ -70,6 +70,11 @@
     <div id="jump" class="jump hidden"><button id="jump-btn" class="chip">Jump To Latest</button></div>
     <div id="dockcards" class="dockcards"></div>
     <div id="activity" class="activity hidden" role="status" aria-live="polite"><span class="thinking">Thinking</span></div>
+    <div id="composer-bar" class="composer-bar" aria-label="Model And Mode Controls">
+      <button id="perm-chip" type="button" class="tool-chip icon" aria-label="Permissions"></button>
+      <button id="model-chip" type="button" class="tool-chip model-chip" aria-label="Model"></button>
+      <button id="effort-btn" type="button" class="tool-chip icon gauge" aria-label="Intelligence"></button>
+    </div>
     <form id="composer" class="composer">
       <div id="slash-menu" class="slash-menu hidden" role="listbox" aria-label="Slash Commands"></div>
       <div id="voice-panel" class="voice-panel hidden">
@@ -81,9 +86,7 @@
       <textarea id="input" rows="1" placeholder="Message Codex" enterkeyhint="send"></textarea>
       <div class="tools">
         <button id="attach" type="button" class="icon-btn" aria-label="Add Attachment"><svg class="ico" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
-        <button id="perm-chip" type="button" class="tool-chip icon" aria-label="Permissions"></button>
-        <button id="model-chip" type="button" class="tool-chip model-chip" aria-label="Model"></button>
-        <button id="effort-btn" type="button" class="tool-chip icon gauge" aria-label="Intelligence"></button>
+        <span class="grow"></span>
         <button id="voice" type="button" class="icon-btn hidden" aria-label="Record Voice"><svg class="ico" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0014 0v-2M12 19v3M8 22h8"/></svg></button>
         <button id="stop" type="button" class="round stop hidden" aria-label="Stop"><svg class="ico fill" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="4"/></svg></button>
         <button id="send" type="submit" class="round send" aria-label="Send"><svg class="ico" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>

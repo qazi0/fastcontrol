@@ -1848,8 +1848,8 @@ function renderMeta() {
     b.innerHTML=loadingHTML('Connecting To Chat');b.classList.remove('hidden');
   } else if(m.readOnly) {
     b.innerHTML='<span>Read Only Subagent</span>';b.classList.remove('hidden');
-  } else if (m.mode !== "live" && !(S.provider === "codex" && m.running && !m.readOnly)) {
-    const label = m.mode === "external" ? "Managed On Computer" : "Saved Chat";
+  } else if (m.mode !== "live" && m.mode !== "external" && !(S.provider === "codex" && m.running && !m.readOnly)) {
+    const label = "Saved Chat";
     if (canWake(m, S.provider)) {
       const wakeText = wakeActionLabel(m, S.provider);
       b.innerHTML = `<span>${label}</span><button class="btn" id="wake">${esc(wakeText)}</button>`;
@@ -2604,12 +2604,21 @@ async function sendText(text, options = {}) {
   const images = attachments.filter(a => a.kind !== "file").map(a => a.path);
   const files = attachments.filter(a => a.kind === "file").map(a => a.path);
   if (!text && !images.length && !files.length) return;
+  const external = S.meta?.mode === "external";
+  if (external && S.meta?.running && !options.takeoverConfirmed) {
+    openSheet("takeover", {
+      computer: serverName(S.sid),
+      onConfirm: () => sendText(text, { ...options, takeoverConfirmed: true }),
+    });
+    return;
+  }
+  const takeover = external || !!options.takeoverConfirmed;
   const sent={sid:S.sid,id:S.id,provider:S.provider,list:attachments,voiceKey:voiceDraftKey()};
   const sameChat=()=>S.sid===sent.sid&&S.id===sent.id&&S.provider===sent.provider;
   const steering = S.meta && S.meta.running;
   const place = !S.stick ? captureReadingPlace(feed) : null;
   buzz();
-  // Show the message right away; the real one replaces it when the Mac echoes it.
+  // Show the message right away; the real one replaces it when the computer echoes it.
   const pending = document.createElement("div");
   pending.className = "u pending" + (steering ? " steer" : "");
   pending.innerHTML = messageHTML(text) + esc(attachments.map(a => "\n[" + (a.kind === "file" ? a.name : "Image") + "]").join(""));
@@ -2632,7 +2641,12 @@ async function sendText(text, options = {}) {
       {opacity:1,transform:'translateY(0)'}
     ],{duration:240,easing:'cubic-bezier(0.16,1,0.3,1)'});
   }
-  const a = await conn().call({ op: "send", id: S.id, text, images, files }, 60000);
+  let a = await conn().call({ op: "send", id: S.id, text, images, files, ...(takeover ? { takeover: true } : {}) }, 60000);
+  if (!a.ok && takeover && /take over/i.test(a.msg || "")) {
+    const woke = await conn().call({ op: "wake", id: S.id }, 20000);
+    if (woke.ok) a = await conn().call({ op: "send", id: S.id, text, images, files }, 60000);
+    else a = woke;
+  }
   $("send").disabled = voiceState.phase!=='idle';
   if (!a.ok) {
     pending.remove();waiting?.remove();
@@ -3340,13 +3354,44 @@ const SHEETS = {
         if (last) try { Native.share(last.text); } catch {}
       }
       if (act === "wake") { toast(S.provider === "antigravity" ? "Reconnecting" : S.provider === "grok" ? (m.mode === "external" ? "Taking Over Chat" : "Reconnecting") : S.provider === "claude" ? "Resuming Chat" : "Opening On Computer"); const a = await c.call({ op: "wake", id: S.id }, 20000); if (!a.ok) toast(nice(a.msg)); }
-      if (act === "compact") { const a = await c.call({ op: "compact", id: S.id }, 60000); toast(a.ok ? "Compacting" : nice(a.msg)); }
+      if (act === "compact") {
+        const external = m.mode === "external";
+        const runCompact = async () => {
+          let a = await c.call({ op: "compact", id: S.id, ...(external ? { takeover: true } : {}) }, 60000);
+          if (!a.ok && external && /take over/i.test(a.msg || "")) {
+            const woke = await c.call({ op: "wake", id: S.id }, 20000);
+            if (woke.ok) a = await c.call({ op: "compact", id: S.id }, 60000);
+            else a = woke;
+          }
+          toast(a.ok ? "Compacting" : nice(a.msg));
+        };
+        if (external && m.running) {
+          openSheet("takeover", { computer: serverName(S.sid), onConfirm: runCompact });
+        } else {
+          await runCompact();
+        }
+      }
       if (act === "archive") {
         const op = t ? "archive" : "unarchive", id = S.id;
         const a = await c.call({ op, id }, 30000);
         if (!a.ok) { toast(nice(a.msg)); return; }
         toast(op === "archive" ? "Archived, Tap To Undo" : "Unarchived", op === "archive" ? () => c.call({ op: "unarchive", id }) : null);
         if (op === "archive") history.back();
+      }
+    };
+  },
+
+  takeover(sh, opts = {}) {
+    const computer = opts.computer || "Your Computer";
+    sh.innerHTML = `<div class="grip"></div><h2>Take Over Active Run?</h2>` +
+      `<div class="app-update-body"><p>This chat is currently running in a terminal on ${esc(computer)}.</p>` +
+      `<p class="hint">Continuing here will stop that terminal run and resume the chat in fastcontrol.</p></div>` +
+      `<div class="sheet-actions"><button type="button" class="btn" data-takeover-cancel>Cancel</button><span class="grow"></span><button type="button" class="btn primary" data-takeover-confirm>Continue Here</button></div>`;
+    sh.onclick = (e) => {
+      if (e.target.closest("[data-takeover-cancel]")) { closeSheet(); return; }
+      if (e.target.closest("[data-takeover-confirm]")) {
+        closeSheet();
+        opts.onConfirm?.();
       }
     };
   },

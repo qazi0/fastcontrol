@@ -370,6 +370,107 @@ func TestAntigravitySQLiteDualDBDedupURIsAndStaleGuard(t *testing.T) {
 	}
 }
 
+func TestAntigravityRunningBlankStatusAndConvDBOwner(t *testing.T) {
+	geminiDir := t.TempDir()
+	now := time.Date(2026, 11, 28, 0, 40, 0, 0, time.UTC)
+
+	withAntigravityTestClockAndOwners(t, now, func(paths []string) map[string]rolloutOwnerEvidence {
+		res := make(map[string]rolloutOwnerEvidence, len(paths))
+		for _, p := range paths {
+			// Simulate language_server holding conversations/<id>.db open (never transcript.jsonl).
+			isConvDB := strings.HasSuffix(p, ".db")
+			alive := isConvDB && (strings.Contains(p, "conv-blank-step-running") ||
+				strings.Contains(p, "conv-blank-step-done") ||
+				strings.Contains(p, "conv-db-owner-running") ||
+				strings.Contains(p, "conv-idle-open-tab"))
+			res[p] = rolloutOwnerEvidence{known: true, alive: alive}
+		}
+		return res
+	})
+
+	createConvDB := func(id string, stepStatus int) {
+		p := antigravityConvDBPath(geminiDir, antigravityAppDirDesktop, id)
+		if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+			t.Fatal(err)
+		}
+		db, err := sql.Open("sqlite", p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		if _, err := db.Exec(`create table steps (idx integer primary key, step_type integer, status integer)`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`insert into steps (idx, step_type, status) values (1, 132, ?)`, stepStatus); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	freshTime := now.Add(-15 * time.Second)
+	staleTime := now.Add(-10 * time.Minute)
+
+	writeTestTranscript(t, antigravityTranscriptPath(geminiDir, antigravityAppDirDesktop, "conv-blank-fresh"), []string{
+		`{"step_index":0,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-28T00:39:45Z"}`,
+	}, freshTime)
+	writeTestTranscript(t, antigravityTranscriptPath(geminiDir, antigravityAppDirDesktop, "conv-blank-step-running"), []string{
+		`{"step_index":0,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-28T00:30:00Z"}`,
+	}, staleTime)
+	createConvDB("conv-blank-step-running", antigravityConvStepStatusRunning)
+
+	writeTestTranscript(t, antigravityTranscriptPath(geminiDir, antigravityAppDirDesktop, "conv-blank-step-done"), []string{
+		`{"step_index":0,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-28T00:30:00Z"}`,
+	}, staleTime)
+	createConvDB("conv-blank-step-done", 3)
+
+	writeTestTranscript(t, antigravityTranscriptPath(geminiDir, antigravityAppDirDesktop, "conv-db-owner-running"), []string{
+		`{"step_index":0,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-28T00:30:00Z"}`,
+	}, staleTime)
+	createConvDB("conv-db-owner-running", 3)
+
+	writeTestTranscript(t, antigravityTranscriptPath(geminiDir, antigravityAppDirDesktop, "conv-idle-open-tab"), []string{
+		`{"step_index":0,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-28T00:39:55Z"}`,
+	}, freshTime)
+	createConvDB("conv-idle-open-tab", 3)
+
+	desktopDB := antigravityDBPath(geminiDir, antigravityAppDirDesktop)
+	createAntigravityTestDB(t, desktopDB, []antigravityTestRow{
+		{id: "conv-blank-fresh", title: "Blank Fresh", lastMod: "2026-11-28 00:39:45+00:00", status: "", notFullyIdle: 0, killed: 0},
+		{id: "conv-blank-step-running", title: "Blank Step Running", lastMod: "2026-11-28 00:30:00+00:00", status: "", notFullyIdle: 0, killed: 0},
+		{id: "conv-blank-step-done", title: "Blank Step Done", lastMod: "2026-11-28 00:30:00+00:00", status: "", notFullyIdle: 0, killed: 0},
+		{id: "conv-blank-legacy", title: "Legacy 2025 Blank", lastMod: "2025-11-20 16:52:24+00:00", status: "", notFullyIdle: 0, killed: 0},
+		{id: "conv-db-owner-running", title: "DB Owner Running", lastMod: "2026-11-28 00:30:00+00:00", status: "CASCADE_RUN_STATUS_RUNNING", notFullyIdle: 1, killed: 0},
+		{id: "conv-idle-open-tab", title: "Idle Open Tab", lastMod: "2026-11-28 00:39:55+00:00", status: "CASCADE_RUN_STATUS_IDLE", notFullyIdle: 0, killed: 0},
+	})
+
+	records, err := antigravityListRecords(context.Background(), geminiDir, nil)
+	if err != nil {
+		t.Fatalf("antigravityListRecords: %v", err)
+	}
+	byID := map[string]antigravityRecord{}
+	for _, r := range records {
+		byID[r.ID] = r
+	}
+
+	if !byID["conv-blank-fresh"].Running {
+		t.Fatalf("expected blank-status row with fresh transcript to stay Running=true")
+	}
+	if !byID["conv-blank-step-running"].Running {
+		t.Fatalf("expected blank-status row with open conv DB and running step to stay Running=true")
+	}
+	if byID["conv-blank-step-done"].Running {
+		t.Fatalf("expected blank-status row with stale transcript and done steps to be Running=false")
+	}
+	if byID["conv-blank-legacy"].Running {
+		t.Fatalf("expected legacy blank-status row without transcript to be Running=false")
+	}
+	if !byID["conv-db-owner-running"].Running {
+		t.Fatalf("expected CASCADE_RUN_STATUS_RUNNING row with open conv DB owner to stay Running=true even when transcript.jsonl has 0 open fds")
+	}
+	if byID["conv-idle-open-tab"].Running {
+		t.Fatalf("expected CASCADE_RUN_STATUS_IDLE row with open conv DB to remain Running=false")
+	}
+}
+
 func TestAntigravityOlderSQLiteSchemaMissingOptionalColumns(t *testing.T) {
 	geminiDir := t.TempDir()
 	dbPath := antigravityDBPath(geminiDir, antigravityAppDirDesktop)

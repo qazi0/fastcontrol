@@ -82,7 +82,7 @@ test("HTML, CSS, service worker, and guardrails support 4-provider Grok layout w
   assert.match(htmlSource, /data-provider="claude"/);
   assert.match(htmlSource, /data-provider="antigravity"/);
   assert.match(htmlSource, /data-provider="grok"[^>]*><span>Grok<\/span>/);
-  assert.match(swSource, /const CACHE = "fastcontrol-v23";/);
+  assert.match(swSource, /const CACHE = "fastcontrol-v24";/);
   assert.match(cssSource, /@media\s*\(max-height:\s*680px\)\s*\{[\s\S]*\.provider-choice[\s\S]*\.provider-option/);
   assert.match(cssSource, /@media\s*\(max-width:\s*380px\)\s*\{[\s\S]*\.usage-body/);
   assert.match(cssSource, /@media\s*\(min-width:\s*620px\)\s*\{[\s\S]*\.usage-providers\s*\{\s*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);[\s\S]*\.usage-provider:nth-child\(n\+3\)/);
@@ -531,19 +531,20 @@ test("Grok modes, reasoning_effort, model formatting, external takeover, steerin
   assert.match(els["model-chip"].innerHTML, /<b>Grok 4\.7 Fast<\/b>/);
   assert.equal(els["effort-btn"].getAttribute("aria-label"), "Intelligence: Default");
 
-  // External mode offers Take Over; missing capability hides wake button.
+  // External mode hides the intrusive top banner; takeover remains in the thread menu (and runs automatically on send).
   ctx.S.meta = { ...ctx.S.meta, mode: "external", running: false, permissionMode: "plan", effort: "minimal" };
   ctx.renderMeta();
-  assert.match(els.banner.innerHTML, /Managed On Computer/);
-  assert.match(els.banner.innerHTML, /id="wake">Take Over<\/button>/);
+  assert.ok(els.banner.classList.contains("hidden"));
   assert.equal(els.input.placeholder, "Message Grok");
   assert.equal(els.send.getAttribute("aria-label"), "Send");
   assert.doesNotMatch(els["perm-chip"].className, /\bwarn\b/);
   assert.equal(els["effort-btn"].getAttribute("aria-label"), "Intelligence: Minimal");
 
+  assert.equal(ctx.wakeActionLabel(ctx.S.meta, "grok"), "Take Over");
+  assert.equal(ctx.canWake(ctx.S.meta, "grok"), true);
+
   connection.capabilities.grok = false;
-  ctx.renderMeta();
-  assert.doesNotMatch(els.banner.innerHTML, /id="wake"/);
+  assert.equal(ctx.canWake(ctx.S.meta, "grok"), false);
 
   // Perms sheet renders Execution Mode and applies acceptEdits.
   const permsSheet = makeElement("div", "sheet");
