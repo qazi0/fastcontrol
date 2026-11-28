@@ -324,17 +324,16 @@ class RelayWatchService : Service() {
     private fun foregroundNotification(): Notification {
         val total = conns.size
         val online = conns.values.count { it.connected }
-        val text = when (total) {
-            0 -> "No Macs Paired"
-            1 -> "Watching 1 Mac"
-            else -> "Watching $total Macs"
+        val text = when {
+            total == 0 -> "No Computers Paired"
+            online == 0 -> if (total == 1) "1 Computer Offline" else "$total Computers Offline"
+            online == total -> if (total == 1) "1 Computer Connected" else "$total Computers Connected"
+            else -> "$online Of $total Computers Connected"
         }
-        val sub = if (total == 0) null else "$online of $total Connected"
         return Notification.Builder(this, CH_CONNECTION)
             .setSmallIcon(R.drawable.ic_stat_relay)
             .setContentTitle("fastcontrol")
             .setContentText(text)
-            .setSubText(sub)
             .setColor(getColor(R.color.accent))
             .setOngoing(true)
             .setShowWhen(false)

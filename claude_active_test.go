@@ -622,6 +622,41 @@ func TestClaudeExternalOpsStopTakeoverArchiveAndSubagents(t *testing.T) {
 	if _, err := m.getRun(newID, true); err == nil || !strings.Contains(err.Error(), "Install Claude Code") {
 		t.Fatalf("takeover did not proceed past stopped external session: %v", err)
 	}
+	// Verify handle("send") honors explicit takeover:true while rejecting takeover:false on an external session.
+	waitAck := func(nonce string) map[string]any {
+		t.Helper()
+		deadline := time.After(2 * time.Second)
+		for {
+			select {
+			case raw := <-c.out:
+				var msg map[string]any
+				_ = json.Unmarshal(raw, &msg)
+				if str(msg, "t") == "ack" && str(msg, "nonce") == nonce {
+					return msg
+				}
+			case <-deadline:
+				t.Fatalf("ack %s timed out", nonce)
+			}
+		}
+	}
+	stillRunning = true
+	if err := os.WriteFile(liveSessPath, mustJSON(map[string]any{"pid": 65197, "sessionId": newID, "status": "idle", "startedAt": int64(1795652928486)}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	m.handle(c, mustJSON(map[string]any{"op": "send", "id": newID, "text": "hello", "nonce": "send-no-takeover"}))
+	if ack := waitAck("send-no-takeover"); ack["ok"] != false || !strings.Contains(str(ack, "msg"), "Take Over") {
+		t.Fatalf("send without takeover escaped external guard: %+v", ack)
+	}
+	stopCalled = false
+	m.stopExternalFn = func(_ context.Context, a claudeActive) error {
+		stopCalled = true
+		stillRunning = false
+		return nil
+	}
+	m.handle(c, mustJSON(map[string]any{"op": "send", "id": newID, "text": "hello", "takeover": true, "nonce": "send-with-takeover"}))
+	if ack := waitAck("send-with-takeover"); !stopCalled || !strings.Contains(str(ack, "msg"), "Install Claude Code") {
+		t.Fatalf("send with takeover:true did not stop external and advance to start: stopCalled=%v ack=%+v", stopCalled, ack)
+	}
 	_ = os.Remove(liveSessPath)
 
 	// Safety guard: signalExternalPID must refuse own PID

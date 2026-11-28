@@ -335,10 +335,17 @@ pre code { background: none !important; padding: 0 !important; font-size: inheri
 .voice-actions .icon-btn { width: 30px; height: 34px; }
 .voice-actions .icon-btn .ico { width: 17px; height: 17px; }
 .voice-actions .btn { height: 32px; padding: 0 10px; font-size: 12px; }
-.composer { position: relative; margin: 8px 12px calc(env(safe-area-inset-bottom) + 12px); padding: 2px 8px 8px 20px; background: var(--raised); border-radius: 28px; flex: none; }
-#input { display: block; width: 100%; border: 0; outline: none; resize: none; background: transparent; padding: 13px 8px 6px 0; max-height: 38vh; font-size: 16px; line-height: 24px; }
+.composer-bar { display: flex; align-items: center; gap: 6px; margin: 6px 16px 0; min-height: 34px; flex: none; }
+.composer-bar .tool-chip { height: 34px; min-width: 34px; border-radius: 17px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+.composer-bar .tool-chip.icon { width: 34px; min-width: 34px; padding: 0; }
+.composer-bar #perm-chip { margin: 0; }
+.composer-bar #perm-chip .ico { width: 18px; height: 18px; }
+.composer-bar #effort-btn { margin-left: auto; }
+.composer-bar .gauge .ico { width: 22px; height: 22px; stroke-width: 2.3; }
+.composer { position: relative; margin: 6px 12px calc(env(safe-area-inset-bottom) + 12px); padding: 2px 8px 8px 20px; background: var(--raised); border-radius: 28px; flex: none; }
+#input { display: block; width: 100%; border: 0; outline: none; resize: none; background: transparent; padding: 12px 8px 4px 0; max-height: 38vh; font-size: 16px; line-height: 24px; }
 #input::placeholder { color: var(--faint); }
-.tools { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-left: -10px; }
+.tools { display: flex; align-items: center; gap: 4px; margin-left: -10px; }
 .tools .icon-btn { width: 40px; height: 40px; border-radius: 20px; }
 .tool-chip { display: inline-flex; align-items: center; gap: 6px; height: 40px; min-width: 44px; justify-content: center; padding: 0 12px; border-radius: 20px; font-size: 13.5px; color: var(--muted); white-space: nowrap; overflow: hidden; }
 .tool-chip:active { background: var(--high); }
@@ -480,15 +487,12 @@ textarea, input { caret-color: var(--ink); }
 .eo-dot.in { background: rgba(255, 255, 255, 0.45); }
 .gauge .ico { width: 28px; height: 28px; stroke-width: 2.5; color: var(--ink); }
 .gauge .g-on { stroke: var(--ink); }
-.model-chip { flex: 0 1 auto; min-width: 0; max-width: 100%; padding: 0 4px; overflow: hidden; gap: 4px; }
+.model-chip { flex: 0 1 auto; min-width: 0; max-width: 100%; padding: 0 12px; overflow: hidden; gap: 6px; font-size: 13px; }
 .model-chip b { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-chip .ico { width: 10px; height: 10px; flex: none; color: var(--ink); }
-.tools .icon-btn, .tools .tool-chip.icon { width: 36px; min-width: 36px; height: 48px; }
-.tools .tool-chip { height: 48px; }
-.tools #perm-chip { margin: 0; }
-.tools #perm-chip .ico { width: 22px; height: 22px; }
-.tools .round.stop { width: 36px; min-width: 36px; height: 36px; border-radius: 50%; margin: 0; }
-.tools #send { width: 40px; min-width: 40px; margin: 0; }
+.tools .icon-btn { width: 40px; min-width: 40px; height: 40px; }
+.tools .round.stop { width: 36px; min-width: 36px; height: 36px; border-radius: 50%; margin: 0 2px 0 0; }
+.tools #send { width: 40px; min-width: 40px; height: 40px; margin: 0; }
 .tools #voice { position: relative; color: var(--ink); }
 .tools #voice:disabled { opacity: 1; }
 .tools #voice .ico { position: relative; z-index: 1; }

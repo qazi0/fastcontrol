@@ -120,7 +120,7 @@ func (m *ClaudeManager) getRun(id string, takeover bool) (*ClaudeRun, error) {
 	}
 	if active.present() {
 		if !takeover {
-			return nil, errors.New("This Session Is Managed On The Mac. Use Take Over First")
+			return nil, errors.New("This Session Is Managed On The Computer. Use Take Over First")
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -237,7 +237,8 @@ func (m *ClaudeManager) handle(c *Client, raw []byte) {
 		go func() { child, err := m.forkSession(id); ack(err, map[string]any{"thread": child}) }()
 	case "wake", "send", "compact":
 		go func() {
-			run, err := m.getRun(id, op == "wake")
+			takeoverFlag, _ := v["takeover"].(bool)
+			run, err := m.getRun(id, op == "wake" || takeoverFlag)
 			queued := false
 			if err == nil {
 				if op == "send" {
